@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>구조 평면도 - 보 스팬 분석</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', 'Malgun Gothic', sans-serif;
+          background: #1a1a2e; color: #e0e0e0; height: 100vh;
+          display: flex; flex-direction: column; overflow: hidden; }
+
+  /* ── 헤더 ── */
+  header { background: #16213e; padding: 10px 20px;
+            display: flex; align-items: center; justify-content: space-between;
+            border-bottom: 2px solid #0f3460; flex-shrink: 0; }
+  header h1 { font-size: 16px; color: #e94560; letter-spacing: 1px; }
+  .stats { display: flex; gap: 20px; }
+  .stat { text-align: center; }
+  .stat .val { font-size: 20px; font-weight: 700; color: #4ecca3; }
+  .stat .lbl { font-size: 10px; color: #888; }
+
+  /* ── 메인 레이아웃 ── */
+  .main { display: flex; flex: 1; overflow: hidden; }
+
+  /* ── 캔버스 영역 ── */
+  .canvas-wrap { flex: 1; position: relative; overflow: hidden; cursor: grab; }
+  .canvas-wrap:active { cursor: grabbing; }
+  canvas { display: block; }
+
+  /* ── 범례 ── */
+  .legend { position: absolute; top: 12px; left: 12px;
+             background: rgba(22,33,62,0.92); border: 1px solid #0f3460;
+             border-radius: 8px; padding: 10px 14px; font-size: 12px; }
+  .legend-item { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+  .legend-dot { width: 20px; height: 4px; border-radius: 2px; }
+
+  /* ── 줌 버튼 ── */
+  .zoom-btns { position: absolute; bottom: 20px; right: 20px;
+                display: flex; flex-direction: column; gap: 6px; }
+  .zoom-btns button {
+    width: 36px; height: 36px; border-radius: 50%;
+    border: none; background: #0f3460; color: #fff;
+    font-size: 18px; cursor: pointer; transition: background .2s;
+    display: flex; align-items: center; justify-content: center; }
+  .zoom-btns button:hover { background: #e94560; }
+
+  /* ── 사이드패널 ── */
+  .side { width: 280px; background: #16213e; border-left: 2px solid #0f3460;
+           display: flex; flex-direction: column; flex-shrink: 0; }
+
+  /* 검색/필터 */
+  .filter-box { padding: 12px; border-bottom: 1px solid #0f3460; }
+  .filter-box input {
+    width: 100%; padding: 7px 10px; background: #1a1a2e;
+    border: 1px solid #0f3460; border-radius: 6px; color: #e0e0e0;
+    font-size: 13px; outline: none; }
+  .filter-box input:focus { border-color: #4ecca3; }
+  .dir-btns { display: flex; gap: 6px; margin-top: 8px; }
+  .dir-btn {
+    flex: 1; padding: 5px 0; border-radius: 5px; border: none;
+    font-size: 11px; cursor: pointer; font-weight: 600; opacity: 0.5;
+    transition: opacity .2s; }
+  .dir-btn.active { opacity: 1; }
+  .dir-btn.x { background: #2196F3; color: #fff; }
+  .dir-btn.y { background: #F44336; color: #fff; }
+  .dir-btn.d { background: #FF9800; color: #fff; }
+  .dir-btn.all { background: #555; color: #fff; }
+
+  /* 목록 */
+  .beam-list { flex: 1; overflow-y: auto; padding: 8px; }
+  .beam-list::-webkit-scrollbar { width: 5px; }
+  .beam-list::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 3px; }
+  .beam-item {
+    padding: 9px 11px; margin-bottom: 5px; border-radius: 7px;
+    cursor: pointer; border-left: 3px solid transparent;
+    background: #1a1a2e; transition: all .15s; font-size: 12px; }
+  .beam-item:hover { background: #0f3460; }
+  .beam-item.selected { background: #0f3460; border-left-color: #4ecca3; }
+  .beam-item .bid { font-weight: 700; font-size: 13px; }
+  .beam-item .binfo { color: #888; margin-top: 2px; }
+
+  /* 상세패널 */
+  .detail { padding: 14px; border-top: 2px solid #0f3460;
+             background: #0f3460; min-height: 180px; }
+  .detail h3 { font-size: 14px; color: #4ecca3; margin-bottom: 10px; }
+  .detail-empty { color: #555; font-size: 13px; text-align: center;
+                   padding: 30px 0; }
+  .info-row { display: flex; justify-content: space-between;
+               padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,0.05);
+               font-size: 12px; }
+  .info-row .key { color: #aaa; }
+  .info-row .val { color: #fff; font-weight: 600; }
+  .dir-badge {
+    display: inline-block; padding: 2px 10px; border-radius: 12px;
+    font-size: 11px; font-weight: 700; }
+  .dir-x { background: #1565C0; color: #90CAF9; }
+  .dir-y { background: #B71C1C; color: #FFCDD2; }
+  .dir-d { background: #E65100; color: #FFE0B2; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🏗 구조 평면도 - 보 스팬 분석</h1>
+  <div class="stats">
+    <div class="stat"><div class="val">276</div><div class="lbl">총 보 스팬</div></div>
+    <div class="stat"><div class="val">257</div><div class="lbl">폭 인식</div></div>
+    <div class="stat"><div class="val">5.36m</div><div class="lbl">평균 스팬</div></div>
+    <div class="stat"><div class="val" id="col-cnt">-</div><div class="lbl">기둥</div></div>
+  </div>
+</header>
+
+<div class="main">
+  <!-- 캔버스 -->
+  <div class="canvas-wrap" id="canvasWrap">
+    <canvas id="cv"></canvas>
+
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:#2196F3"></div>X방향 보</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#F44336"></div>Y방향 보</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#FF9800"></div>대각선 보</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#4CAF50;height:10px;width:10px;border-radius:2px"></div>기둥</div>
+    </div>
+
+    <div class="zoom-btns">
+      <button onclick="zoom(1.2)">+</button>
+      <button onclick="zoom(1/1.2)">−</button>
+      <button onclick="resetView()" style="font-size:12px">⟳</button>
+    </div>
+  </div>
+
+  <!-- 사이드패널 -->
+  <div class="side">
+    <div class="filter-box">
+      <input id="search" placeholder="🔍 보 ID 검색..." oninput="filterList()">
+      <div class="dir-btns">
+        <button class="dir-btn all active" onclick="setDirFilter('all',this)">전체</button>
+        <button class="dir-btn x" onclick="setDirFilter('X방향',this)">X방향</button>
+        <button class="dir-btn y" onclick="setDirFilter('Y방향',this)">Y방향</button>
+        <button class="dir-btn d" onclick="setDirFilter('대각선',this)">대각선</button>
+      </div>
+    </div>
+    <div class="beam-list" id="beamList"></div>
+    <div class="detail" id="detail">
+      <div class="detail-empty">보를 클릭하면<br>상세 정보가 표시됩니다</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── 데이터 ──────────────────────────────────────────────────
+const BEAMS   = [{"id": "B1", "layer": "!!0-BEAM", "x1": -1020190.805076363, "y1": -1829255.5754123991, "x2": -1012882.7388294421, "y2": -1831915.4939950136, "span": 7777.1, "span_m": 7.777, "width": 501.2, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B2", "layer": "!!0-BEAM", "x1": -1012318.923256938, "y1": -1832120.7060809196, "x2": -1005177.2593385545, "y2": -1834720.0591690633, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B3", "layer": "!!0-BEAM", "x1": -1004613.44376605, "y1": -1834925.2712549695, "x2": -997471.779847666, "y2": -1837524.6243431144, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B4", "layer": "!!0-BEAM", "x1": -996907.9642751615, "y1": -1837729.8364290209, "x2": -989766.3003567803, "y2": -1840329.1895171646, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B5", "layer": "!!0-BEAM", "x1": -989202.4847842724, "y1": -1840534.401603072, "x2": -984504.0216803479, "y2": -1842244.5023188558, "span": 5000.0, "span_m": 5.0, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B6", "layer": "!!0-BEAM", "x1": -983940.206107568, "y1": -1842449.7144048624, "x2": -976798.542189184, "y2": -1845049.067493007, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B7", "layer": "!!0-BEAM", "x1": -976234.7266166798, "y1": -1845254.2795789135, "x2": -969093.0626982962, "y2": -1847853.6326670574, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B8", "layer": "!!0-BEAM", "x1": -968529.2471257917, "y1": -1848058.8447529636, "x2": -965624.8299704232, "y2": -1849115.9661448891, "span": 3090.8, "span_m": 3.091, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B9", "layer": "!!0-BEAM", "x1": -1009193.3786383246, "y1": -1825064.142439034, "x2": -1005056.4816682979, "y2": -1826569.8497976074, "span": 4402.4, "span_m": 4.402, "width": 1461.9, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B10", "layer": "!!0-BEAM", "x1": -1001791.672240522, "y1": -1827758.143249284, "x2": -994838.2247441569, "y2": -1830288.9911622475, "span": 7399.7, "span_m": 7.4, "width": 640.7, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B11", "layer": "!!0-BEAM", "x1": -994274.4091716525, "y1": -1830494.2032481534, "x2": -987132.7452532707, "y2": -1833093.5563362972, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B12", "layer": "!!0-BEAM", "x1": -986568.9296807634, "y1": -1833298.7684222045, "x2": -981870.4665768387, "y2": -1835008.869137989, "span": 5000.0, "span_m": 5.0, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B13", "layer": "!!0-BEAM", "x1": -981306.6510040588, "y1": -1835214.0812239954, "x2": -974164.9870856747, "y2": -1837813.43431214, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B14", "layer": "!!0-BEAM", "x1": -973601.1715131707, "y1": -1838018.646398046, "x2": -966459.5075947866, "y2": -1840617.9994861905, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B15", "layer": "!!0-BEAM", "x1": -954995.1513695369, "y1": -1853123.195862767, "x2": -949967.7958470291, "y2": -1854953.0036297631, "span": 5350.0, "span_m": 5.35, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B16", "layer": "!!0-BEAM", "x1": -949403.9802745478, "y1": -1855158.2157157315, "x2": -942262.3163579574, "y2": -1857757.5688041185, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B17", "layer": "!!0-BEAM", "x1": -941698.5007854761, "y1": -1857962.7808900871, "x2": -934556.8368673793, "y2": -1860562.1339790225, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B18", "layer": "!!0-BEAM", "x1": -933993.0269754147, "y1": -1860767.343997452, "x2": -926851.3573768005, "y2": -1863366.6991539265, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B19", "layer": "!!0-BEAM", "x1": -926287.5474639274, "y1": -1863571.909179966, "x2": -920132.5551374382, "y2": -1865812.143178613, "span": 6550.0, "span_m": 6.55, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B20", "layer": "!!0-BEAM", "x1": -919568.7395649572, "y1": -1866017.3552645815, "x2": -915997.9076098364, "y2": -1867317.0318076196, "span": 3800.0, "span_m": 3.8, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B21", "layer": "!!0-BEAM", "x1": -951985.5307576954, "y1": -1845886.0962275304, "x2": -947289.7781194462, "y2": -1847595.210415077, "span": 4997.1, "span_m": 4.997, "width": 502.1, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B22", "layer": "!!0-BEAM", "x1": -946725.9625469649, "y1": -1847800.4225010455, "x2": -939584.2986303746, "y2": -1850399.775589433, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B23", "layer": "!!0-BEAM", "x1": -939020.4830578932, "y1": -1850604.987675401, "x2": -931878.8191397964, "y2": -1853204.3407643365, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B24", "layer": "!!0-BEAM", "x1": -931315.006994668, "y1": -1853409.5516028507, "x2": -924173.3396492173, "y2": -1856008.9059392405, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B25", "layer": "!!0-BEAM", "x1": -923609.5274831811, "y1": -1856214.1167853647, "x2": -917454.5374098555, "y2": -1858454.3499639274, "span": 6550.0, "span_m": 6.55, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B26", "layer": "!!0-BEAM", "x1": -916890.7218373741, "y1": -1858659.5620498955, "x2": -913319.8898891716, "y2": -1859959.238590416, "span": 3800.0, "span_m": 3.8, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B27", "layer": "!!0-BEAM", "x1": -947260.8281459799, "y1": -1838878.9328319384, "x2": -944485.0339923175, "y2": -1839889.2392801722, "span": 2953.9, "span_m": 2.954, "width": 539.3, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B28", "layer": "!!0-BEAM", "x1": -943921.2184198361, "y1": -1840094.4513661405, "x2": -936779.5545032461, "y2": -1842693.8044545276, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B29", "layer": "!!0-BEAM", "x1": -936215.7389307645, "y1": -1842899.0165404961, "x2": -929074.0750126677, "y2": -1845498.3696294315, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B30", "layer": "!!0-BEAM", "x1": -928510.2605077539, "y1": -1845703.581326837, "x2": -921368.5955220887, "y2": -1848302.9348043355, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B31", "layer": "!!0-BEAM", "x1": -920804.7809962669, "y1": -1848508.1465093517, "x2": -913863.7863887333, "y2": -1851034.4619423216, "span": 7386.5, "span_m": 7.386, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B32", "layer": "!!0-BEAM", "x1": -913285.9988469002, "y1": -1851244.7594092474, "x2": -910515.1457692882, "y2": -1852253.267452874, "span": 2948.7, "span_m": 2.949, "width": 512.4, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B33", "layer": "!!0-BEAM", "x1": -951199.6235088374, "y1": -1831786.2334326515, "x2": -951199.6235088375, "y2": -1828239.647847884, "span": 3546.6, "span_m": 3.547, "width": 552.7, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B34", "layer": "!!0-BEAM", "x1": -951199.6235088375, "y1": -1827639.647847884, "x2": -951199.6235088375, "y2": -1820039.6478478846, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B35", "layer": "!!0-BEAM", "x1": -951199.6235088374, "y1": -1819439.647847884, "x2": -951199.6235088374, "y2": -1812961.035002853, "span": 6478.6, "span_m": 6.479, "width": 500.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B37", "layer": "!!0-BEAM", "x1": -936399.6235088374, "y1": -1827639.647847884, "x2": -936399.6235088375, "y2": -1820039.6478478846, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B38", "layer": "!!0-BEAM", "x1": -936399.6235088375, "y1": -1819439.647847884, "x2": -936399.6235088374, "y2": -1812961.035002852, "span": 6478.6, "span_m": 6.479, "width": 500.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B39", "layer": "!!0-BEAM", "x1": -1014860.8470630259, "y1": -1837496.4919199834, "x2": -1021735.121116239, "y2": -1835782.5428997504, "span": 7084.7, "span_m": 7.085, "width": 500.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B40", "layer": "!!0-BEAM", "x1": -943799.6235088471, "y1": -1835274.846328204, "x2": -943799.6235088472, "y2": -1828239.647847866, "span": 7035.2, "span_m": 7.035, "width": 820.3, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B41", "layer": "!!0-BEAM", "x1": -943799.6235088472, "y1": -1827639.647847866, "x2": -943799.6235088473, "y2": -1820039.647847867, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B42", "layer": "!!0-BEAM", "x1": -943799.6235088473, "y1": -1819439.6478478666, "x2": -943799.6235088472, "y2": -1812961.035002835, "span": 6478.6, "span_m": 6.479, "width": 500.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B43", "layer": "!!0-BEAM", "x1": -959399.6235087584, "y1": -1823227.7068710444, "x2": -959399.6235087584, "y2": -1820191.8849870046, "span": 3035.8, "span_m": 3.036, "width": 672.8, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B44", "layer": "!!0-BEAM", "x1": -959399.6235087583, "y1": -1819591.418961794, "x2": -959399.6235087583, "y2": -1812961.035002853, "span": 6630.4, "span_m": 6.63, "width": 500.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B45", "layer": "!!0-BEAM", "x1": -928215.6124624043, "y1": -1824511.035003453, "x2": -928215.6124624044, "y2": -1820039.647847884, "span": 4471.4, "span_m": 4.471, "width": 400.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B46", "layer": "!!0-BEAM", "x1": -928215.6124624044, "y1": -1819439.647847884, "x2": -928215.6124624043, "y2": -1813061.035003997, "span": 6378.6, "span_m": 6.379, "width": 400.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B47", "layer": "!!0-BEAM", "x1": -975015.4531670235, "y1": -1827681.43492089, "x2": -972136.0338422467, "y2": -1824483.5157829984, "span": 4303.2, "span_m": 4.303, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B48", "layer": "!!0-BEAM", "x1": -971734.5554784558, "y1": -1824037.6288876894, "x2": -966649.1628704394, "y2": -1818389.7282137815, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B49", "layer": "!!0-BEAM", "x1": -966247.6845066482, "y1": -1817943.841318473, "x2": -963684.3934771464, "y2": -1815097.018221644, "span": 3830.8, "span_m": 3.831, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B50", "layer": "!!0-BEAM", "x1": -964512.4757399437, "y1": -1834471.179790431, "x2": -971194.2478915997, "y2": -1831551.8702492914, "span": 7291.7, "span_m": 7.292, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B51", "layer": "!!0-GIRDER", "x1": -1004577.493514732, "y1": -1827391.725269343, "x2": -1001507.493212161, "y2": -1827391.725269343, "span": 3070.0, "span_m": 3.07, "width": 400.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B52", "layer": "!!0-GIRDER", "x1": -1000907.493212161, "y1": -1827391.725269343, "x2": -998087.4935147316, "y2": -1827391.725269264, "span": 2820.0, "span_m": 2.82, "width": 400.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B53", "layer": "!!0-GIRDER", "x1": -997487.4935147321, "y1": -1827391.725269343, "x2": -992427.4935147321, "y2": -1827391.725269343, "span": 5060.0, "span_m": 5.06, "width": 400.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B54", "layer": "!!0-GIRDER", "x1": -991827.4935147316, "y1": -1827391.725269266, "x2": -986767.4935147316, "y2": -1827391.725269266, "span": 5060.0, "span_m": 5.06, "width": 400.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B55", "layer": "!!0-GIRDER", "x1": -986167.4935147316, "y1": -1827391.725269343, "x2": -983347.4938173034, "y2": -1827391.725269264, "span": 2820.0, "span_m": 2.82, "width": 400.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B56", "layer": "!!0-GIRDER", "x1": -982747.4938173034, "y1": -1827391.725269266, "x2": -979677.4935147319, "y2": -1827391.725269343, "span": 3070.0, "span_m": 3.07, "width": 400.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B57", "layer": "!!0-GIRDER", "x1": -1008247.493514733, "y1": -1824891.725108349, "x2": -1005577.493514732, "y2": -1824891.725108349, "span": 2670.0, "span_m": 2.67, "width": 400.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B58", "layer": "!!0-GIRDER", "x1": -1012067.493514733, "y1": -1824891.72510835, "x2": -1008847.493514732, "y2": -1824891.725430178, "span": 3220.0, "span_m": 3.22, "width": 400.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B59", "layer": "!!0-GIRDER", "x1": -1017647.493514732, "y1": -1824891.725134482, "x2": -1012667.493514732, "y2": -1824891.72510835, "span": 4980.0, "span_m": 4.98, "width": 400.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B60", "layer": "!!0-GIRDER", "x1": -979277.4935147321, "y1": -1826791.725269264, "x2": -979277.4935147282, "y2": -1824551.725269262, "span": 2240.0, "span_m": 2.24, "width": 400.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B61", "layer": "!!0-GIRDER", "x1": -979277.4935147321, "y1": -1823751.725269263, "x2": -979277.493514733, "y2": -1819601.72526945, "span": 4150.0, "span_m": 4.15, "width": 400.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B62", "layer": "!!0-GIRDER", "x1": -988018.1968997116, "y1": -1837134.407160949, "x2": -983225.7645337123, "y2": -1838878.7098910473, "span": 5100.0, "span_m": 5.1, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B63", "layer": "!!0-GIRDER", "x1": -982755.9182233363, "y1": -1839049.71996262, "x2": -975520.2850424948, "y2": -1841683.275065218, "span": 7700.0, "span_m": 7.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B64", "layer": "!!0-GIRDER", "x1": -975050.4387321188, "y1": -1841854.285136791, "x2": -967814.8055516047, "y2": -1844487.840239269, "span": 7700.0, "span_m": 7.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B65", "layer": "!!0-GIRDER", "x1": -967344.959241229, "y1": -1844658.8503108416, "x2": -966141.3857293779, "y2": -1845096.9152436908, "span": 1280.8, "span_m": 1.281, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B66", "layer": "!!0-GIRDER", "x1": -988488.0432100876, "y1": -1836963.397089377, "x2": -995723.6763906005, "y2": -1834329.841986899, "span": 7700.0, "span_m": 7.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B67", "layer": "!!0-GIRDER", "x1": -996193.5227009766, "y1": -1834158.831915326, "x2": -1003429.1558814885, "y2": -1831525.2768128482, "span": 7700.0, "span_m": 7.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B68", "layer": "!!0-GIRDER", "x1": -1003899.0021918645, "y1": -1831354.266741276, "x2": -1011134.6353723775, "y2": -1828720.7116387975, "span": 7700.0, "span_m": 7.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B69", "layer": "!!0-GIRDER", "x1": -1011604.4816827535, "y1": -1828549.7015672252, "x2": -1018840.1148632665, "y2": -1825916.146464747, "span": 7700.0, "span_m": 7.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B71", "layer": "!!0-GIRDER", "x1": -1013597.1804036485, "y1": -1835486.498508701, "x2": -1006361.5472231361, "y2": -1838120.0536111789, "span": 7700.0, "span_m": 7.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B72", "layer": "!!0-GIRDER", "x1": -1005891.7009127601, "y1": -1838291.0636827515, "x2": -998656.0677322474, "y2": -1840924.6187852295, "span": 7700.0, "span_m": 7.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B73", "layer": "!!0-GIRDER", "x1": -998186.2214218713, "y1": -1841095.628856802, "x2": -990950.588241706, "y2": -1843729.183959154, "span": 7700.0, "span_m": 7.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B74", "layer": "!!0-GIRDER", "x1": -990480.74193133, "y1": -1843900.1940307259, "x2": -985688.3095649836, "y2": -1845644.496760951, "span": 5100.0, "span_m": 5.1, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B75", "layer": "!!0-GIRDER", "x1": -985218.4632546075, "y1": -1845815.5068325235, "x2": -977982.8300737658, "y2": -1848449.061935121, "span": 7700.0, "span_m": 7.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B76", "layer": "!!0-GIRDER", "x1": -977512.9837633898, "y1": -1848620.072006694, "x2": -970277.350582878, "y2": -1851253.627109172, "span": 7700.0, "span_m": 7.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B77", "layer": "!!0-GIRDER", "x1": -969807.5042725019, "y1": -1851424.637180744, "x2": -966856.1024862333, "y2": -1852498.8595797769, "span": 3140.8, "span_m": 3.141, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B78", "layer": "!!0-GIRDER", "x1": -1014067.0267140245, "y1": -1835315.488437128, "x2": -1021321.0815679964, "y2": -1832675.228393849, "span": 7719.6, "span_m": 7.72, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B79", "layer": "!!0-GIRDER", "x1": -972245.873557175, "y1": -1834148.80564615, "x2": -965010.2403763152, "y2": -1836782.360748755, "span": 7700.0, "span_m": 7.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B80", "layer": "!!0-GIRDER", "x1": -964540.3940659391, "y1": -1836953.370820327, "x2": -963304.2668181055, "y2": -1837403.2843440825, "span": 1315.5, "span_m": 1.315, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B81", "layer": "!!0-GIRDER", "x1": -972715.7198675511, "y1": -1833977.795574578, "x2": -979904.3684168651, "y2": -1831361.3414793154, "span": 7650.0, "span_m": 7.65, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B82", "layer": "!!0-GIRDER", "x1": -980468.183989391, "y1": -1831156.129393401, "x2": -985166.6470932974, "y2": -1829446.0286776242, "span": 5000.0, "span_m": 5.0, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B83", "layer": "!!0-GIRDER", "x1": -985730.4626658233, "y1": -1829240.8165917099, "x2": -990261.3038390882, "y2": -1827591.725269266, "span": 4821.6, "span_m": 4.822, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B84", "layer": "!!0-GIRDER", "x1": -942886.1697060433, "y1": -1836373.5370871127, "x2": -945520.0827061106, "y2": -1843610.1535592, "span": 7701.0, "span_m": 7.701, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B85", "layer": "!!0-GIRDER", "x1": -945691.0927781991, "y1": -1844079.9998694374, "x2": -948324.647888212, "y2": -1851315.6330466843, "span": 7700.0, "span_m": 7.7, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B86", "layer": "!!0-GIRDER", "x1": -948495.6579602996, "y1": -1851785.4793569199, "x2": -950876.1181599387, "y2": -1858325.7399848965, "span": 6960.0, "span_m": 6.96, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B87", "layer": "!!0-GIRDER", "x1": -951047.1282320272, "y1": -1858795.5862951344, "x2": -952169.1505886896, "y2": -1861878.3173754946, "span": 3280.6, "span_m": 3.281, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B88", "layer": "!!0-GIRDER", "x1": -935159.9194336438, "y1": -1839121.035003452, "x2": -937814.6032170388, "y2": -1846414.7187335556, "span": 7761.8, "span_m": 7.762, "width": 638.5, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B89", "layer": "!!0-GIRDER", "x1": -937985.6132891274, "y1": -1846884.565043793, "x2": -940619.1683991401, "y2": -1854120.19822104, "span": 7700.0, "span_m": 7.7, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B90", "layer": "!!0-GIRDER", "x1": -940790.1784712281, "y1": -1854590.044531276, "x2": -943170.6386722056, "y2": -1861130.30516293, "span": 6960.0, "span_m": 6.96, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B91", "layer": "!!0-GIRDER", "x1": -943341.648744294, "y1": -1861600.1514731676, "x2": -944463.6711020265, "y2": -1864682.8825564673, "span": 3280.6, "span_m": 3.281, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B92", "layer": "!!0-GIRDER", "x1": -927475.2107219716, "y1": -1841982.6674871687, "x2": -930109.1248142584, "y2": -1849219.2835125336, "span": 7701.0, "span_m": 7.701, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B93", "layer": "!!0-GIRDER", "x1": -930280.134958287, "y1": -1849689.129796587, "x2": -932913.6911761771, "y2": -1856924.762570599, "span": 7700.0, "span_m": 7.7, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B94", "layer": "!!0-GIRDER", "x1": -933084.7013202052, "y1": -1857394.6088546515, "x2": -935465.1625225886, "y2": -1863934.869121823, "span": 6960.0, "span_m": 6.96, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B95", "layer": "!!0-GIRDER", "x1": -935636.1726639988, "y1": -1864404.7153986825, "x2": -936758.1954961495, "y2": -1867487.4463168036, "span": 3280.6, "span_m": 3.281, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B96", "layer": "!!0-GIRDER", "x1": -919769.7312222761, "y1": -1844787.2326695526, "x2": -922403.6453132255, "y2": -1852023.8486912423, "span": 7701.0, "span_m": 7.701, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B97", "layer": "!!0-GIRDER", "x1": -922574.655457254, "y1": -1852493.694975296, "x2": -925208.211675144, "y2": -1859729.327749308, "span": 7700.0, "span_m": 7.7, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B98", "layer": "!!0-GIRDER", "x1": -925379.2218191725, "y1": -1860199.174033361, "x2": -927759.6830215558, "y2": -1866739.434300532, "span": 6960.0, "span_m": 6.96, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B99", "layer": "!!0-GIRDER", "x1": -927930.6931629658, "y1": -1867209.2805773914, "x2": -929052.715997525, "y2": -1870292.0115021295, "span": 3280.6, "span_m": 3.281, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B100", "layer": "!!0-GIRDER", "x1": -915958.2855692825, "y1": -1854635.812229942, "x2": -922268.9432480228, "y2": -1852338.920676577, "span": 6715.7, "span_m": 6.716, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B101", "layer": "!!0-GIRDER", "x1": -922738.78955838, "y1": -1852167.9106049528, "x2": -929959.7056196318, "y2": -1849539.7120949118, "span": 7684.3, "span_m": 7.684, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B102", "layer": "!!0-GIRDER", "x1": -930429.5519299889, "y1": -1849368.7020232875, "x2": -937665.1851121852, "y2": -1846735.1469192891, "span": 7700.0, "span_m": 7.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B103", "layer": "!!0-GIRDER", "x1": -938135.0314225422, "y1": -1846564.1368476646, "x2": -945370.6646017664, "y2": -1843930.5817447482, "span": 7700.0, "span_m": 7.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B104", "layer": "!!0-GIRDER", "x1": -955673.2099339952, "y1": -1848907.01964087, "x2": -954283.2318123603, "y2": -1849412.9303033515, "span": 1479.2, "span_m": 1.479, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B105", "layer": "!!0-GIRDER", "x1": -953813.3855020032, "y1": -1849583.940374976, "x2": -948645.076087544, "y2": -1851465.0511630385, "span": 5500.0, "span_m": 5.5, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B106", "layer": "!!0-GIRDER", "x1": -948175.229777187, "y1": -1851636.061234663, "x2": -940939.5965969692, "y2": -1854269.616337941, "span": 7700.0, "span_m": 7.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B107", "layer": "!!0-GIRDER", "x1": -940469.7502866118, "y1": -1854440.626409566, "x2": -933234.1171059613, "y2": -1857074.181513001, "span": 7700.0, "span_m": 7.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B108", "layer": "!!0-GIRDER", "x1": -932764.2707956046, "y1": -1857245.1915846255, "x2": -925528.6376156277, "y2": -1859878.7466878165, "span": 7700.0, "span_m": 7.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B109", "layer": "!!0-GIRDER", "x1": -925058.7913052705, "y1": -1860049.7567594405, "x2": -918762.8507447179, "y2": -1862341.2917198515, "span": 6700.0, "span_m": 6.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B110", "layer": "!!0-GIRDER", "x1": -918293.0044343609, "y1": -1862512.301791476, "x2": -914816.1417390414, "y2": -1863777.7763210156, "span": 3700.0, "span_m": 3.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B111", "layer": "!!0-GIRDER", "x1": -921314.3210124784, "y1": -1869351.398663673, "x2": -927610.2615716453, "y2": -1867059.8637037664, "span": 6700.0, "span_m": 6.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B112", "layer": "!!0-GIRDER", "x1": -928080.1078820024, "y1": -1866888.8536321418, "x2": -935315.741061526, "y2": -1864255.2985291164, "span": 7700.0, "span_m": 7.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B113", "layer": "!!0-GIRDER", "x1": -935785.5873718829, "y1": -1864084.288457492, "x2": -943021.2205530712, "y2": -1861450.7333538604, "span": 7700.0, "span_m": 7.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B114", "layer": "!!0-GIRDER", "x1": -943491.0668634285, "y1": -1861279.7232822361, "x2": -950726.700042143, "y2": -1858646.168179505, "span": 7700.0, "span_m": 7.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B115", "layer": "!!0-GIRDER", "x1": -919464.3780732977, "y1": -1844633.4411854548, "x2": -911543.4583026888, "y2": -1847516.420209541, "span": 8429.3, "span_m": 8.429, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B116", "layer": "!!0-GIRDER", "x1": -911073.6119923315, "y1": -1847687.430281165, "x2": -908972.0882337842, "y2": -1848452.32237602, "span": 2236.4, "span_m": 2.236, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B117", "layer": "!!0-GIRDER", "x1": -919934.2243836545, "y1": -1844462.4311138305, "x2": -927155.140444906, "y2": -1841834.2326037895, "span": 7684.3, "span_m": 7.684, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B118", "layer": "!!0-GIRDER", "x1": -927624.986755263, "y1": -1841663.2225321655, "x2": -934609.5895874549, "y2": -1839121.0350034526, "span": 7432.9, "span_m": 7.433, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B119", "layer": "!!0-GIRDER", "x1": -938445.612462469, "y1": -1837724.8368591894, "x2": -942566.0994270411, "y2": -1836225.1022536256, "span": 4384.9, "span_m": 4.385, "width": 532.1, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B121", "layer": "!!0-GIRDER", "x1": -920844.4747071855, "y1": -1869522.408733455, "x2": -917367.6120118661, "y2": -1870787.8832629945, "span": 3700.0, "span_m": 3.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B122", "layer": "!!0-GIRDER", "x1": -915488.4392591307, "y1": -1854806.8223000015, "x2": -912011.5765638113, "y2": -1856072.296829541, "span": 3700.0, "span_m": 3.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B123", "layer": "!!0-GIRDER", "x1": -926117.0082566333, "y1": -1838251.03500345, "x2": -927304.5596464393, "y2": -1841513.8040188975, "span": 3472.2, "span_m": 3.472, "width": 638.5, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B124", "layer": "!!0-GIRDER", "x1": -918148.1587849398, "y1": -1840286.2058549142, "x2": -919613.7972652202, "y2": -1844313.012604061, "span": 4285.2, "span_m": 4.285, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B125", "layer": "!!0-GIRDER", "x1": -943035.58784765, "y1": -1836053.108888002, "x2": -944149.5364059284, "y2": -1835647.6647703452, "span": 1185.4, "span_m": 1.185, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B126", "layer": "!!0-GIRDER", "x1": -947099.6235088472, "y1": -1812961.035002853, "x2": -947099.6235088472, "y2": -1819439.647849278, "span": 6478.6, "span_m": 6.479, "width": 500.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B127", "layer": "!!0-GIRDER", "x1": -947099.6235088472, "y1": -1820039.647847895, "x2": -947099.6235088472, "y2": -1827639.6478484995, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B128", "layer": "!!0-GIRDER", "x1": -947099.6235088472, "y1": -1828239.647847896, "x2": -947099.6235088472, "y2": -1830481.3352836196, "span": 2241.7, "span_m": 2.242, "width": 500.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B129", "layer": "!!0-GIRDER", "x1": -955299.6235088477, "y1": -1812961.035002853, "x2": -955299.6235088477, "y2": -1819439.647850057, "span": 6478.6, "span_m": 6.479, "width": 500.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B130", "layer": "!!0-GIRDER", "x1": -955299.6235088477, "y1": -1820039.647847895, "x2": -955299.6235088477, "y2": -1827880.417664662, "span": 7840.8, "span_m": 7.841, "width": 500.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B131", "layer": "!!0-GIRDER", "x1": -940499.6235088472, "y1": -1812961.035002853, "x2": -940499.6235088472, "y2": -1819439.6478486515, "span": 6478.6, "span_m": 6.479, "width": 500.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B132", "layer": "!!0-GIRDER", "x1": -940499.6235088472, "y1": -1820039.647847895, "x2": -940499.6235088472, "y2": -1827639.6478478725, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B133", "layer": "!!0-GIRDER", "x1": -940499.6235088472, "y1": -1828239.647847896, "x2": -940499.6235088472, "y2": -1836711.193534451, "span": 8471.5, "span_m": 8.472, "width": 500.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B134", "layer": "!!0-GIRDER", "x1": -932299.6235088474, "y1": -1812961.035002852, "x2": -932299.6235088474, "y2": -1819439.647847872, "span": 6478.6, "span_m": 6.479, "width": 500.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B135", "layer": "!!0-GIRDER", "x1": -932299.6235088474, "y1": -1820039.647847895, "x2": -932299.6235088474, "y2": -1827639.647847884, "span": 7600.0, "span_m": 7.6, "width": 500.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B137", "layer": "!!0-GIRDER", "x1": -955049.6235088607, "y1": -1819739.647847884, "x2": -947349.6235088137, "y2": -1819739.647847884, "span": 7700.0, "span_m": 7.7, "width": 600.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B138", "layer": "!!0-GIRDER", "x1": -946849.6235088614, "y1": -1819739.647847884, "x2": -940749.6235088141, "y2": -1819739.647847884, "span": 6100.0, "span_m": 6.1, "width": 600.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B139", "layer": "!!0-GIRDER", "x1": -940249.6235088612, "y1": -1819739.647847884, "x2": -932549.6235088137, "y2": -1819739.647847884, "span": 7700.0, "span_m": 7.7, "width": 600.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B140", "layer": "!!0-GIRDER", "x1": -932049.6235088607, "y1": -1819739.647847884, "x2": -925748.5530247707, "y2": -1819739.647847884, "span": 6301.1, "span_m": 6.301, "width": 600.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B141", "layer": "!!0-GIRDER", "x1": -955222.5893598051, "y1": -1827939.647847884, "x2": -947349.6235088137, "y2": -1827939.647847884, "span": 7873.0, "span_m": 7.873, "width": 653.1, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B142", "layer": "!!0-GIRDER", "x1": -946849.6235088606, "y1": -1827939.647847884, "x2": -940749.6235088146, "y2": -1827939.647847884, "span": 6100.0, "span_m": 6.1, "width": 600.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B143", "layer": "!!0-GIRDER", "x1": -940249.6235088615, "y1": -1827939.647847884, "x2": -932549.6235088474, "y2": -1827939.647847884, "span": 7700.0, "span_m": 7.7, "width": 600.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B144", "layer": "!!0-GIRDER", "x1": -930927.6179856248, "y1": -1828505.341425734, "x2": -932525.6124624066, "y2": -1828505.341424592, "span": 1598.0, "span_m": 1.598, "width": 531.4, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B145", "layer": "!!0-GIRDER", "x1": -1010070.667294736, "y1": -1825066.532270523, "x2": -1011284.053491562, "y2": -1828400.2834478794, "span": 3547.7, "span_m": 3.548, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B146", "layer": "!!0-GIRDER", "x1": -1011455.063563201, "y1": -1828870.1297582774, "x2": -1013746.59852318, "y2": -1835166.070317656, "span": 6700.0, "span_m": 6.7, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B147", "layer": "!!0-GIRDER", "x1": -1013934.709600613, "y1": -1835682.90125533, "x2": -1015234.3861449175, "y2": -1839253.733213937, "span": 3800.0, "span_m": 3.8, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B148", "layer": "!!0-GIRDER", "x1": -1002263.504647769, "y1": -1827591.725269265, "x2": -1003578.5740006736, "y2": -1831204.848621929, "span": 3845.0, "span_m": 3.845, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B149", "layer": "!!0-GIRDER", "x1": -1003749.584072313, "y1": -1831674.694932328, "x2": -1006041.1190322919, "y2": -1837970.635491706, "span": 6700.0, "span_m": 6.7, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B150", "layer": "!!0-GIRDER", "x1": -993537.2469136197, "y1": -1827591.725269265, "x2": -995873.094509785, "y2": -1834009.413795979, "span": 6829.6, "span_m": 6.83, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B151", "layer": "!!0-GIRDER", "x1": -996044.1045814246, "y1": -1834479.260106379, "x2": -998335.6395414033, "y2": -1840775.2006657566, "span": 6700.0, "span_m": 6.7, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B152", "layer": "!!0-GIRDER", "x1": -984810.9891794861, "y1": -1827591.725269305, "x2": -985363.0498439737, "y2": -1829108.4994793814, "span": 1614.1, "span_m": 1.614, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B153", "layer": "!!0-GIRDER", "x1": -985534.0599156137, "y1": -1829578.3457897825, "x2": -988167.6150188971, "y2": -1836813.978970029, "span": 7700.0, "span_m": 7.7, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B154", "layer": "!!0-GIRDER", "x1": -988338.625090537, "y1": -1837283.8252804293, "x2": -990630.1600505156, "y2": -1843579.7658398065, "span": 6700.0, "span_m": 6.7, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B155", "layer": "!!0-GIRDER", "x1": -980271.7812385829, "y1": -1831493.6585902534, "x2": -982905.3363423287, "y2": -1838729.2917717705, "span": 7700.0, "span_m": 7.7, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B156", "layer": "!!0-GIRDER", "x1": -983076.3464139687, "y1": -1839199.1380821709, "x2": -985367.8813739471, "y2": -1845495.0786415476, "span": 6700.0, "span_m": 6.7, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B157", "layer": "!!0-GIRDER", "x1": -972566.3017480192, "y1": -1834298.223765624, "x2": -975199.8568513026, "y2": -1841533.856945871, "span": 7700.0, "span_m": 7.7, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B158", "layer": "!!0-GIRDER", "x1": -975370.8669229425, "y1": -1842003.7032562715, "x2": -977662.4018829209, "y2": -1848299.643815648, "span": 6700.0, "span_m": 6.7, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B159", "layer": "!!0-GIRDER", "x1": -964860.8222571311, "y1": -1837102.788939675, "x2": -967494.3773604145, "y2": -1844338.422119922, "span": 7700.0, "span_m": 7.7, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B160", "layer": "!!0-GIRDER", "x1": -967665.3874320544, "y1": -1844808.268430322, "x2": -969956.922392033, "y2": -1851104.2089896984, "span": 6700.0, "span_m": 6.7, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B161", "layer": "!!0-GIRDER", "x1": -1006229.230110035, "y1": -1838487.466430234, "x2": -1007528.9066543395, "y2": -1842058.2983888406, "span": 3800.0, "span_m": 3.8, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B162", "layer": "!!0-GIRDER", "x1": -998523.7506193039, "y1": -1841292.031604716, "x2": -999823.427163608, "y2": -1844862.863563323, "span": 3800.0, "span_m": 3.8, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B163", "layer": "!!0-GIRDER", "x1": -990818.2711289602, "y1": -1844096.596780265, "x2": -992117.9476732645, "y2": -1847667.4287388725, "span": 3800.0, "span_m": 3.8, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B164", "layer": "!!0-GIRDER", "x1": -985453.3864096887, "y1": -1845730.001796961, "x2": -986753.0629539931, "y2": -1849300.8337555686, "span": 3800.0, "span_m": 3.8, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B165", "layer": "!!0-GIRDER", "x1": -977747.9069188242, "y1": -1848534.5669710771, "x2": -979047.5834631285, "y2": -1852105.3989296844, "span": 3800.0, "span_m": 3.8, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B166", "layer": "!!0-GIRDER", "x1": -970042.4274285301, "y1": -1851339.13214676, "x2": -971342.1039728344, "y2": -1854909.9641053665, "span": 3800.0, "span_m": 3.8, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B167", "layer": "!!0-GIRDER", "x1": -951196.5463498236, "y1": -1858475.1581005265, "x2": -956364.8557655179, "y2": -1856594.047312014, "span": 5500.0, "span_m": 5.5, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B168", "layer": "!!0-GIRDER", "x1": -956834.7020758749, "y1": -1856423.0372403895, "x2": -957800.9491097103, "y2": -1856071.352081178, "span": 1028.3, "span_m": 1.028, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B169", "layer": "!!0-GIRDER", "x1": -972229.9945253449, "y1": -1812961.035002853, "x2": -969310.7986743997, "y2": -1815589.4907528511, "span": 3928.2, "span_m": 3.928, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B170", "layer": "!!0-GIRDER", "x1": -968939.2262616432, "y1": -1815924.0560560091, "x2": -963957.6211168227, "y2": -1820409.513475005, "span": 6703.4, "span_m": 6.703, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B171", "layer": "!!0-GIRDER", "x1": -978238.4301882292, "y1": -1818585.2036149125, "x2": -974797.669646249, "y2": -1821683.2783220299, "span": 4630.0, "span_m": 4.63, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B172", "layer": "!!0-GIRDER", "x1": -974426.0972334918, "y1": -1822017.8436251879, "x2": -969444.4920871583, "y2": -1826503.301045546, "span": 6703.4, "span_m": 6.703, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B173", "layer": "!!0-GIRDER", "x1": -979077.4935147321, "y1": -1826810.123409578, "x2": -974779.1660914236, "y2": -1822036.3471799556, "span": 6423.7, "span_m": 6.424, "width": 747.2, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B174", "layer": "!!0-GIRDER", "x1": -974444.6007882933, "y1": -1821664.774767235, "x2": -969292.2951195751, "y2": -1815942.559610776, "span": 7700.0, "span_m": 7.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B175", "layer": "!!0-GIRDER", "x1": -968957.7298164447, "y1": -1815570.9871980564, "x2": -966607.7183046874, "y2": -1812961.035002853, "span": 3512.0, "span_m": 3.512, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B176", "layer": "!!0-GIRDER", "x1": -954086.8290552893, "y1": -1849750.459503957, "x2": -957773.8062095802, "y2": -1859880.3459528522, "span": 10780.0, "span_m": 10.78, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B177", "layer": "!!0-GIRDER", "x1": -915688.5397865355, "y1": -1854441.3427781165, "x2": -911448.0107992922, "y2": -1847817.204702821, "span": 7865.2, "span_m": 7.865, "width": 628.1, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B178", "layer": "!!0-GIRDER", "x1": -964590.4778694091, "y1": -1847151.2484233282, "x2": -967273.6258935656, "y2": -1854523.1370338525, "span": 7845.0, "span_m": 7.845, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B179", "layer": "!!0-GIRDER", "x1": -965745.3993418022, "y1": -1853818.3153490885, "x2": -966761.1991675756, "y2": -1856609.2024335023, "span": 2970.0, "span_m": 2.97, "width": 1790.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B180", "layer": "!!0-GIRDER", "x1": -962391.5971367372, "y1": -1847951.5755586019, "x2": -964464.239205018, "y2": -1853646.1128406608, "span": 6060.0, "span_m": 6.06, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B181", "layer": "!!0-GIRDER", "x1": -963584.1063139555, "y1": -1854604.9616786344, "x2": -964599.9061397112, "y2": -1857395.848762998, "span": 2970.0, "span_m": 2.97, "width": 1810.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B182", "layer": "!!0-GIRDER", "x1": -960220.9071826752, "y1": -1848741.6420895848, "x2": -962293.5492509562, "y2": -1854436.179371644, "span": 6060.0, "span_m": 6.06, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B183", "layer": "!!0-GIRDER", "x1": -961418.1148230016, "y1": -1855393.3181088974, "x2": -962433.914648739, "y2": -1858184.205193212, "span": 2970.0, "span_m": 2.97, "width": 1800.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B184", "layer": "!!0-GIRDER", "x1": -958059.6141548295, "y1": -1849528.2884191289, "x2": -960132.2562231102, "y2": -1855222.8257011885, "span": 6060.0, "span_m": 6.06, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B185", "layer": "!!0-GIRDER", "x1": -959397.7756882787, "y1": -1856128.6614169506, "x2": -960413.5755139991, "y2": -1858919.5485012175, "span": 2970.0, "span_m": 2.97, "width": 1500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B186", "layer": "!!0-GIRDER", "x1": -956180.228913227, "y1": -1850212.328705683, "x2": -958252.8709815103, "y2": -1855906.8659877488, "span": 6060.0, "span_m": 6.06, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B187", "layer": "!!0-GIRDER", "x1": -916684.3050680446, "y1": -1840616.8112599975, "x2": -909739.3930366543, "y2": -1843144.5525196486, "span": 7390.6, "span_m": 7.391, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B188", "layer": "!!0-GIRDER", "x1": -925448.5530247708, "y1": -1819701.027015533, "x2": -925448.553024771, "y2": -1812961.035002852, "span": 6740.0, "span_m": 6.74, "width": 600.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B189", "layer": "!!0-GIRDER", "x1": -925450.6585760406, "y1": -1820902.0965982117, "x2": -925455.6143690919, "y2": -1822292.1045855284, "span": 1390.0, "span_m": 1.39, "width": 600.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B190", "layer": "!!0-GIRDER", "x1": -980089.1896174655, "y1": -1830983.3673986676, "x2": -979370.8384197431, "y2": -1827591.7252693041, "span": 3466.9, "span_m": 3.467, "width": 600.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B191", "layer": "!!0-GIRDER", "x1": -972331.2060381469, "y1": -1833798.4938316655, "x2": -970621.105317339, "y2": -1829100.030729507, "span": 5000.0, "span_m": 5.0, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B192", "layer": "!!0-GIRDER", "x1": -970788.6320648342, "y1": -1828712.6905499063, "x2": -979026.6511863435, "y2": -1827296.0648937596, "span": 8358.9, "span_m": 8.359, "width": 613.7, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B193", "layer": "!!0-GIRDER", "x1": -970472.4611925116, "y1": -1828678.0377854065, "x2": -969667.0424451506, "y2": -1827288.6938840835, "span": 1605.9, "span_m": 1.606, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B194", "layer": "!!0-GIRDER", "x1": -964672.7111781248, "y1": -1836585.957999087, "x2": -963727.5838349423, "y2": -1832310.3814310138, "span": 4378.8, "span_m": 4.379, "width": 600.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B195", "layer": "!!0-GIRDER", "x1": -962949.2784938868, "y1": -1820031.583166881, "x2": -955537.8063667609, "y2": -1819739.4150161338, "span": 7417.2, "span_m": 7.417, "width": 600.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B196", "layer": "!!0-GIRDER", "x1": -963264.1340089387, "y1": -1819873.1233683499, "x2": -963499.6235086824, "y2": -1813261.035000924, "span": 6616.3, "span_m": 6.616, "width": 500.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B198", "layer": "!!0-GIRDER", "x1": -956577.3528045221, "y1": -1849695.3252096025, "x2": -957564.0300563624, "y2": -1849336.2040591615, "span": 1050.0, "span_m": 1.05, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B199", "layer": "!!0-GIRDER", "x1": -958315.7841530037, "y1": -1849062.5879445355, "x2": -959725.3230842066, "y2": -1848549.5577296116, "span": 1500.0, "span_m": 1.5, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B200", "layer": "!!0-GIRDER", "x1": -958889.4089731049, "y1": -1856047.6473262222, "x2": -959876.0862249451, "y2": -1855688.5261757816, "span": 1050.0, "span_m": 1.05, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B201", "layer": "!!0-GIRDER", "x1": -960627.8403215865, "y1": -1855414.9100611554, "x2": -962037.3792527893, "y2": -1854901.8798462315, "span": 1500.0, "span_m": 1.5, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B202", "layer": "!!0-GIRDER", "x1": -962789.133349431, "y1": -1854628.2637316096, "x2": -964208.0692068315, "y2": -1854111.81331526, "span": 1510.0, "span_m": 1.51, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B203", "layer": "!!0-GIRDER", "x1": -964959.8233034901, "y1": -1853838.197200629, "x2": -966328.5643609872, "y2": -1853340.0161973573, "span": 1456.6, "span_m": 1.457, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B204", "layer": "!!0-GIRDER", "x1": -923109.7969828531, "y1": -1819702.269045349, "x2": -923109.7969828533, "y2": -1812962.277032668, "span": 6740.0, "span_m": 6.74, "width": 600.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B205", "layer": "!!0-GIRDER", "x1": -920804.3723608897, "y1": -1819702.279604335, "x2": -920804.3723608899, "y2": -1812962.287591654, "span": 6740.0, "span_m": 6.74, "width": 600.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B206", "layer": "!!0-GIRDER", "x1": -918499.7969827474, "y1": -1819702.269045347, "x2": -918499.7969827476, "y2": -1812962.277032666, "span": 6740.0, "span_m": 6.74, "width": 600.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B207", "layer": "!!0-GIRDER", "x1": -915925.0203477604, "y1": -1838530.6936426156, "x2": -908980.1083163702, "y2": -1841058.4349022666, "span": 7390.6, "span_m": 7.391, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B208", "layer": "!!0-GIRDER", "x1": -915138.3740304135, "y1": -1836369.4006553704, "x2": -908193.4619990232, "y2": -1838897.1419150215, "span": 7390.6, "span_m": 7.391, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B209", "layer": "!!0-GIRDER", "x1": -922809.7969828531, "y1": -1819952.269046939, "x2": -921099.797874648, "y2": -1819952.269046939, "span": 1710.0, "span_m": 1.71, "width": 500.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B210", "layer": "!!0-GIRDER", "x1": -923409.7969828529, "y1": -1819951.027012869, "x2": -925148.552133317, "y2": -1819951.02701287, "span": 1738.8, "span_m": 1.739, "width": 500.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B211", "layer": "!!0-GIRDER", "x1": -920500.2352414636, "y1": -1819952.2686612036, "x2": -918800.2413575768, "y2": -1819955.2488136445, "span": 1700.0, "span_m": 1.7, "width": 500.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B213", "layer": "!!0-GIRDER", "x1": -913772.5612481555, "y1": -1831885.9091266375, "x2": -912232.5687078857, "y2": -1827667.3851404756, "span": 4490.8, "span_m": 4.491, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B214", "layer": "!!0-GIRDER", "x1": -914600.3316448068, "y1": -1834160.1902576257, "x2": -915270.6911403551, "y2": -1836001.9878341034, "span": 1960.0, "span_m": 1.96, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B215", "layer": "!!0-GIRDER", "x1": -915475.9032285165, "y1": -1836565.803405454, "x2": -916057.3374598227, "y2": -1838163.2808202435, "span": 1700.0, "span_m": 1.7, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B216", "layer": "!!0-GIRDER", "x1": -916262.5495459703, "y1": -1838727.096392993, "x2": -916816.62217828, "y2": -1840249.3984386236, "span": 1620.0, "span_m": 1.62, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B217", "layer": "!!0-GIRDER", "x1": -969242.6508339457, "y1": -1826677.5447355926, "x2": -968279.1027604435, "y2": -1825607.416187222, "span": 1440.0, "span_m": 1.44, "width": 400.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B218", "layer": "!!0-GIRDER", "x1": -967743.7982753344, "y1": -1825012.900326759, "x2": -966358.6979202424, "y2": -1823474.5905379513, "span": 2070.0, "span_m": 2.07, "width": 400.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B219", "layer": "!!0-GIRDER", "x1": -965823.3934351847, "y1": -1822880.0746775423, "x2": -965020.4367075978, "y2": -1821988.3008869323, "span": 1200.0, "span_m": 1.2, "width": 400.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B220", "layer": "!!0-GIRDER", "x1": -964485.1322225397, "y1": -1821393.7850265247, "x2": -963655.410270697, "y2": -1820472.2854428897, "span": 1240.0, "span_m": 1.24, "width": 400.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B221", "layer": "!!0-GIRDER", "x1": -909765.9782240032, "y1": -1843947.4652782404, "x2": -911210.9223367264, "y2": -1847332.6557095326, "span": 3680.7, "span_m": 3.681, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B222", "layer": "!!0-GIRDER", "x1": -953902.2960889296, "y1": -1849256.6636051105, "x2": -950485.6170075729, "y2": -1841992.062987701, "span": 8028.0, "span_m": 8.028, "width": 600.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B223", "layer": "!!0-GIRDER", "x1": -945912.5446312876, "y1": -1843692.5604883684, "x2": -950393.7594935576, "y2": -1841910.061929103, "span": 4822.7, "span_m": 4.823, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B224", "layer": "!!0-GIRDER", "x1": -1018247.493514732, "y1": -1824891.725108349, "x2": -1020122.491850436, "y2": -1824891.725108349, "span": 1875.0, "span_m": 1.875, "width": 400.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B225", "layer": "!!0-GIRDER", "x1": -1020122.491850436, "y1": -1824891.725108349, "x2": -1021419.9529898304, "y2": -1830095.557508273, "span": 5363.1, "span_m": 5.363, "width": 507.6, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B226", "layer": "!!0-GIRDER", "x1": -1021072.945011994, "y1": -1830439.882034608, "x2": -1022120.431066658, "y2": -1834641.1191307963, "span": 4329.9, "span_m": 4.33, "width": 400.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B227", "layer": "!!0-GIRDER", "x1": -1021683.797989845, "y1": -1834749.983983812, "x2": -1022714.3852648445, "y2": -1838883.443777813, "span": 4260.0, "span_m": 4.26, "width": 400.0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B228", "layer": "!!0-GIRDER", "x1": -969346.8712674802, "y1": -1827391.0838734265, "x2": -964115.1316954904, "y2": -1832101.7633423018, "span": 7040.0, "span_m": 7.04, "width": 400.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B229", "layer": "!!0-GIRDER", "x1": -963453.552642707, "y1": -1831890.0721591394, "x2": -962490.0045691994, "y2": -1830819.943610765, "span": 1440.0, "span_m": 1.44, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B230", "layer": "!!0-GIRDER", "x1": -962136.935711304, "y1": -1830801.4400560376, "x2": -961103.9644038461, "y2": -1831731.531598826, "span": 1390.0, "span_m": 1.39, "width": 500.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B231", "layer": "!!0-GIRDER", "x1": -956134.7645727748, "y1": -1849590.3697088566, "x2": -954726.2339903428, "y2": -1845720.463738359, "span": 4118.3, "span_m": 4.118, "width": 400.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B232", "layer": "!!0-GIRDER", "x1": -954726.2339903428, "y1": -1845720.463738359, "x2": -950771.6091752327, "y2": -1841330.8653512043, "span": 5908.3, "span_m": 5.908, "width": 400.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B234", "layer": "!!0-GIRDER", "x1": -950200.6095394267, "y1": -1841844.9955287254, "x2": -947002.1652839822, "y2": -1838292.7633102601, "span": 4780.0, "span_m": 4.78, "width": 565.7, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B235", "layer": "!!0-GIRDER", "x1": -946890.6935601346, "y1": -1838393.1329012262, "x2": -944040.1971772044, "y2": -1835227.3359445615, "span": 4260.0, "span_m": 4.26, "width": 565.7, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B236", "layer": "!!0-GIRDER", "x1": -944040.1971772044, "y1": -1835227.3359445615, "x2": -946886.4418589034, "y2": -1832664.565722345, "span": 3830.0, "span_m": 3.83, "width": 565.7, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B237", "layer": "!!0-GIRDER", "x1": -946886.4418589034, "y1": -1832664.565722345, "x2": -946003.1894585557, "y2": -1831683.614552674, "span": 1320.0, "span_m": 1.32, "width": 400.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B238", "layer": "!!0-GIRDER", "x1": -946003.1894585557, "y1": -1831683.614552674, "x2": -948645.0693132442, "y2": -1829304.855247193, "span": 3555.0, "span_m": 3.555, "width": 565.7, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B239", "layer": "!!0-GIRDER", "x1": -948645.0693132442, "y1": -1829304.855247193, "x2": -951181.0743112082, "y2": -1832121.3741358675, "span": 3790.0, "span_m": 3.79, "width": 565.7, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B240", "layer": "!!0-GIRDER", "x1": -951181.0743112082, "y1": -1832121.3741358675, "x2": -952988.1773334296, "y2": -1830494.2512663545, "span": 2431.7, "span_m": 2.432, "width": 400.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B241", "layer": "!!0-GIRDER", "x1": -952827.5946780065, "y1": -1830315.9061595555, "x2": -957132.5726540337, "y2": -1826439.1342322961, "span": 5793.3, "span_m": 5.793, "width": 542.6, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B242", "layer": "!!0-GIRDER", "x1": -957724.9344047477, "y1": -1825004.730259005, "x2": -962956.6739766864, "y2": -1820294.0507901625, "span": 7040.0, "span_m": 7.04, "width": 400.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B244", "layer": "!!0-GIRDER", "x1": -961776.9458532119, "y1": -1833076.743837991, "x2": -960320.3819950953, "y2": -1834388.239826485, "span": 1960.0, "span_m": 1.96, "width": 565.7, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B245", "layer": "!!0-GIRDER", "x1": -960320.3819950953, "y1": -1834388.239826485, "x2": -963933.6872692177, "y2": -1838401.2218842395, "span": 5400.0, "span_m": 5.4, "width": 400.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B246", "layer": "!!0-GIRDER", "x1": -963933.6872692177, "y1": -1838401.2218842395, "x2": -961356.4366144117, "y2": -1840721.788796788, "span": 3468.0, "span_m": 3.468, "width": 565.7, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B247", "layer": "!!0-GIRDER", "x1": -961356.4366144117, "y1": -1840721.788796788, "x2": -962015.7909200113, "y2": -1842533.349863084, "span": 1927.8, "span_m": 1.928, "width": 400.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B248", "layer": "!!0-GIRDER", "x1": -962015.7909200113, "y1": -1842533.349863084, "x2": -964646.9302582578, "y2": -1841575.6934618994, "span": 2800.0, "span_m": 2.8, "width": 400.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B249", "layer": "!!0-GIRDER", "x1": -964646.9302582578, "y1": -1841575.6934618994, "x2": -966295.4673488712, "y2": -1846105.0118941765, "span": 4820.0, "span_m": 4.82, "width": 565.7, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B250", "layer": "!!0-GIRDER", "x1": -966295.4673488712, "y1": -1846105.0118941765, "x2": -964735.5775983377, "y2": -1846672.7653320231, "span": 1660.0, "span_m": 1.66, "width": 565.7, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B251", "layer": "!!0-GIRDER", "x1": -1019119.807023052, "y1": -1826106.9957285465, "x2": -1020873.3397603155, "y2": -1830052.6656463924, "span": 4317.8, "span_m": 4.318, "width": 607.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B252", "layer": "!!0-GIRDER", "x1": -918817.7774158714, "y1": -1874772.1799847386, "x2": -922294.6401113272, "y2": -1873506.7054552794, "span": 3700.0, "span_m": 3.7, "width": 400.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B253", "layer": "!!0-GIRDER", "x1": -922764.4864219431, "y1": -1873335.6953834589, "x2": -929060.4269821917, "y2": -1871044.160423133, "span": 6700.0, "span_m": 6.7, "width": 400.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B254", "layer": "!!0-GIRDER", "x1": -929530.2732926983, "y1": -1870873.1503524724, "x2": -936765.9064695582, "y2": -1868239.595242601, "span": 7700.0, "span_m": 7.7, "width": 400.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B255", "layer": "!!0-GIRDER", "x1": -937235.7527826987, "y1": -1868068.5851778865, "x2": -944471.3859649508, "y2": -1865435.0300763715, "span": 7700.0, "span_m": 7.7, "width": 400.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B256", "layer": "!!0-GIRDER", "x1": -944941.2322750482, "y1": -1865264.0200043845, "x2": -952187.7451978162, "y2": -1862626.5049962439, "span": 7711.6, "span_m": 7.712, "width": 400.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B257", "layer": "!!0-GIRDER", "x1": -952657.591508213, "y1": -1862455.4949245993, "x2": -957815.0211798856, "y2": -1860578.344039007, "span": 5488.4, "span_m": 5.488, "width": 400.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B263", "layer": "!!0-GIRDER", "x1": -934142.6179856256, "y1": -1828405.341424659, "x2": -929310.6124624036, "y2": -1828405.341425667, "span": 4832.0, "span_m": 4.832, "width": 1531.4, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B268", "layer": "!!0-GIRDER", "x1": -924715.6124624041, "y1": -1822691.035002847, "x2": -924715.6124624062, "y2": -1824711.035003453, "span": 2020.0, "span_m": 2.02, "width": 565.7, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B269", "layer": "!!0-GIRDER", "x1": -929205.6124624043, "y1": -1838051.03500345, "x2": -923382.8608471849, "y2": -1838051.03500345, "span": 5822.8, "span_m": 5.823, "width": 400.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B270", "layer": "!!0-GIRDER", "x1": -923382.8608471849, "y1": -1838051.03500345, "x2": -917912.4701567391, "y2": -1840042.094390817, "span": 5821.5, "span_m": 5.821, "width": 406.2, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B271", "layer": "!!0-GIRDER", "x1": -915356.2318977797, "y1": -1833459.3939552465, "x2": -916426.8975993752, "y2": -1833069.703507796, "span": 1139.4, "span_m": 1.139, "width": 400.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B273", "layer": "!!0-GIRDER", "x1": -916125.9198724175, "y1": -1832242.77400181, "x2": -918095.6124624066, "y2": -1831525.864526154, "span": 2096.1, "span_m": 2.096, "width": 400.0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B274", "layer": "!!0-GIRDER", "x1": -918095.6124624066, "y1": -1831525.864526154, "x2": -918095.6124624066, "y2": -1827311.035003453, "span": 4214.8, "span_m": 4.215, "width": 488.3, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B277", "layer": "!!0-GIRDER", "x1": -912694.8821193336, "y1": -1827944.684494036, "x2": -916575.612462403, "y2": -1827224.471062908, "span": 3947.0, "span_m": 3.947, "width": 600.0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B279", "layer": "!!0-GIRDER", "x1": -916154.8608617826, "y1": -1854883.518005571, "x2": -918771.3149648615, "y2": -1862072.16655255, "span": 7650.0, "span_m": 7.65, "width": 0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B280", "layer": "!!0-GIRDER", "x1": -918942.3250369498, "y1": -1862542.012862787, "x2": -921322.7852379271, "y2": -1869082.27349444, "span": 6960.0, "span_m": 6.96, "width": 0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B281", "layer": "!!0-GIRDER", "x1": -921399.8260479354, "y1": -1869586.321819006, "x2": -922521.8484125297, "y2": -1872669.052921159, "span": 3280.6, "span_m": 3.281, "width": 0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B282", "layer": "!!0-GIRDER", "x1": -915591.0452894972, "y1": -1855088.730092078, "x2": -922055.2260108584, "y2": -1872848.920621015, "span": 18900.0, "span_m": 18.9, "width": 0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B283", "layer": "!!0-GIRDER", "x1": -932049.6235088474, "y1": -1827639.647847884, "x2": -928415.6124624045, "y2": -1827639.647847884, "span": 3634.0, "span_m": 3.634, "width": 0, "direction": "X방향", "col_start": "-", "col_end": "-"}, {"id": "B284", "layer": "!!0-GIRDER", "x1": -958223.1599122778, "y1": -1856556.186596051, "x2": -959238.9597379883, "y2": -1859347.07368029, "span": 2970.0, "span_m": 2.97, "width": 0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B285", "layer": "!!0-GIRDER", "x1": -960391.5721450282, "y1": -1848041.018459789, "x2": -963931.0031565843, "y2": -1846752.770925537, "span": 3766.6, "span_m": 3.767, "width": 0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B286", "layer": "!!0-GIRDER", "x1": -960562.5822166683, "y1": -1848510.86477019, "x2": -961981.5180740539, "y2": -1847994.414353846, "span": 1510.0, "span_m": 1.51, "width": 0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B287", "layer": "!!0-GIRDER", "x1": -962733.272170731, "y1": -1847720.798239209, "x2": -964102.0132282245, "y2": -1847222.617235938, "span": 1456.6, "span_m": 1.457, "width": 0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B296", "layer": "!!0-GIRDER", "x1": -936235.6124623885, "y1": -1830401.034985477, "x2": -936235.6124624038, "y2": -1829171.035001434, "span": 1230.0, "span_m": 1.23, "width": 0, "direction": "Y방향", "col_start": "-", "col_end": "-"}, {"id": "B301", "layer": "!!0-GIRDER", "x1": -916154.8608617826, "y1": -1854883.518005571, "x2": -918771.3149648615, "y2": -1862072.16655255, "span": 7650.0, "span_m": 7.65, "width": 0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B302", "layer": "!!0-GIRDER", "x1": -918942.3250369498, "y1": -1862542.012862787, "x2": -921322.7852379271, "y2": -1869082.27349444, "span": 6960.0, "span_m": 6.96, "width": 0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B303", "layer": "!!0-GIRDER", "x1": -921399.8260479354, "y1": -1869586.321819006, "x2": -922521.8484125297, "y2": -1872669.052921159, "span": 3280.6, "span_m": 3.281, "width": 0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B304", "layer": "!!0-GIRDER", "x1": -915591.0452894972, "y1": -1855088.730092078, "x2": -922055.2260108584, "y2": -1872848.920621015, "span": 18900.0, "span_m": 18.9, "width": 0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B305", "layer": "!!0-GIRDER", "x1": -958223.1599122778, "y1": -1856556.186596051, "x2": -959238.9597379883, "y2": -1859347.07368029, "span": 2970.0, "span_m": 2.97, "width": 0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B306", "layer": "!!0-GIRDER", "x1": -960391.5721450282, "y1": -1848041.018459789, "x2": -963931.0031565843, "y2": -1846752.770925537, "span": 3766.6, "span_m": 3.767, "width": 0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B307", "layer": "!!0-GIRDER", "x1": -960562.5822166683, "y1": -1848510.86477019, "x2": -961981.5180740539, "y2": -1847994.414353846, "span": 1510.0, "span_m": 1.51, "width": 0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B308", "layer": "!!0-GIRDER", "x1": -962733.272170731, "y1": -1847720.798239209, "x2": -964102.0132282245, "y2": -1847222.617235938, "span": 1456.6, "span_m": 1.457, "width": 0, "direction": "대각선", "col_start": "-", "col_end": "-"}, {"id": "B317", "layer": "!!0-GIRDER", "x1": -936235.6124623885, "y1": -1830401.034985477, "x2": -936235.6124624038, "y2": -1829171.035001434, "span": 1230.0, "span_m": 1.23, "width": 0, "direction": "Y방향", "col_start": "-", "col_end": "-"}];
+const COLUMNS = [];
+const BOUNDS  = {"xmin": -1028440.4314281356, "xmax": -902467.4158357321, "ymin": -1880498.2261480296, "ymax": -1807234.9888395441};
+
+// ── 상태 ────────────────────────────────────────────────────
+let selected = null;
+let dirFilter = 'all';
+let pan = { x: 0, y: 0 };
+let scale = 1;
+let isPanning = false, panStart = null, panOrigin = null;
+
+// ── 색상 ────────────────────────────────────────────────────
+const COLOR = { 'X방향':'#2196F3','Y방향':'#F44336','대각선':'#FF9800' };
+
+// ── 캔버스 초기화 ──────────────────────────────────────────
+const wrap = document.getElementById('canvasWrap');
+const cv   = document.getElementById('cv');
+const ctx  = cv.getContext('2d');
+document.getElementById('col-cnt').textContent = COLUMNS.length;
+
+function resize() {
+  cv.width  = wrap.clientWidth;
+  cv.height = wrap.clientHeight;
+  draw();
+}
+window.addEventListener('resize', resize);
+
+// ── 좌표 변환 ──────────────────────────────────────────────
+function toScreen(wx, wy) {
+  const W = cv.width, H = cv.height;
+  const bw = BOUNDS.xmax - BOUNDS.xmin;
+  const bh = BOUNDS.ymax - BOUNDS.ymin;
+  const base = Math.min(W/bw, H/bh) * scale;
+  const ox = (W - bw*base)/2 + pan.x;
+  const oy = (H - bh*base)/2 + pan.y;
+  return { x: ox + (wx - BOUNDS.xmin)*base,
+            y: oy + (BOUNDS.ymax - wy)*base };
+}
+function toWorld(sx, sy) {
+  const W = cv.width, H = cv.height;
+  const bw = BOUNDS.xmax - BOUNDS.xmin;
+  const bh = BOUNDS.ymax - BOUNDS.ymin;
+  const base = Math.min(W/bw, H/bh) * scale;
+  const ox = (W - bw*base)/2 + pan.x;
+  const oy = (H - bh*base)/2 + pan.y;
+  return { x: (sx - ox)/base + BOUNDS.xmin,
+            y: BOUNDS.ymax - (sy - oy)/base };
+}
+
+// ── 그리기 ──────────────────────────────────────────────────
+function draw() {
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+
+  // 기둥
+  COLUMNS.forEach(c => {
+    const p = toScreen(c.x, c.y);
+    const sz = Math.max(6, 300 * scale * Math.min(cv.width/(BOUNDS.xmax-BOUNDS.xmin), cv.height/(BOUNDS.ymax-BOUNDS.ymin)));
+    ctx.fillStyle = '#4CAF50';
+    ctx.globalAlpha = 0.8;
+    ctx.fillRect(p.x - sz/2, p.y - sz/2, sz, sz);
+    ctx.globalAlpha = 1;
+  });
+
+  // 보
+  const visible = BEAMS.filter(b =>
+    (dirFilter === 'all' || b.direction === dirFilter) &&
+    (document.getElementById('search').value === '' ||
+     b.id.toLowerCase().includes(document.getElementById('search').value.toLowerCase()))
+  );
+
+  visible.forEach(b => {
+    const p1 = toScreen(b.x1, b.y1);
+    const p2 = toScreen(b.x2, b.y2);
+    const col = COLOR[b.direction] || '#aaa';
+    const isSel = selected && selected.id === b.id;
+
+    // 폭 영역 (반투명)
+    if (b.width > 0) {
+      const dx = p2.x - p1.x, dy = p2.y - p1.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const bw = BOUNDS.xmax - BOUNDS.xmin;
+      const base = Math.min(cv.width/bw, cv.height/(BOUNDS.ymax-BOUNDS.ymin)) * scale;
+      const hw = b.width * base / 2;
+      const nx = -dy/len, ny = dx/len;
+      ctx.beginPath();
+      ctx.moveTo(p1.x + nx*hw, p1.y + ny*hw);
+      ctx.lineTo(p2.x + nx*hw, p2.y + ny*hw);
+      ctx.lineTo(p2.x - nx*hw, p2.y - ny*hw);
+      ctx.lineTo(p1.x - nx*hw, p1.y - ny*hw);
+      ctx.closePath();
+      ctx.fillStyle = col;
+      ctx.globalAlpha = isSel ? 0.35 : 0.12;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    // 중심선
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.strokeStyle = isSel ? '#4ecca3' : col;
+    ctx.lineWidth   = isSel ? 5 : (b.width > 0 ? 3.5 : 2);
+    ctx.globalAlpha = isSel ? 1 : 0.85;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // 라벨 (충분히 길 때만)
+    const screenLen = Math.hypot(p2.x-p1.x, p2.y-p1.y);
+    if (screenLen > 40) {
+      const mx = (p1.x+p2.x)/2, my = (p1.y+p2.y)/2;
+      ctx.font = isSel ? 'bold 12px sans-serif' : '10px sans-serif';
+      ctx.fillStyle = isSel ? '#4ecca3' : '#fff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const label = b.id + '  ' + b.span_m + 'm' + (b.width > 0 ? '  W'+b.width : '');
+      ctx.fillText(label, mx, my - 6);
+    }
+  });
+}
+
+// ── 마우스 이벤트 ───────────────────────────────────────────
+function hitTest(mx, my) {
+  const w = toWorld(mx, my);
+  let best = null, bestD = 15; // px 허용 오차
+  BEAMS.forEach(b => {
+    const p1 = toScreen(b.x1, b.y1);
+    const p2 = toScreen(b.x2, b.y2);
+    const d = pointToSegDist(mx, my, p1.x, p1.y, p2.x, p2.y);
+    if (d < bestD) { bestD = d; best = b; }
+  });
+  return best;
+}
+
+function pointToSegDist(px,py,x1,y1,x2,y2) {
+  const dx=x2-x1, dy=y2-y1, len2=dx*dx+dy*dy;
+  if (!len2) return Math.hypot(px-x1,py-y1);
+  let t=((px-x1)*dx+(py-y1)*dy)/len2;
+  t=Math.max(0,Math.min(1,t));
+  return Math.hypot(px-(x1+t*dx), py-(y1+t*dy));
+}
+
+cv.addEventListener('mousedown', e => {
+  isPanning = true;
+  panStart  = { x: e.clientX, y: e.clientY };
+  panOrigin = { ...pan };
+});
+cv.addEventListener('mousemove', e => {
+  if (!isPanning) return;
+  pan.x = panOrigin.x + e.clientX - panStart.x;
+  pan.y = panOrigin.y + e.clientY - panStart.y;
+  draw();
+});
+cv.addEventListener('mouseup', e => {
+  const moved = Math.hypot(e.clientX - panStart.x, e.clientY - panStart.y);
+  isPanning = false;
+  if (moved < 4) {
+    const rect = cv.getBoundingClientRect();
+    const b = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+    selectBeam(b);
+  }
+});
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.12 : 1/1.12;
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  pan.x = mx + (pan.x - mx) * factor;
+  pan.y = my + (pan.y - my) * factor;
+  scale *= factor;
+  draw();
+}, { passive: false });
+
+// 터치 지원
+let lastTouch = null;
+cv.addEventListener('touchstart', e => {
+  if (e.touches.length === 1) {
+    isPanning = true;
+    panStart  = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    panOrigin = { ...pan };
+    lastTouch = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  }
+}, { passive: true });
+cv.addEventListener('touchmove', e => {
+  if (e.touches.length === 1 && isPanning) {
+    pan.x = panOrigin.x + e.touches[0].clientX - panStart.x;
+    pan.y = panOrigin.y + e.touches[0].clientY - panStart.y;
+    draw();
+  }
+}, { passive: true });
+cv.addEventListener('touchend', e => {
+  if (lastTouch) {
+    const t = e.changedTouches[0];
+    const moved = Math.hypot(t.clientX - lastTouch.x, t.clientY - lastTouch.y);
+    isPanning = false;
+    if (moved < 6) {
+      const rect = cv.getBoundingClientRect();
+      const b = hitTest(t.clientX - rect.left, t.clientY - rect.top);
+      selectBeam(b);
+    }
+    lastTouch = null;
+  }
+});
+
+// ── 선택 & 상세정보 ─────────────────────────────────────────
+function selectBeam(b) {
+  selected = b;
+  draw();
+  renderDetail(b);
+  if (b) highlightList(b.id);
+}
+
+function renderDetail(b) {
+  const el = document.getElementById('detail');
+  if (!b) {
+    el.innerHTML = '<div class="detail-empty">보를 클릭하면<br>상세 정보가 표시됩니다</div>';
+    return;
+  }
+  const dirClass = b.direction === 'X방향' ? 'dir-x' : b.direction === 'Y방향' ? 'dir-y' : 'dir-d';
+  el.innerHTML = `
+    <h3>📌 ${b.id}</h3>
+    <div class="info-row"><span class="key">레이어</span><span class="val">${b.layer}</span></div>
+    <div class="info-row"><span class="key">방향</span>
+      <span class="val"><span class="dir-badge ${dirClass}">${b.direction}</span></span></div>
+    <div class="info-row"><span class="key">스팬 길이</span>
+      <span class="val">${b.span_m} m  <small style="color:#888">(${b.span.toLocaleString()} mm)</small></span></div>
+    <div class="info-row"><span class="key">보 폭 (width)</span>
+      <span class="val">${b.width > 0 ? b.width + ' mm' : '미인식'}</span></div>
+    <div class="info-row"><span class="key">시작 기둥</span><span class="val">${b.col_start}</span></div>
+    <div class="info-row"><span class="key">끝 기둥</span><span class="val">${b.col_end}</span></div>
+    <div class="info-row"><span class="key">시작점 (X, Y)</span>
+      <span class="val" style="font-size:11px">${Math.round(b.x1)}, ${Math.round(b.y1)}</span></div>
+    <div class="info-row"><span class="key">끝점 (X, Y)</span>
+      <span class="val" style="font-size:11px">${Math.round(b.x2)}, ${Math.round(b.y2)}</span></div>
+  `;
+}
+
+// ── 목록 렌더 ───────────────────────────────────────────────
+function renderList() {
+  const search = document.getElementById('search').value.toLowerCase();
+  const list   = document.getElementById('beamList');
+  list.innerHTML = '';
+  BEAMS.filter(b =>
+    (dirFilter === 'all' || b.direction === dirFilter) &&
+    (!search || b.id.toLowerCase().includes(search))
+  ).forEach(b => {
+    const col = COLOR[b.direction] || '#aaa';
+    const div = document.createElement('div');
+    div.className = 'beam-item' + (selected && selected.id === b.id ? ' selected' : '');
+    div.id = 'li-' + b.id.replace(/[^a-z0-9]/gi,'_');
+    div.innerHTML = `
+      <div class="bid" style="color:${col}">${b.id}</div>
+      <div class="binfo">${b.direction} · ${b.span_m}m${b.width>0?' · W'+b.width+'mm':''}</div>`;
+    div.onclick = () => selectBeam(b);
+    list.appendChild(div);
+  });
+}
+
+function highlightList(id) {
+  document.querySelectorAll('.beam-item').forEach(el => el.classList.remove('selected'));
+  const el = document.getElementById('li-' + id.replace(/[^a-z0-9]/gi,'_'));
+  if (el) { el.classList.add('selected'); el.scrollIntoView({block:'nearest'}); }
+}
+
+function filterList() { renderList(); draw(); }
+function setDirFilter(v, btn) {
+  dirFilter = v;
+  document.querySelectorAll('.dir-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderList(); draw();
+}
+
+// ── 줌 ──────────────────────────────────────────────────────
+function zoom(f) {
+  const cx = cv.width/2, cy = cv.height/2;
+  pan.x = cx + (pan.x - cx) * f;
+  pan.y = cy + (pan.y - cy) * f;
+  scale *= f;
+  draw();
+}
+function resetView() { pan = {x:0,y:0}; scale = 1; draw(); }
+
+// ── 초기화 ──────────────────────────────────────────────────
+resize();
+renderList();
+</script>
+</body>
+</html>
