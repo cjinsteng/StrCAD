@@ -1,0 +1,36 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "StrCAD 런처 (launcher.py)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/launcher.py",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "CAD Analysis 단독 실행",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/strcad_cad_analysis/run_cad_analysis.py",
+            "cwd": "${workspaceFolder}/strcad_cad_analysis",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "라이선스 발급 (판매자용)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/strcad_cad_analysis/tools/license_admin.py",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "현재 파일 실행",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal"
+        }
+    ]
+}

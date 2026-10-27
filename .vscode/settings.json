@@ -1,0 +1,7 @@
+{
+    "python-envs.defaultEnvManager": "ms-python.python:system",
+    "files.encoding": "utf8",
+    "files.exclude": { "**/__pycache__": true },
+    "git.autofetch": true,
+    "git.confirmSync": false
+}

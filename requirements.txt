@@ -1,0 +1,5 @@
+ezdxf>=1.1
+pillow
+tkinterdnd2
+openpyxl
+numpy

@@ -11,8 +11,11 @@
 
 ## 실행
 ```
-pip install ezdxf pillow tkinterdnd2 openpyxl numpy
+pip install -r requirements.txt
 python launcher.py
+```
+VS Code: 이 폴더를 열고 F5 → 'StrCAD 런처' / 'CAD Analysis 단독 실행' / '라이선스 발급' 선택
+```
 ```
 
 ## 라이선스 (판매용)
