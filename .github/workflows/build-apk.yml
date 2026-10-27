@@ -4,7 +4,7 @@ name: build-apk
 on:
   workflow_dispatch:
   push:
-    paths: ["mobile/**", "android-app/**", ".github/workflows/build-apk.yml"]
+    paths: ["strcad_cad_analysis/mobile/**", "strcad_cad_analysis/android-app/**", ".github/workflows/build-apk.yml"]
 
 permissions:
   contents: write
@@ -19,17 +19,17 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 17 }
       - name: Install & sync web app
-        working-directory: android-app
+        working-directory: strcad_cad_analysis/android-app
         run: |
           npm install --no-audit --no-fund
           npm run sync
       - name: Gradle assembleDebug
-        working-directory: android-app/android
+        working-directory: strcad_cad_analysis/android-app/android
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
       - name: Rename
-        run: cp android-app/android/app/build/outputs/apk/debug/app-debug.apk StrCAD_survey.apk
+        run: cp strcad_cad_analysis/android-app/android/app/build/outputs/apk/debug/app-debug.apk StrCAD_survey.apk
       - uses: actions/upload-artifact@v4
         with:
           name: StrCAD_survey-apk
@@ -40,4 +40,4 @@ jobs:
         run: |
           gh release delete apk-latest -y --cleanup-tag || true
           gh release create apk-latest StrCAD_survey.apk --title "StrCAD 현장조사 APK (최신)" \
-            --notes "커밋 ${GITHUB_SHA::7} 에서 빌드된 디버그 APK. 휴대폰에서 받아 설치하세요." --target "$GITHUB_SHA"
+            --notes "커밋 ${GITHUB_SHA::7} 에서 빌드된 디버그 APK. 휴대폰에서 받아 설치하세요." --target "$GITHUB_SHA" --latest=false

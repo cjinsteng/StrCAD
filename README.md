@@ -23,4 +23,10 @@ python launcher.py
 ## 설치 파일
 - GitHub Actions `build-suite.yml` 이 main에 push할 때마다 `StrCAD_Setup_<버전>.exe` 를 만들어 릴리스 **win-latest** 에 올립니다.
 - 로컬에서 만들 때: Windows에서 `build_windows.bat 1.0.0` (Python 3.12, Inno Setup 6 필요)
-- 휴대폰 앱(APK)·CAD Analysis 단독 설치판은 `cjinsteng/cad_analysis` 저장소에서 빌드됩니다.
+- 휴대폰 앱(APK): `build-apk.yml` 이 `strcad_cad_analysis/mobile`·`android-app` 이 바뀌면 빌드해 릴리스 **apk-latest** 에 올립니다.
+- (예전 `cjinsteng/cad_analysis` 저장소는 이 저장소의 `strcad_cad_analysis/` 로 합쳐졌습니다.)
+
+## 계정
+- 로그인 창의 **회원가입**: 아이디(영문·숫자 4~20자), 비밀번호(영문+숫자 8자 이상), 이름 필수 · 회사/이메일/연락처 선택
+- 계정은 그 PC의 `%USERPROFILE%\.strcad\users.json` 에 저장(비밀번호는 PBKDF2 해시). 기본 계정 1234/1234, user1/pass1234
+- 라이선스 상태(체험판·만료일)는 **로그인 후** 상단 버튼과 하단에 표시

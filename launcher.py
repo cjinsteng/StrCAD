@@ -4,7 +4,7 @@ STR Design & Check  —  런처 메인 화면
 · 2×3 모듈 카드 그리드 (로그인 전 잠금)
 · CAD Analysis → DXF 분석기 창 실행
 · 하단 ver. 1.0.0
-기본 계정: admin / admin1234   |   user1 / pass1234
+기본 계정: 1234 / 1234   |   user1 / pass1234   ·   회원가입한 계정 (accounts.py, ~/.strcad/users.json)
 """
 
 import sys, os, hashlib, threading, subprocess, webbrowser
@@ -40,11 +40,8 @@ TXT = "#dde4f0"; TX2 = "#8fa3c0"; TX3 = "#546887"
 WHI = "#f0f5ff"; DIS = "#3d5070"
 VER = "ver. 1.0.0"
 
-_USERS = {
-    "1234": hashlib.sha256(b"1234").hexdigest(),
-    "user1": hashlib.sha256(b"pass1234").hexdigest(),
-}
-def _auth(u, p): return _USERS.get(u.strip()) == hashlib.sha256(p.encode()).hexdigest()
+import accounts as ACC_DB          # 회원가입 · 로그인 (accounts.py)
+def _auth(u, p): return ACC_DB.authenticate(u, p)
 def _dk(h, a=20): return "#{:02x}{:02x}{:02x}".format(
     max(0,int(h[1:3],16)-a), max(0,int(h[3:5],16)-a), max(0,int(h[5:7],16)-a))
 
@@ -59,7 +56,7 @@ class LoginDlg(tk.Toplevel):
         self.update_idletasks()
         px = parent.winfo_rootx()+parent.winfo_width()//2
         py = parent.winfo_rooty()+parent.winfo_height()//2
-        self.geometry(f"360x330+{px-180}+{py-165}")
+        self.geometry(f"360x370+{px-180}+{py-185}")
         self.bind("<Return>", lambda _: self._try())
         self.bind("<Escape>", lambda _: self.destroy())
         self.after(60, self._id.focus_set)
@@ -79,8 +76,9 @@ class LoginDlg(tk.Toplevel):
             e.bind("<FocusOut>", lambda _: e.config(highlightbackground=BDR))
             return e
         self._id = field("아이디"); self._pw = field("비밀번호", "●")
-        self._err = tk.StringVar()
+        self._err = tk.StringVar(); self._ok = tk.StringVar()
         tk.Label(frm, textvariable=self._err, font=("Malgun Gothic",8), bg=BG2, fg=RED).pack(anchor="w", pady=(6,0))
+        tk.Label(frm, textvariable=self._ok, font=("Malgun Gothic",8), bg=BG2, fg=GRNH).pack(anchor="w")
         br = tk.Frame(frm, bg=BG2); br.pack(fill="x", pady=(14,0))
         def mkb(p, t, cmd, bg_, fg_):
             b = tk.Button(p, text=t, command=cmd, font=("Malgun Gothic",10,"bold"),
@@ -89,14 +87,91 @@ class LoginDlg(tk.Toplevel):
             b.bind("<Leave>", lambda _: b.config(bg=bg_)); return b
         mkb(br,"취소",self.destroy,BG3,TX2).pack(side="left", fill="x", expand=True, padx=(0,6))
         mkb(br,"로그인",self._try,ACC,WHI).pack(side="right", fill="x", expand=True)
+        sg = tk.Frame(frm, bg=BG2); sg.pack(fill="x", pady=(12,0))
+        tk.Label(sg, text="계정이 없으신가요?", font=("Malgun Gothic",9), bg=BG2, fg=TX3).pack(side="left")
+        lk = tk.Label(sg, text="회원가입", font=("Malgun Gothic",9,"bold","underline"), bg=BG2, fg=BLU, cursor="hand2")
+        lk.pack(side="left", padx=6); lk.bind("<Button-1>", lambda _: self._signup())
+
+    def _signup(self):
+        self.grab_release()
+        dlg = SignupDlg(self); self.wait_window(dlg)
+        try: self.grab_set()
+        except tk.TclError: pass
+        if dlg.result:
+            self._id.delete(0,"end"); self._id.insert(0, dlg.result)
+            self._pw.delete(0,"end"); self._pw.focus_set()
+            self._err.set("")
+            self._ok.set("가입 완료! 비밀번호를 입력해 로그인하세요.")
 
     def _try(self):
         u = self._id.get().strip(); p = self._pw.get()
         if not u or not p: self._err.set("아이디와 비밀번호를 입력하세요."); return
-        if _auth(u, p): self.result = u; self.destroy()
+        info = _auth(u, p)
+        if info: self.result = info; self.destroy()
         else:
             self._err.set("아이디 또는 비밀번호가 틀렸습니다.")
             self._pw.delete(0,"end"); self._pw.focus_set()
+
+
+# ── 회원가입 다이얼로그 ───────────────────────────────────
+class SignupDlg(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent); self.result = None
+        self.title("회원가입"); self.configure(bg=BG2)
+        self.resizable(False,False); self.transient(parent); self.grab_set()
+        hdr = tk.Frame(self, bg=ACCD, height=54); hdr.pack(fill="x"); hdr.pack_propagate(False)
+        tk.Label(hdr, text="📝   회원가입", font=("Malgun Gothic",14,"bold"), bg=ACCD, fg=WHI).pack(expand=True)
+        frm = tk.Frame(self, bg=BG2); frm.pack(fill="both", expand=True, padx=30, pady=14)
+        self.e = {}
+        rows = [("id","아이디 *","영문·숫자 4~20자",""), ("pw","비밀번호 *","영문+숫자 8자 이상","●"),
+                ("pw2","비밀번호 확인 *","","●"), ("name","이름 *","",""), ("company","회사","",""),
+                ("email","이메일","",""), ("phone","연락처","","")]
+        for k,lbl,hint,show in rows:
+            r = tk.Frame(frm, bg=BG2); r.pack(fill="x", pady=(6,0))
+            tk.Label(r, text=lbl, font=("Malgun Gothic",9), bg=BG2, fg=TX2, width=12, anchor="w").pack(side="left")
+            e = tk.Entry(r, font=("Malgun Gothic",10), bg=BG3, fg=TXT, insertbackground=WHI, relief="flat",
+                         show=show, highlightbackground=BDR, highlightthickness=1, width=24)
+            e.pack(side="left", fill="x", expand=True, ipady=5)
+            e.bind("<FocusIn>",  lambda _, w=e: w.config(highlightbackground=ACCH))
+            e.bind("<FocusOut>", lambda _, w=e: w.config(highlightbackground=BDR))
+            self.e[k] = e
+            if hint:
+                tk.Label(frm, text=hint, font=("Malgun Gothic",7), bg=BG2, fg=TX3, anchor="e").pack(fill="x")
+        self.e["id"].bind("<FocusOut>", lambda _: self._check_id(), add="+")
+        self._err = tk.StringVar()
+        tk.Label(frm, textvariable=self._err, font=("Malgun Gothic",8), bg=BG2, fg=RED, wraplength=290,
+                 justify="left").pack(anchor="w", pady=(8,0))
+        tk.Label(frm, text="계정 정보는 이 PC에만 저장되며 비밀번호는 암호화(해시)되어 보관됩니다.",
+                 font=("Malgun Gothic",7), bg=BG2, fg=TX3, wraplength=290, justify="left").pack(anchor="w")
+        br = tk.Frame(frm, bg=BG2); br.pack(fill="x", pady=(10,0))
+        for t,cmd,bg_,fg_,side in (("취소",self.destroy,BG3,TX2,"left"),("가입하기",self._ok,ACC,WHI,"right")):
+            b = tk.Button(br, text=t, command=cmd, font=("Malgun Gothic",10,"bold"), bg=bg_, fg=fg_,
+                          relief="flat", cursor="hand2", pady=8)
+            b.pack(side=side, fill="x", expand=True, padx=(0,6) if side=="left" else 0)
+        self.bind("<Return>", lambda _: self._ok()); self.bind("<Escape>", lambda _: self.destroy())
+        self.update_idletasks()
+        px = parent.winfo_rootx()+parent.winfo_width()//2; py = parent.winfo_rooty()+parent.winfo_height()//2
+        w, h = 380, self.winfo_reqheight()
+        self.geometry(f"{w}x{h}+{px-w//2}+{max(py-h//2,0)}")
+        self.after(60, self.e["id"].focus_set)
+
+    def _check_id(self):
+        u = self.e["id"].get().strip()
+        if u and ACC_DB.exists(u): self._err.set("이미 사용 중인 아이디입니다.")
+        elif u and not ACC_DB.ID_RE.match(u): self._err.set("아이디는 영문·숫자·_ . - 로 4~20자입니다.")
+        else: self._err.set("")
+
+    def _ok(self):
+        v = {k: e.get() for k,e in self.e.items()}
+        if v["pw"] != v["pw2"]:
+            self._err.set("비밀번호 확인이 일치하지 않습니다."); self.e["pw2"].delete(0,"end"); self.e["pw2"].focus_set(); return
+        try:
+            u = ACC_DB.register(v["id"], v["pw"], v["name"], v["company"], v["email"], v["phone"])
+        except ACC_DB.AccountError as e:
+            self._err.set(str(e)); return
+        except OSError as e:
+            self._err.set(f"저장하지 못했습니다: {e}"); return
+        self.result = u["id"]; self.destroy()
 
 
 # ── 모듈 카드 ─────────────────────────────────────────────
@@ -189,7 +264,9 @@ class Launcher(tk.Tk):
         try:
             from cad_analysis import theme as _TH; _TH.set_icon(self)
         except Exception: pass
-        self.after(300, self._check_license)
+        if LC is None:
+            self.after(300, lambda: (messagebox.showerror("라이선스", f"라이선스 모듈을 불러오지 못했습니다.\n{_LIC_ERR}",
+                                                          parent=self), self.destroy()))
 
     def _build(self):
         self._build_hdr()
@@ -208,10 +285,9 @@ class Launcher(tk.Tk):
         rf = tk.Frame(hdr, bg=BG2); rf.pack(side="right", padx=28, pady=20)
         self._licb = tk.Button(rf, text="라이선스 확인 중…", font=("Malgun Gothic",9,"bold"), bg=BG4, fg=TX2,
                                relief="flat", cursor="hand2", padx=10, pady=4, command=self._license_dialog)
-        self._licb.pack(side="left", padx=(0,14))
         self._sv = tk.StringVar(value="로그인 후 이용하세요")
-        tk.Label(rf, textvariable=self._sv, font=("Malgun Gothic",9),
-                 bg=BG2, fg=TX2).pack(side="left", padx=(0,18))
+        self._svl = tk.Label(rf, textvariable=self._sv, font=("Malgun Gothic",9), bg=BG2, fg=TX2)
+        self._svl.pack(side="left", padx=(0,18))          # 라이선스 버튼은 로그인 후 이 앞에 표시
         self._lb = tk.Button(rf, text="  로그인  ",
                              font=("Malgun Gothic",10,"bold"),
                              bg=ACC, fg=WHI, relief="flat", cursor="hand2",
@@ -246,38 +322,36 @@ class Launcher(tk.Tk):
             dlg = LoginDlg(self); self.wait_window(dlg)
             if dlg.result: self._login(dlg.result)
 
-    def _login(self, uid):
-        self._user = uid
-        self._sv.set(f"👤  {uid} 님 환영합니다")
+    def _login(self, info):
+        if isinstance(info, str): info = {"id": info, "name": info}
+        uid = info["id"]; self._user = uid; self._uinfo = info
+        nm = info.get("name") or uid
+        self._sv.set(f"👤  {nm} 님" + (f" · {info['company']}" if info.get("company") else ""))
         self._lb.config(text="  로그아웃  ", bg=GRNH)
         self._lb.bind("<Leave>", lambda _: self._lb.config(bg=GRNH))
+        # 라이선스는 로그인 후에 확인·표시
+        self._licb.pack(side="left", padx=(0,14), before=self._svl)
+        self._lic = LC.status() if LC is not None else {}
         self._apply_license()
         st = self._lic or {}
         if st.get("ok"):
-            msg = f"환영합니다, {uid} 님!\n라이선스: {st.get('message','')}"
+            msg = f"환영합니다, {nm} 님!\n\n라이선스: {st.get('message','')}"
+            if LC.should_warn(st):
+                msg += ("\n\n⚠ " + (f"체험판이 {st['days_left']}일 남았습니다." if st["state"] == "trial"
+                                      else f"라이선스 만료까지 {st['days_left']}일 남았습니다.")
+                        + "\n상단 라이선스 버튼에서 키를 등록·연장할 수 있습니다.")
+            self.after(150, lambda: messagebox.showinfo("로그인 성공", msg, parent=self))
         else:
-            msg = f"환영합니다, {uid} 님!\n\n⚠ 라이선스가 없어 모듈을 사용할 수 없습니다.\n상단 '라이선스' 버튼에서 키를 등록하세요."
-        self.after(150, lambda: messagebox.showinfo("로그인 성공", msg, parent=self))
+            self.after(150, lambda: (messagebox.showwarning("라이선스 필요",
+                f"환영합니다, {nm} 님!\n\n{st.get('message','라이선스가 필요합니다.')}\n라이선스 키를 등록하세요.", parent=self),
+                self._license_dialog()))
 
-    # ── 라이선스 ────────────────────────────────────────────
-    def _check_license(self, show=True):
-        if LC is None:
-            messagebox.showerror("라이선스", f"라이선스 모듈을 불러오지 못했습니다.\n{_LIC_ERR}", parent=self)
-            self.destroy(); return
-        self._lic = LC.status()
-        self._apply_license()
-        st = self._lic
-        if show and not st.get("ok"):
-            self._license_dialog()
-        elif show and LC.should_warn(st):
-            messagebox.showinfo("라이선스",
-                (f"체험판이 {st['days_left']}일 남았습니다." if st["state"] == "trial"
-                 else f"라이선스 만료까지 {st['days_left']}일 남았습니다 ({st['expiry']}).")
-                + "\n상단 '라이선스' 버튼에서 키를 등록·연장할 수 있습니다.", parent=self)
-
+    # ── 라이선스 (로그인 후에만 표시) ───────────────────────
     def _apply_license(self):
         st = self._lic or {}
-        if LC is not None and st:
+        if not self._user:
+            self._ftr_lic.set("")
+        elif LC is not None and st:
             ok = st.get("ok")
             self._licb.config(text=LC.short_text(st),
                               bg=(GRN if st.get("state") == "licensed" else ORG) if ok else RED, fg=WHI)
@@ -303,7 +377,8 @@ class Launcher(tk.Tk):
         return LC is not None and LC.allows(self._lic or {}, mid)
 
     def _logout(self):
-        self._user = ""
+        self._user = ""; self._lic = None
+        self._licb.pack_forget()
         self._sv.set("로그인 후 이용하세요")
         self._lb.config(text="  로그인  ", bg=ACC)
         self._lb.bind("<Leave>", lambda _: self._lb.config(bg=ACC))
@@ -620,7 +695,7 @@ def _selftest(out):
     lines = []
     try:
         import importlib
-        for m in ("cad_analysis.app", "cad_analysis.licensing", "cad_analysis.licensing_ui", "design_2d"):
+        for m in ("accounts", "cad_analysis.app", "cad_analysis.licensing", "cad_analysis.licensing_ui", "design_2d"):
             try: importlib.import_module(m); lines.append("OK " + m)
             except Exception as e: lines.append(f"FAIL {m} {e!r}")
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "autotable"))

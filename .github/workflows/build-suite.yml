@@ -3,6 +3,7 @@ name: Build StrCAD installer (launcher + modules)
 on:
   push:
     branches: [main]
+    paths-ignore: ["strcad_cad_analysis/android-app/**", "**.md", "ex/**", "old/**", ".github/workflows/build-apk.yml"]
   workflow_dispatch:
 
 permissions:
