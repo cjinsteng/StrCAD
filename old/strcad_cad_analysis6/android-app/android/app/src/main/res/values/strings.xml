@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">StrCAD 현장조사</string>
+    <string name="title_activity_main">StrCAD 현장조사</string>
+    <string name="package_name">kr.strcad.survey</string>
+    <string name="custom_url_scheme">kr.strcad.survey</string>
+</resources>

@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#2f6db5">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="현장조사">
+<title>StrCAD 현장조사</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app">
+  <header id="top">
+    <button class="icon" id="btnMenu" aria-label="메뉴">☰</button>
+    <div id="proj" class="ellipsis">파일을 여세요</div>
+    <div id="pager">
+      <button class="icon" id="pgPrev">‹</button>
+      <span id="pgLbl">-/-</span>
+      <button class="icon" id="pgNext">›</button>
+    </div>
+    <button class="pill" id="floorBtn">-</button>
+    <button class="pill" id="btnSheets">도면LIST</button>
+  </header>
+
+  <div id="main">
+    <div id="stage">
+      <canvas id="cv"></canvas>
+      <div id="tools">
+        <div class="seg" id="modeSeg">
+          <button data-mode="view">보기</button>
+          <button data-mode="point" class="on">검측점</button>
+          <button data-mode="span">구간</button>
+        </div>
+        <div class="seg" id="purposeSeg"></div>
+        <button class="icon round" id="btnFit" title="전체보기">⛶</button>
+      </div>
+      <div id="hint"></div>
+    </div>
+
+    <aside id="panel" class="hidden">
+      <div class="panel-head">
+        <b>현장조사</b>
+        <span id="editFlag"></span>
+        <button class="icon" id="panelClose">✕</button>
+      </div>
+      <div id="pos"></div>
+      <div id="form"></div>
+    </aside>
+  </div>
+
+  <section id="list">
+    <div class="list-head" id="listHead">
+      <b>조사 목록</b> <span id="listCount"></span>
+      <div id="filters"></div>
+      <button class="icon" id="listToggle">▾</button>
+    </div>
+    <div id="listBody"><table><thead id="lt-h"></thead><tbody id="lt-b"></tbody></table></div>
+  </section>
+</div>
+
+<!-- empty state -->
+<div id="welcome" class="modal show">
+  <div class="sheet center">
+    <h2>StrCAD 현장조사</h2>
+    <p>PC의 CAD Analysis에서 <b>현장조사 › 모바일로 내보내기</b>로 만든<br><b>.strsv</b> 파일을 여세요.</p>
+    <label class="bigbtn">📂 조사 파일 열기<input type="file" id="fileOpen" hidden></label>
+    <button class="bigbtn ghost hidden" id="btnResume">↺ 이어서 하기</button>
+    <button class="bigbtn ghost hidden" id="btnPcGet">🖥 PC에서 받기</button>
+    <p class="small" id="welcomeNote"></p>
+  </div>
+</div>
+
+<div id="menu" class="modal">
+  <div class="sheet">
+    <h3>메뉴</h3>
+    <label class="mi">📂 조사 파일 열기<input type="file" id="fileOpen2" hidden></label>
+    <button class="mi" id="miSave">💾 저장 / 공유 (.strsv)</button>
+    <button class="mi pc hidden" id="miPcGet">🖥 PC에서 받기</button>
+    <button class="mi pc hidden" id="miPcPut">🖥 PC로 보내기</button>
+    <button class="mi hidden" id="miPcAddr">⚙ PC 주소 설정 (Wi-Fi)</button>
+    <button class="mi" id="miPurpose">＋ 용도 추가</button>
+    <button class="mi" id="miCsv">📊 조사표 CSV</button>
+    <p class="small" id="menuInfo"></p>
+    <button class="mi ghost" data-close>닫기</button>
+  </div>
+</div>
+
+<div id="modal" class="modal"><div class="sheet" id="modalBody"></div></div>
+<div id="toast"></div>
+
+<script src="vendor/sql-wasm.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

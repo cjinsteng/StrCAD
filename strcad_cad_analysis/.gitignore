@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+android-app/node_modules/
+android-app/www/
+android-app/android/.gradle/
+android-app/android/build/
+android-app/android/app/build/
+android-app/android/app/src/main/assets/public/
+android-app/android/capacitor-cordova-android-plugins/
+android-app/android/local.properties
+*.db
+installer/version.iss
+
+# 라이선스 개인키는 절대 커밋하지 않음
+*.key
+*private*
+issued_licenses.csv
+*.strlic

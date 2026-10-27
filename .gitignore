@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+build/
+dist/
+installer/version.iss
+selftest.txt
+# 라이선스 개인키·발급 내역은 절대 커밋하지 않음
+*.key
+*private*
+issued_licenses.csv
+*.strlic
+# Android 빌드 산출물
+strcad_cad_analysis/android-app/node_modules/
+strcad_cad_analysis/android-app/android/.gradle/
+strcad_cad_analysis/android-app/android/app/build/

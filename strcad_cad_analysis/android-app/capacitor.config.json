@@ -1,0 +1,12 @@
+{
+  "appId": "kr.strcad.survey",
+  "appName": "StrCAD 현장조사",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}

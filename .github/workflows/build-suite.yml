@@ -1,0 +1,93 @@
+name: Build StrCAD installer (launcher + modules)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ezdxf pillow tkinterdnd2 openpyxl numpy pyinstaller
+
+      - name: Read version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path strcad_cad_analysis\cad_analysis\__init__.py -Pattern '__version__ = "([0-9.]+)"').Matches[0].Groups[1].Value
+          "v=$v" >> $env:GITHUB_OUTPUT
+
+      - name: PyInstaller
+        run: >
+          pyinstaller launcher.py --noconfirm --clean --windowed --name StrCAD
+          --icon strcad_cad_analysis/cad_analysis/assets/icon.ico
+          --paths strcad_cad_analysis
+          --add-data "strcad_cad_analysis/cad_analysis/assets;cad_analysis/assets"
+          --add-data "strcad_cad_analysis/mobile;mobile"
+          --add-data "strcad_cad_analysis/samples;samples"
+          --add-data "autotable/auto_table.py;autotable"
+          --hidden-import cad_analysis.app --hidden-import cad_analysis.licensing_ui --hidden-import design_2d
+          --collect-all tkinterdnd2 --collect-all ezdxf
+          --exclude-module matplotlib --exclude-module PyQt5 --exclude-module PySide6
+
+      - name: Self test
+        shell: pwsh
+        run: |
+          Start-Process -FilePath dist\StrCAD\StrCAD.exe -ArgumentList "--selftest","$PWD\selftest.txt" -Wait
+          Get-Content selftest.txt
+          if (Select-String -Path selftest.txt -Pattern "FAIL|MISSING") { Get-Content selftest.txt | ForEach-Object { Write-Host "::error::$_" }; exit 1 }
+
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          trap { Write-Host "::error::Inno step: $_"; exit 1 }
+          function Find-Iscc {
+            $c = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+                   "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe")
+            $f = $c | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if (-not $f) { $g = Get-Command iscc.exe -ErrorAction SilentlyContinue; if ($g) { $f = $g.Source } }
+            return $f
+          }
+          $iscc = Find-Iscc
+          if (-not $iscc) { choco install innosetup -y --no-progress | Out-Host; $iscc = Find-Iscc }
+          if (-not $iscc) { Write-Host "::error::ISCC.exe not found"; exit 1 }
+          $lang = Join-Path (Split-Path $iscc) "Languages\Korean.isl"
+          if (-not (Test-Path $lang)) {
+            Invoke-WebRequest "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/Unofficial/Korean.isl" -OutFile installer\Korean.isl
+            (Get-Content installer\strcad_suite.iss -Raw) -replace 'compiler:Languages\\Korean.isl','Korean.isl' | Set-Content installer\strcad_suite.iss -Encoding utf8BOM
+          }
+          $v = "${{ steps.ver.outputs.v }}"
+          Set-Content installer\version.iss "#define AppVersion `"$v`"" -Encoding utf8
+          Push-Location installer
+          $out = & $iscc strcad_suite.iss 2>&1
+          $code = $LASTEXITCODE
+          Pop-Location
+          $out | Write-Host
+          if ($code -ne 0) { $out | Select-Object -Last 8 | ForEach-Object { Write-Host "::error::ISCC $_" }; exit $code }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StrCAD_Setup_${{ steps.ver.outputs.v }}
+          path: dist/StrCAD_Setup_*.exe
+
+      - name: Publish release (win-latest)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete win-latest --yes --cleanup-tag || true
+          gh release create win-latest dist/StrCAD_Setup_*.exe --title "StrCAD ${{ steps.ver.outputs.v }} (런처 + 전체 모듈)" \
+            --notes "StrCAD 설치 파일 — 런처(STR Design & Check) + CAD Analysis · 2D Design · Auto Table, 라이선스 포함" --latest
