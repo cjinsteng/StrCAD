@@ -398,29 +398,64 @@ class Launcher(tk.Tk):
         return _h
 
     def _open_cad(self):
-        """CAD Analysis v2 (Ollama) 실행.
-        cad_analysis 패키지를 launcher.py 옆 폴더 또는 strcad_cad_analysis/ 안에서 찾는다.
-        찾지 못하면 기존 CadPanel(구버전)로 연다."""
-        for d in (BASE_DIR, BASE_DIR / "strcad_cad_analysis", WORK_DIR, WORK_DIR / "strcad_cad_analysis"):
-            if (d / "cad_analysis" / "app.py").exists() and str(d) not in sys.path:
-                sys.path.insert(0, str(d))
+        """CAD Analysis (strcad_cad_analysis/cad_analysis) 실행.
+        필요한 패키지가 없으면 이유를 보여 주고 설치를 제안한다 (구버전으로 몰래 넘어가지 않음)."""
+        pkg_dir = None
+        for d in (BASE_DIR / "strcad_cad_analysis", WORK_DIR / "strcad_cad_analysis", BASE_DIR, WORK_DIR):
+            if (d / "cad_analysis" / "app.py").exists():
+                pkg_dir = d; break
+        if pkg_dir is not None:
+            if str(pkg_dir) in sys.path: sys.path.remove(str(pkg_dir))
+            sys.path.insert(0, str(pkg_dir))              # 항상 이 폴더의 최신 cad_analysis 를 먼저 사용
+        for attempt in (1, 2):
+            try:
+                import cad_analysis
+                from cad_analysis.app import open_window
+                break
+            except ImportError as e:
+                missing = getattr(e, "name", None) or str(e)
+                if attempt == 1 and not getattr(sys, "frozen", False) and missing and "cad_analysis" not in missing:
+                    if messagebox.askyesno("CAD Analysis — 패키지 필요",
+                            f"CAD Analysis 실행에 필요한 파이썬 패키지가 없습니다: {missing}\n\n"
+                            f"지금 설치할까요? (pip install -r requirements.txt)\n\n파이썬: {sys.executable}", parent=self):
+                        if self._pip_install():
+                            for k in [k for k in sys.modules if k == "cad_analysis" or k.startswith("cad_analysis.")]:
+                                sys.modules.pop(k, None)
+                            continue
+                if messagebox.askyesno("CAD Analysis 실행 오류",
+                        f"CAD Analysis를 불러오지 못했습니다.\n({e})\n\n"
+                        f"폴더: {pkg_dir}\n파이썬: {sys.executable}\n\n"
+                        "터미널에서  pip install -r requirements.txt  실행 후 다시 시도하세요.\n\n"
+                        "구버전 DXF 분석기로 대신 열까요?", parent=self):
+                    return self._open_cad_legacy()
+                return
         try:
-            from cad_analysis.app import open_window
-        except ImportError as e:
-            messagebox.showwarning(
-                "CAD Analysis",
-                f"새 CAD Analysis(cad_analysis 폴더)를 찾지 못해 기존 버전으로 엽니다.\n({e})",
-                parent=self)
-            return self._open_cad_legacy()
-        try:
+            from cad_analysis import __version__ as _cv
             app = open_window(self)                     # Toplevel로 열림
             win = app.root
-            win.title(f"StrCAD - CAD Analysis  ─  {self._user}")
+            nm = (getattr(self, "_uinfo", None) or {}).get("name") or self._user
+            win.title(f"StrCAD - CAD Analysis v{_cv}  ─  {nm}")
             win.minsize(1000, 640)
             win.lift(); win.focus_force()
         except Exception as e:
             import traceback
             messagebox.showerror("CAD Analysis 오류", f"{e}\n\n{traceback.format_exc()}", parent=self)
+
+    def _pip_install(self):
+        req = BASE_DIR / "requirements.txt"
+        cmd = [sys.executable, "-m", "pip", "install"] + (["-r", str(req)] if req.exists()
+                                                         else ["ezdxf", "pillow", "tkinterdnd2", "openpyxl", "numpy"])
+        self.config(cursor="watch"); self.update()
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        except Exception as e:
+            messagebox.showerror("설치 실패", str(e), parent=self); return False
+        finally:
+            self.config(cursor="")
+        if r.returncode != 0:
+            messagebox.showerror("설치 실패", (r.stderr or r.stdout)[-1500:], parent=self); return False
+        import importlib; importlib.invalidate_caches()
+        return True
 
     def _open_cad_legacy(self):
         win = tk.Toplevel(self)
