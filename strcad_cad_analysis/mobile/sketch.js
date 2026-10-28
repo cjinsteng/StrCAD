@@ -46,7 +46,7 @@ const SK = (() => {
   function snapPoint(x, y, skipLast) {          // 근처 스케치 끝점 · 기둥 중심 (14px)
     const lim = 14 / S.view.s; let best = null, bd = lim;
     const tryP = (px, py) => { const d = Math.hypot(px - x, py - y); if (d < bd) { bd = d; best = [px, py]; } };
-    for (const sk of st.list) if (sk.kind === "beam" || sk.kind === "wall") { tryP(sk.pts[0], sk.pts[1]); tryP(sk.pts[2], sk.pts[3]); }
+    for (const sk of st.list) if (sk.kind === "beam" || sk.kind === "wall" || sk.kind === "axis") { tryP(sk.pts[0], sk.pts[1]); tryP(sk.pts[2], sk.pts[3]); }
     else if (sk.kind === "column") tryP((sk.pts[0] + sk.pts[2]) / 2, (sk.pts[1] + sk.pts[3]) / 2);
     for (const m of S.sheet.members) if (m.k === "c") tryP(m.c[0], m.c[1]);
     else if (!skipLast) { const [p1, p2] = memEnds(m); tryP(...p1); tryP(...p2); }
@@ -92,7 +92,7 @@ const SK = (() => {
     let [x, y] = s2w(sx, sy);
     if (c.kind === "free") { const n = c.pts.length; if (Math.hypot(x - c.pts[n - 2], y - c.pts[n - 1]) * S.view.s >= 3) c.pts.push(x, y); }
     else {
-      if (c.kind === "beam" || c.kind === "wall") { [x, y] = snapPoint(x, y); if (x === s2w(sx, sy)[0] && y === s2w(sx, sy)[1]) [x, y] = ortho(c.pts[0], c.pts[1], x, y); }
+      if (c.kind === "beam" || c.kind === "wall" || c.kind === "axis") { [x, y] = snapPoint(x, y); if (x === s2w(sx, sy)[0] && y === s2w(sx, sy)[1]) [x, y] = ortho(c.pts[0], c.pts[1], x, y); }
       c.pts[2] = x; c.pts[3] = y;
     }
     draw();
@@ -110,9 +110,38 @@ const SK = (() => {
     else if (moved < 10) { draw(); hint("끌어서 그리세요"); setTimeout(() => hint(""), 1400); return; }
     const sk = { kind: c.kind, color: c.color, pts: c.pts.map((v) => Math.round(v)) };
     if (c.kind === "free") sk.pts = sk.pts.slice(2);   // 시작점 중복 제거
+    if (c.kind === "axis") { askAxis(sk); return; }
     add(sk);
   }
   function cancel() { st.cur = null; draw(); }
+
+  // ---- X·Y 축(그리드) 버블: 선 방향으로 X/Y 판단, 다음 번호 자동 제안
+  function nextAxisNames(sk) {
+    const p = sk.pts, horiz = Math.abs(p[2] - p[0]) >= Math.abs(p[3] - p[1]);
+    const used = st.list.filter((a) => a.kind === "axis").map((a) => a.text);
+    const nums = used.map((t) => /^\d+$/.test(t) ? +t : 0), lets = used.filter((t) => /^[A-Z]$/.test(t));
+    const xn = (pre) => { let n = 1; while (used.includes(pre + n)) n++; return pre + n; };
+    const num = String(Math.max(0, ...nums) + 1);
+    const let_ = lets.length ? String.fromCharCode(Math.max(...lets.map((t) => t.charCodeAt(0))) + 1) : "A";
+    // 세로선(위아래) = X축 번호 1,2,3 / 가로선 = Y축 A,B,C (구조도면 관례)
+    return horiz ? [xn("Y"), let_, xn("X"), num] : [xn("X"), num, xn("Y"), let_];
+  }
+  function askAxis(sk) {
+    let inp;
+    const sug = nextAxisNames(sk);
+    sheet((b) => {
+      inp = el("input", { type: "text", class: "sk-input", value: sug[0], placeholder: "예: X1, Y2, 1, A" });
+      const done = () => { const t = inp.value.trim(); $("#modal").classList.remove("show");
+        if (t) add(Object.assign(sk, { text: t })); else draw(); };
+      inp.addEventListener("keydown", (e) => { if (e.key === "Enter") done(); });
+      b.append(el("h3", {}, "축(그리드) 이름"), inp,
+        el("div", { class: "sk-presets" }, sug.map((t) => el("button", { onclick: () => { inp.value = t; } }, t))),
+        el("p", { class: "small" }, "양 끝에 버블(원)이 붙습니다. 현장 위치를 'X3–Y2 교차부'처럼 찾을 때 씁니다."),
+        el("div", { class: "btns" }, el("button", { class: "b gray", onclick: () => { $("#modal").classList.remove("show"); draw(); } }, "취소"),
+          el("span", { class: "sp" }), el("button", { class: "b ok", onclick: done }, "넣기")));
+    });
+    setTimeout(() => { if (inp) { inp.focus(); inp.select(); } }, 50);
+  }
 
   function askText(at) {
     let inp;
@@ -154,6 +183,18 @@ const SK = (() => {
       ctx.lineWidth = 3; ctx.beginPath();
       for (let i = 0; i < p.length; i += 2) { const q = scr(p[i], p[i + 1]); i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); }
       ctx.stroke();
+    } else if (sk.kind === "axis") {
+      const a = scr(p[0], p[1]), b = scr(p[2], p[3]), L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+      const ux = (b[0] - a[0]) / L, uy = (b[1] - a[1]) / L, R = 13;
+      ctx.lineWidth = 1.5; ctx.setLineDash([14, 4, 3, 4]);           // 일점쇄선
+      ctx.beginPath(); segTo(a, b); ctx.stroke(); ctx.setLineDash([]);
+      if (sk.text || live) for (const [q, sgn] of [[a, -1], [b, 1]]) {
+        const cx = q[0] + ux * R * sgn, cy = q[1] + uy * R * sgn;
+        if (cx < -40 || cy < -40 || cx > VW + 40 || cy > VH + 40) continue;
+        ctx.fillStyle = "#fff"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = col; ctx.font = `bold ${(sk.text || "").length > 2 ? 10 : 12}px sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText(sk.text || "?", cx, cy + 0.5);
+      }
     } else if (sk.kind === "text") {
       const q = scr(p[0], p[1]); ctx.font = "bold 15px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
       ctx.lineWidth = 4; ctx.strokeStyle = "#fff"; ctx.strokeText(sk.text, q[0], q[1]); ctx.fillText(sk.text, q[0], q[1]);
@@ -176,7 +217,8 @@ const SK = (() => {
     const b = e.target.closest("button"); if (!b) return; st.tool = b.dataset.tool;
     for (const x of $("#skTools").children) x.classList.toggle("on", x === b);
     hint({ beam: "끌어서 보 그리기 (끝점·기둥에 붙음)", column: "끌어서 기둥 크기 · 짧게 누르면 500×500", wall: "끌어서 벽 그리기",
-      free: "자유롭게 그리기", text: "글자 넣을 곳을 누르세요", erase: "지울 스케치를 누르세요" }[st.tool]); setTimeout(() => hint(""), 1800);
+      free: "자유롭게 그리기", text: "글자 넣을 곳을 누르세요", erase: "지울 스케치를 누르세요",
+      axis: "끌어서 축(그리드)선 그리기 → 이름(X1·Y1…) 입력, 양 끝에 버블" }[st.tool]); setTimeout(() => hint(""), 1800);
   });
   $("#skUndo").onclick = undo;
   buildColors();

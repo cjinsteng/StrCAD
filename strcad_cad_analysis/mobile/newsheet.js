@@ -58,8 +58,88 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
     await openBytes(bytes, `${safeName(project)}_현장조사.strsv`);
   }
 
+  // ---------------------------------------------------------------- 사진 원근 보정 (네 모서리 → 반듯한 직사각형)
+  function solve8(A, b) {                    // 가우스 소거
+    const n = 8;
+    for (let i = 0; i < n; i++) {
+      let mx = i; for (let r = i + 1; r < n; r++) if (Math.abs(A[r][i]) > Math.abs(A[mx][i])) mx = r;
+      [A[i], A[mx]] = [A[mx], A[i]]; [b[i], b[mx]] = [b[mx], b[i]];
+      for (let r = i + 1; r < n; r++) { const f = A[r][i] / A[i][i]; for (let c = i; c < n; c++) A[r][c] -= f * A[i][c]; b[r] -= f * b[i]; }
+    }
+    const x = new Array(n).fill(0);
+    for (let i = n - 1; i >= 0; i--) { let v = b[i]; for (let c = i + 1; c < n; c++) v -= A[i][c] * x[c]; x[i] = v / A[i][i]; }
+    return x;
+  }
+  function homography(src, dst) {           // dst(u,v) → src(x,y)
+    const A = [], b = [];
+    for (let i = 0; i < 4; i++) {
+      const [u, v] = dst[i], [x, y] = src[i];
+      A.push([u, v, 1, 0, 0, 0, -u * x, -v * x]); b.push(x);
+      A.push([0, 0, 0, u, v, 1, -u * y, -v * y]); b.push(y);
+    }
+    return solve8(A, b);
+  }
+  function loadImg(blob) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = URL.createObjectURL(blob); }); }
+  async function cornerEditor(file) {
+    const small = await shrinkImage(file, 2400, 0.92);
+    const im = await loadImg(small), iw = im.naturalWidth, ih = im.naturalHeight;
+    return new Promise((resolve) => {
+      const ov = el("div", { class: "ce-ov" });
+      const cv2 = el("canvas", { class: "ce-cv" });
+      const done = (v) => { ov.remove(); resolve(v); };
+      const bar = el("div", { class: "ce-bar" },
+        el("span", {}, "주황 점 네 개를 용지(도면) 모서리로 끌어 놓으세요"),
+        el("button", { class: "b gray", onclick: () => done(null) }, "취소"),
+        el("button", { class: "b ok", onclick: () => done(warp()) }, "펴기"));
+      ov.append(cv2, bar); document.body.append(ov);
+      const g = cv2.getContext("2d");
+      let k = 1, ox = 0, oy = 0;
+      const pts = [[iw * 0.05, ih * 0.05], [iw * 0.95, ih * 0.05], [iw * 0.95, ih * 0.95], [iw * 0.05, ih * 0.95]];
+      function layout() {
+        const r = cv2.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+        cv2.width = r.width * dpr; cv2.height = r.height * dpr; g.setTransform(dpr, 0, 0, dpr, 0, 0);
+        k = Math.min((r.width - 40) / iw, (r.height - 40) / ih); ox = (r.width - iw * k) / 2; oy = (r.height - ih * k) / 2; paint();
+      }
+      function paint() {
+        const r = cv2.getBoundingClientRect(); g.clearRect(0, 0, r.width, r.height);
+        g.drawImage(im, ox, oy, iw * k, ih * k);
+        g.strokeStyle = "#F28C28"; g.lineWidth = 3; g.beginPath();
+        pts.forEach((p, i) => { const x = ox + p[0] * k, y = oy + p[1] * k; i ? g.lineTo(x, y) : g.moveTo(x, y); }); g.closePath(); g.stroke();
+        pts.forEach((p, i) => { const x = ox + p[0] * k, y = oy + p[1] * k; g.fillStyle = "#F28C28"; g.beginPath(); g.arc(x, y, 12, 0, 7); g.fill();
+          g.fillStyle = "#fff"; g.font = "bold 12px sans-serif"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText(String(i + 1), x, y); });
+      }
+      let drag = -1;
+      cv2.addEventListener("pointerdown", (e) => { const r = cv2.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+        let best = -1, bd = 40; pts.forEach((p, i) => { const d = Math.hypot(ox + p[0] * k - x, oy + p[1] * k - y); if (d < bd) { bd = d; best = i; } });
+        drag = best; if (drag >= 0) cv2.setPointerCapture(e.pointerId); });
+      cv2.addEventListener("pointermove", (e) => { if (drag < 0) return; const r = cv2.getBoundingClientRect();
+        pts[drag] = [Math.min(iw, Math.max(0, (e.clientX - r.left - ox) / k)), Math.min(ih, Math.max(0, (e.clientY - r.top - oy) / k))]; paint(); });
+      cv2.addEventListener("pointerup", () => { drag = -1; });
+      function warp() {
+        const d = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+        let W = Math.max(d(pts[0], pts[1]), d(pts[3], pts[2])), H = Math.max(d(pts[0], pts[3]), d(pts[1], pts[2]));
+        const s = Math.min(1, 2400 / Math.max(W, H)); W = Math.round(W * s); H = Math.round(H * s);
+        const h = homography(pts, [[0, 0], [W, 0], [W, H], [0, H]]);
+        const sc = document.createElement("canvas"); sc.width = iw; sc.height = ih; const sg = sc.getContext("2d"); sg.drawImage(im, 0, 0);
+        const src = sg.getImageData(0, 0, iw, ih).data;
+        const oc = document.createElement("canvas"); oc.width = W; oc.height = H; const og = oc.getContext("2d");
+        const out = og.createImageData(W, H), od = out.data;
+        for (let v = 0; v < H; v++) for (let u = 0; u < W; u++) {
+          const den = h[6] * u + h[7] * v + 1, x = (h[0] * u + h[1] * v + h[2]) / den, y = (h[3] * u + h[4] * v + h[5]) / den;
+          const xi = x | 0, yi = y | 0, o = (v * W + u) * 4;
+          if (xi < 0 || yi < 0 || xi >= iw || yi >= ih) { od[o] = od[o + 1] = od[o + 2] = 255; od[o + 3] = 255; continue; }
+          const si = (yi * iw + xi) * 4; od[o] = src[si]; od[o + 1] = src[si + 1]; od[o + 2] = src[si + 2]; od[o + 3] = 255;
+        }
+        og.putImageData(out, 0, 0);
+        return new Promise((res) => oc.toBlob((b) => res(b), "image/jpeg", 0.9));
+      }
+      setTimeout(layout, 0); window.addEventListener("resize", layout, { once: true });
+    }).then((v) => v);
+  }
+
   // ---------------------------------------------------------------- dialog
   function dialog(newProject) {
+    const lab = (t) => el("div", { class: "ns-lab" }, t);
     let kind = "blank", file = null;
     const inp = (ph, val, type = "text") => el("input", { type, class: "ns-in", placeholder: ph, value: val });
     const proj = inp("프로젝트(건물) 이름", newProject ? "" : (S.meta.project || ""));
@@ -69,14 +149,16 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
     const prev = el("div", { class: "ns-prev" }, "사진 없음");
     const fileIn = el("input", { type: "file", accept: "image/*", hidden: "" });
     const camIn = el("input", { type: "file", accept: "image/*", capture: "environment", hidden: "" });
-    const onFile = (e) => { const f = e.target.files[0]; if (!f) return; file = f; const u = URL.createObjectURL(f);
-      prev.innerHTML = ""; prev.append(el("img", { src: u })); };
+    const showPrev = (blob) => { prev.innerHTML = ""; prev.append(el("img", { src: URL.createObjectURL(blob) })); };
+    const onFile = (e) => { const f = e.target.files[0]; if (!f) return; file = f; showPrev(f); warpBtn.classList.remove("hidden"); };
+    const warpBtn = el("button", { class: "b gray hidden", onclick: async () => {
+      const out = await cornerEditor(file); if (out) { file = out; showPrev(out); toast("반듯하게 폈습니다"); } } }, "📐 모서리 맞춰 펴기");
     fileIn.onchange = onFile; camIn.onchange = onFile;
     const blankBox = el("div", { class: "ns-box" }, lab("크기 (가로 × 세로)"), el("div", { class: "ns-row" }, bw, el("span", {}, "×"), bh, el("span", {}, "m")),
       el("p", { class: "small" }, "격자(1 m) 위에 검측위치·스케치를 기록합니다."));
     const photoBox = el("div", { class: "ns-box hidden" },
       el("div", { class: "ns-row" }, el("button", { class: "b edit", onclick: () => camIn.click() }, "📷 촬영"),
-        el("button", { class: "b gray", onclick: () => fileIn.click() }, "🖼 사진 선택")), prev, lab("사진 가로 실제 길이 (m)"), pw,
+        el("button", { class: "b gray", onclick: () => fileIn.click() }, "🖼 사진 선택")), prev, warpBtn, lab("사진 가로 실제 길이 (m)"), pw,
       el("p", { class: "small" }, "도면 사진·스캔·캡처를 배경으로 깝니다. 축척은 나중에 메뉴 › 📏 축척 맞추기로 아는 길이 두 점을 찍어 맞출 수 있습니다."),
       fileIn, camIn);
     const seg = el("div", { class: "dt-seg" },
@@ -84,7 +166,6 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
       el("button", { onclick: (e) => pick(e, "photo") }, "사진·이미지 배경"));
     function pick(e, k) { kind = k; for (const b of seg.children) b.classList.toggle("on", b === e.target);
       blankBox.classList.toggle("hidden", k !== "blank"); photoBox.classList.toggle("hidden", k !== "photo"); }
-    const lab = (t) => el("div", { class: "ns-lab" }, t);
     sheet((b) => b.append(el("h3", {}, newProject ? "새 조사 (DXF 없이)" : "도면 추가"),
       ...(newProject ? [lab("프로젝트(건물)"), proj] : [el("p", { class: "small" }, `프로젝트: ${S.meta.project || "-"}`)]),
       lab("도면(층) 이름"), name, lab("배경"), seg, blankBox, photoBox,

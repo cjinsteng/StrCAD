@@ -251,3 +251,8 @@ body.sketching #cv { cursor: crosshair; }
   justify-content: center; color: var(--muted); overflow: hidden; }
 .ns-prev img { max-width: 100%; max-height: 180px; display: block; }
 .ns-lab { font-size: 12px; color: var(--navy); font-weight: 700; margin: 8px 0 0; }
+/* 사진 모서리 맞추기 */
+.ce-ov { position: fixed; inset: 0; background: #111; z-index: 40; display: flex; flex-direction: column; }
+.ce-cv { flex: 1; width: 100%; touch-action: none; }
+.ce-bar { display: flex; gap: 8px; align-items: center; padding: 10px 12px calc(10px + var(--safe-b)); background: var(--navy); color: #fff; }
+.ce-bar span { flex: 1; font-size: 13px; }

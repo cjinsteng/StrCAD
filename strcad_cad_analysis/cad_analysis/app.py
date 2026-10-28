@@ -1427,6 +1427,15 @@ class CadAnalysisApp:
                 elif kind == "free" and len(p) >= 4:
                     cv.create_line(*[c for i in range(0, len(p) - 1, 2) for c in self.w2s(p[i], p[i + 1])],
                                    fill=col, width=2.5, capstyle="round", joinstyle="round", smooth=True, tags=tag)
+                elif kind == "axis" and len(p) >= 4:          # X·Y 축(그리드) + 양 끝 버블
+                    a, b = self.w2s(p[0], p[1]), self.w2s(p[2], p[3])
+                    cv.create_line(*a, *b, fill=col, width=1.5, dash=(12, 4, 2, 4), tags=tag)
+                    L = math.hypot(b[0] - a[0], b[1] - a[1]) or 1
+                    ux, uy, R = (b[0] - a[0]) / L, (b[1] - a[1]) / L, 12
+                    for q, sg in ((a, -1), (b, 1)):
+                        cx, cy = q[0] + ux * R * sg, q[1] + uy * R * sg
+                        cv.create_oval(cx - R, cy - R, cx + R, cy + R, outline=col, fill="white", width=2, tags=tag)
+                        cv.create_text(cx, cy, text=sk.get("text", ""), fill=col, font=(TH.FAM, 9, "bold"), tags=tag)
                 elif kind == "text" and len(p) >= 2:
                     x, y = self.w2s(p[0], p[1])
                     cv.create_text(x, y, text=sk.get("text", ""), fill=col, font=(TH.FAM, 10, "bold"), tags=tag)
