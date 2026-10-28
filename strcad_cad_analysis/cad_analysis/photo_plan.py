@@ -118,6 +118,16 @@ def warp(img, corners, out_w=None):
     return cv2.warpPerspective(img, M, (W, H), flags=cv2.INTER_CUBIC, borderValue=(255, 255, 255))
 
 
+def paper_k(corners, paper="A3", scale=200):
+    """사진에서 찾은 용지 네 모서리 → 사진 1px 의 실제 길이(mm). 분석 영역을 따로 잘라도 그대로 쓸 수 있음."""
+    tl, tr, br, bl = _order(corners)
+    w = max(math.dist(tl, tr), math.dist(bl, br))
+    h = max(math.dist(tl, bl), math.dist(tr, br))
+    a, b = PAPER_MM.get(paper, PAPER_MM["A3"])
+    long_px, long_mm = max(w, h), max(a, b)
+    return long_mm * float(scale) / max(long_px, 1.0)
+
+
 def mm_per_px(img_w_px, paper="A3", scale=200, landscape=True):
     a, b = PAPER_MM.get(paper, PAPER_MM["A3"])
     paper_w = max(a, b) if landscape else min(a, b)
@@ -439,6 +449,208 @@ def recognize(path, corners=None, k_mm=None, paper="A3", scale=200, use_ocr=True
 
 
 # =============================================================================
+#  3b. 방향 모폴로지로 선 찾기 (해상도 낮고 글자 많은 실제 도면 사진용)
+# =============================================================================
+def _line_kernel(K, ang):
+    cv2, np = _cv()
+    k = np.zeros((K, K), np.uint8)
+    c = K // 2
+    dx, dy = math.cos(math.radians(ang)) * c, math.sin(math.radians(ang)) * c
+    cv2.line(k, (int(round(c - dx)), int(round(c - dy))), (int(round(c + dx)), int(round(c + dy))), 1, 1)
+    return k
+
+
+def _ink(img, texts=()):
+    cv2, np = _cv()
+    H, W = img.shape[:2]
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    bg = cv2.medianBlur(cv2.resize(g, (max(1, W // 8), max(1, H // 8))), 21)
+    norm = cv2.divide(g, cv2.resize(bg, (W, H)), scale=255)
+    block = max(15, (min(W, H) // 80) | 1)
+    ink = cv2.adaptiveThreshold(norm, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, block, 10)
+    for text, cx, cy, ang, hh, _s in texts:
+        r = int(max(hh, 6) * 0.55 + 1)
+        wlen = int(max(len(text), 1) * hh * 0.42 + r)
+        box = cv2.boxPoints(((cx, cy), (2 * wlen, 2 * r), -ang)).astype(np.int32)
+        cv2.fillPoly(ink, [box], 0)
+    return ink
+
+
+def morph_lines(img, texts=(), log=print):
+    """글자보다 긴 직선만 남기는 방향 열림(opening) → 중심선 조각.
+    → (pieces [(x1,y1,x2,y2,1.0)], 선 마스크, 방향 목록)"""
+    cv2, np = _cv()
+    H, W = img.shape[:2]
+    ink = _ink(img, texts)
+    K = max(21, int(min(W, H) / 60) | 1)               # 글자(높이 ~1/100)보다 긴 선
+    bases = [0.0, 90.0]
+    for a in dominant_angles(img):
+        for b in (a, a + 90.0):
+            if all(min(abs(b - c) % 180, 180 - abs(b - c) % 180) > 6 for c in bases):
+                bases.append(b)
+    pieces = []
+    union = np.zeros_like(ink)
+    for base in bases:
+        m = np.zeros_like(ink)
+        for d in (-6.0, -4.5, -3.0, -1.5, 0.0, 1.5, 3.0, 4.5, 6.0):     # 책 접힘·원근으로 살짝 휜 선까지
+            m |= cv2.morphologyEx(ink, cv2.MORPH_OPEN, _line_kernel(K, base + d))
+        # 두 줄로 그린 보(가까운 평행선)와 작은 끊김을 하나로
+        r = math.radians(base)
+        ux, uy = math.cos(r), math.sin(r)
+        cl = _line_kernel(9, base)
+        m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, cl)
+        m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, _line_kernel(5, base + 90))
+        union |= m
+        n, lab, st, _c = cv2.connectedComponentsWithStats(m, 8)
+        for i in range(1, n):
+            x, y, w, h, area = st[i]
+            ys, xs = np.nonzero(lab[y:y + h, x:x + w] == i)
+            if xs.size < K:
+                continue
+            xs = xs + x
+            ys = ys + y
+            t = xs * ux + ys * uy                       # 방향 좌표
+            o = -xs * uy + ys * ux                      # 수직 좌표
+            if t.max() - t.min() < K:
+                continue
+            step = 4.0
+            bins = ((t - t.min()) // step).astype(int)
+            order = np.argsort(bins)
+            bins, t_s, o_s = bins[order], t[order], o[order]
+            cuts = np.flatnonzero(np.diff(bins)) + 1
+            pts = []
+            for tb, ob in zip(np.split(t_s, cuts), np.split(o_s, cuts)):
+                tm, om = float(tb.mean()), float(np.median(ob))
+                pts.append((tm * ux - om * uy, tm * uy + om * ux))
+            if len(pts) < 2:
+                continue
+            ap = cv2.approxPolyDP(np.array(pts, np.float32).reshape(-1, 1, 2), 1.5, False).reshape(-1, 2)
+            for a_, b_ in zip(ap[:-1], ap[1:]):
+                if math.hypot(b_[0] - a_[0], b_[1] - a_[1]) >= 6:
+                    pieces.append((float(a_[0]), float(a_[1]), float(b_[0]), float(b_[1]), 1.0))
+    log(f"  선 찾기(방향 {', '.join(f'{b:.0f}°' for b in bases)}): 중심선 조각 {len(pieces)}개")
+    return pieces, union, ink
+
+
+def structure_box(pieces, W, H, cells=24):
+    """선이 촘촘히 교차하는 곳 = 골조 영역 (도면 테두리·치수선·책상 등 바깥 선 제외용).
+    교차점 밀도 격자에서 많이 모인 칸들의 범위."""
+    nodes = _crossings(pieces)
+    if len(nodes) < 30:
+        return 0.0, 0.0, float(W), float(H)
+    cw, ch = W / cells, H / cells
+    cnt = {}
+    for x, y in nodes:
+        key = (min(cells - 1, int(x / cw)), min(cells - 1, int(y / ch)))
+        cnt[key] = cnt.get(key, 0) + 1
+    vals = sorted(cnt.values())
+    thr = max(3, vals[int(len(vals) * 0.5)])           # 중간 이상으로 촘촘한 칸
+    dense = [k for k, v in cnt.items() if v >= thr]
+    if not dense:
+        return 0.0, 0.0, float(W), float(H)
+    xs = sorted(k[0] for k in dense)
+    ys = sorted(k[1] for k in dense)
+    q = lambda v, f: v[min(len(v) - 1, max(0, int(round((len(v) - 1) * f))))]
+    x0, x1 = q(xs, 0.02) * cw, (q(xs, 0.98) + 1) * cw
+    y0, y1 = q(ys, 0.02) * ch, (q(ys, 0.98) + 1) * ch
+    return max(0.0, x0 - cw * 0.3), max(0.0, y0 - ch * 0.3), min(float(W), x1 + cw * 0.3), min(float(H), y1 + ch * 0.3)
+
+
+def clip_to_box(pieces, box, min_len=12.0):
+    """상자 안 부분만 남김 (선분 자르기)."""
+    x0, y0, x1, y1 = box
+    out = []
+    for p in pieces:
+        ax, ay, bx, by = p[:4]
+        dx, dy = bx - ax, by - ay
+        t0, t1 = 0.0, 1.0
+        ok = True
+        for pp, qq in ((-dx, ax - x0), (dx, x1 - ax), (-dy, ay - y0), (dy, y1 - ay)):
+            if abs(pp) < 1e-12:
+                if qq < 0:
+                    ok = False
+                    break
+                continue
+            r = qq / pp
+            if pp < 0:
+                t0 = max(t0, r)
+            else:
+                t1 = min(t1, r)
+        if not ok or t0 >= t1:
+            continue
+        q = (ax + dx * t0, ay + dy * t0, ax + dx * t1, ay + dy * t1) + tuple(p[4:])
+        if math.hypot(q[2] - q[0], q[3] - q[1]) >= min_len:
+            out.append(q)
+    return out
+
+
+def _crossings(pieces, min_ang=30.0):
+    """조각들 사이 교차점 (px)."""
+    out = []
+    segs = [p for p in pieces if math.hypot(p[2] - p[0], p[3] - p[1]) >= 8]
+    for i, a in enumerate(segs):
+        d1x, d1y = a[2] - a[0], a[3] - a[1]
+        L1 = math.hypot(d1x, d1y)
+        for b in segs[i + 1:]:
+            d2x, d2y = b[2] - b[0], b[3] - b[1]
+            den = d1x * d2y - d1y * d2x
+            if abs(den) < math.sin(math.radians(min_ang)) * L1 * math.hypot(d2x, d2y):
+                continue
+            t = ((b[0] - a[0]) * d2y - (b[1] - a[1]) * d2x) / den
+            u = ((b[0] - a[0]) * d1y - (b[1] - a[1]) * d1x) / den
+            if -0.05 <= t <= 1.05 and -0.05 <= u <= 1.05:
+                out.append((a[0] + d1x * t, a[1] + d1y * t))
+    return out
+
+
+def columns_at_nodes(ink, pieces, extra_boxes=(), log=print, k_mm=None):
+    """교차점에 있는 작은 네모(속 채움·외곽선) = 기둥. 글자 덩어리는 교차점에서 떨어져 있어 걸러짐."""
+    cv2, np = _cv()
+    nodes = _crossings(pieces)
+    if not nodes:
+        return []
+    pts = np.array(nodes, np.float32)
+    closed = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    # 선 두께보다 큰 네모만 남김
+    dist = cv2.distanceTransform(ink, cv2.DIST_L2, 3)
+    vals = dist[dist > 0]
+    t = max(1.5, float(np.median(vals)) * 2 if vals.size else 2.0)
+    kk = max(5, int(round(t * 2.6)) | 1)
+    sq = cv2.morphologyEx(closed, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (kk, kk)))
+    n, lab, st, cen = cv2.connectedComponentsWithStats(sq, 8)
+    boxes = []
+    for i in range(1, n):
+        x, y, w, h, area = st[i]
+        if not (kk <= w <= kk * 5 and kk <= h <= kk * 5 and 0.4 <= w / h <= 2.5):
+            continue
+        cx, cy = cen[i]
+        d = np.hypot(pts[:, 0] - cx, pts[:, 1] - cy).min()
+        if d > max(4.0, 0.6 * max(w, h)):
+            continue
+        boxes.append(np.array([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], np.float32))
+    for b in extra_boxes:                      # 외곽선 사각형 검출 결과도 교차점 근처만
+        cx, cy = float(np.mean(b[:, 0])), float(np.mean(b[:, 1]))
+        if np.hypot(pts[:, 0] - cx, pts[:, 1] - cy).min() <= max(4.0, 0.5 * float(np.ptp(b[:, 0]))):
+            if all(math.hypot(cx - float(np.mean(q[:, 0])), cy - float(np.mean(q[:, 1]))) > 4 for q in boxes):
+                boxes.append(np.asarray(b, np.float32))
+    if k_mm:                                   # 실제 크기 250~2000mm 만
+        lo, hi = 250.0 / k_mm, 2000.0 / k_mm
+        boxes = [b for b in boxes if lo <= max(float(np.ptp(b[:, 0])), float(np.ptp(b[:, 1]))) <= hi]
+    # 한 교차부에 여러 개 → 큰 것 하나
+    boxes.sort(key=lambda b: -float(np.ptp(b[:, 0]) * np.ptp(b[:, 1])))
+    keep = []
+    for b in boxes:
+        cx, cy = float(b[:, 0].mean()), float(b[:, 1].mean())
+        r = max(float(np.ptp(b[:, 0])), float(np.ptp(b[:, 1])), (600.0 / k_mm) if k_mm else 6.0)
+        if any(math.hypot(cx - q[0], cy - q[1]) < r for q in keep):
+            continue
+        keep.append((cx, cy, b))
+    boxes = [q[2] for q in keep]
+    log(f"  기둥(교차점의 네모) {len(boxes)}개 · 교차점 {len(nodes)}개")
+    return boxes
+
+
+# =============================================================================
 #  4. 사진 전용 부재 만들기 (평행선 쌍 = 보·벽 띠, 사각형 = 기둥, 글자 = 부재명)
 # =============================================================================
 import re as _re
@@ -482,7 +694,7 @@ def parse_labels(texts):
     return out
 
 
-def _bands(lines, k_mm, wmin=120.0, wmax=1300.0, ang_tol=2.0):
+def _bands(lines, k_mm, wmin=120.0, wmax=1300.0, ang_tol=2.0, keep_single=False, single_w_mm=400.0):
     """평행선 쌍 → 띠 [(x1,y1,x2,y2, width_px, uses_middle)] — 가운데 선(그리드·중심선)이 있으면 바깥 두 선을 씀."""
     L = []
     for x1, y1, x2, y2, cov in lines:
@@ -517,6 +729,9 @@ def _bands(lines, k_mm, wmin=120.0, wmax=1300.0, ang_tol=2.0):
                 continue
             cands.append((abs(o), o, j, max(p0a, pa), min(p0b, pb)))
         if not cands:
+            if keep_single and s[5] * k_mm >= 400:          # 짝 없는 선 = 한 줄로 그린 보(해상도가 낮아 두 줄이 붙음)
+                s[6] = True
+                out.append((s[0], s[1], s[2], s[3], single_w_mm / k_mm))
             continue
         cands.sort()
         best = cands[0]
@@ -548,7 +763,7 @@ def build_result(flat, k_mm, lines, col_boxes, texts, log=print):
     mid = 0
     members = []
     # ---- 띠 → 축선(같은 직선 위 띠 합침) → 교차점에서 경간 나눔 → 보/벽
-    bands = _spans(_dedupe_axes(_axes(_bands(lines, k_mm), k_mm), k_mm), k_mm)
+    bands = _spans(_dedupe_axes(_axes(_bands(lines, k_mm, keep_single=True), k_mm), k_mm), k_mm)
     for x1, y1, x2, y2, wpx in bands:
         a, b = P(x1, y1), P(x2, y2)
         Lmm = math.hypot(b[0] - a[0], b[1] - a[1])
@@ -753,7 +968,7 @@ def _nearest_crossing(members, x, y, lim):
     return best[1] if best else None
 
 
-def recognize_photo(path, corners=None, k_mm=None, paper="A3", scale=200, use_ocr=True, log=print):
+def recognize_photo(path, corners=None, k_mm=None, paper="A3", scale=200, use_ocr=True, log=print, auto_region=False):
     """사진 → (펴진 이미지, AnalysisResult). vectorize 의 선·사각형 + 글자로 부재를 바로 만든다."""
     img = read_image(path)
     log(f"사진 {img.shape[1]}×{img.shape[0]}px")
@@ -766,6 +981,17 @@ def recognize_photo(path, corners=None, k_mm=None, paper="A3", scale=200, use_oc
     texts = ocr_texts(flat, log=log) if use_ocr and ocr_available() else []
     if use_ocr and not ocr_available():
         log(ocr_missing_text())
-    lines, col_boxes = _shapes(flat, k_mm, texts, log)
-    res = build_result(flat, k_mm, lines, col_boxes, texts, log)
+    _lines_h, rect_boxes = _shapes(flat, k_mm, texts, log)         # 외곽선 사각형(기둥) 후보
+    pieces, _mask, ink = morph_lines(flat, (), log)                # 방향 열림이 글자를 걸러내므로 글자 지우기 안 함
+    merged = _merge_lines([p[:4] for p in pieces], ang_tol=2.0, off_tol=2.5, gap=10.0)
+    if auto_region:
+        box = structure_box(merged, w, h)
+        n0 = len(merged)
+        merged = clip_to_box(merged, box)
+        rect_boxes = [b for b in rect_boxes if box[0] <= float(b[:, 0].mean()) <= box[2] and
+                      box[1] <= float(b[:, 1].mean()) <= box[3]]
+        texts = [t for t in texts if box[0] <= t[1] <= box[2] and box[1] <= t[2] <= box[3]]
+        log(f"  골조 영역만 사용 ({box[0]:.0f},{box[1]:.0f})-({box[2]:.0f},{box[3]:.0f}): 선 {n0} → {len(merged)}개")
+    col_boxes = columns_at_nodes(ink, merged, rect_boxes, log, k_mm=k_mm)
+    res = build_result(flat, k_mm, merged, col_boxes, texts, log)
     return flat, res, k_mm, texts

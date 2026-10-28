@@ -1009,6 +1009,7 @@ class CadAnalysisApp:
             try:
                 img = PP.read_image(o["path"])
                 corners = PP.detect_corners(img)
+                o["k_mm"] = PP.paper_k(corners, o["paper"], o["scale"])    # 용지 기준 축척 (영역을 잘라도 유지)
                 from PIL import Image
                 import cv2
                 pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
@@ -1026,8 +1027,8 @@ class CadAnalysisApp:
 
         def work():
             if o["mode"] == "recognize":
-                flat, res, k, _t = PP.recognize_photo(path, corners=corners, paper=o["paper"], scale=o["scale"],
-                                                      log=self.log)
+                flat, res, k, _t = PP.recognize_photo(path, corners=corners, k_mm=o.get("k_mm"), paper=o["paper"],
+                                                      scale=o["scale"], log=self.log)
                 import cv2
                 from PIL import Image
                 pil = Image.fromarray(cv2.cvtColor(flat, cv2.COLOR_BGR2RGB))
@@ -1045,7 +1046,7 @@ class CadAnalysisApp:
                 from PIL import Image, ImageOps
                 pil = ImageOps.exif_transpose(Image.open(path))
                 w = pil.size[0]
-            k = PP.mm_per_px(w, o["paper"], o["scale"], pil.size[0] >= pil.size[1])
+            k = o.get("k_mm") or PP.mm_per_px(w, o["paper"], o["scale"], pil.size[0] >= pil.size[1])
             return SH.new_image(path, mm_per_px=k, img=pil)
 
         def done(res):
@@ -1334,7 +1335,7 @@ class CadAnalysisApp:
                     else:
                         cv.create_oval(sx - r, sy - r, sx + r, sy + r, fill=col if not dash else BG,
                                        outline=col, width=2, tags=(tag,))
-                    if name_ok:
+                    if name_ok and (m.name or m.layer != "사진"):        # 사진 인식의 이름 없는 부재는 글자 생략
                         cv.create_text(sx + 7, sy - 6, text=m.display_name(), anchor="sw",
                                        fill=col, font=(TH.FAM, 8), tags=(tag,))
                     continue
@@ -1344,7 +1345,7 @@ class CadAnalysisApp:
                     continue
                 flat = [c for p in pts for c in self.w2s(*p)]
                 cv.create_line(*flat, fill=col, width=2 if kind != "wall" else 3, dash=dash, tags=(tag,))
-                if name_ok and m.length_cc * self.s > 40:
+                if name_ok and m.length_cc * self.s > 40 and (m.name or m.layer != "사진"):
                     if m.curved:
                         mx, my = self.w2s(*pts[len(pts) // 2]); ang = 0
                     else:

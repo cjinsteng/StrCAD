@@ -552,7 +552,7 @@ class CornerDialog(tk.Toplevel):
 
     def __init__(self, master, pil_img, corners, on_ok):
         super().__init__(master)
-        self.title("용지 모서리 맞추기 — 네 점을 용지(도면) 모서리로 끌어 놓으세요")
+        self.title("영역 맞추기 — 네 점을 끌어 용지 또는 골조 범위 모서리에 놓으세요")
         self.transient(master)
         self.configure(bg=TH.SURFACE)
         self.on_ok = on_ok
@@ -572,7 +572,9 @@ class CornerDialog(tk.Toplevel):
         self.cv.bind("<ButtonRelease-1>", lambda e: setattr(self, "drag", None))
         b = ttk.Frame(self)
         b.pack(fill="x", padx=8, pady=(0, 8))
-        ttk.Label(b, text="주황 점 = 용지 모서리 (왼쪽 위부터). 사진 전체를 쓰려면 [사진 전체].").pack(side="left")
+        ttk.Label(b, text="주황 점 = 모서리(왼쪽 위부터). 부재 인식은 네 점을 기둥·보가 있는 골조 범위에 맞추면 "
+                          "테두리·치수선이 빠져 훨씬 정확합니다. (축척은 용지 크기 기준으로 계산)",
+                  wraplength=900, justify="left").pack(side="left")
         ttk.Button(b, text="확인", style="Accent.TButton", command=self._ok).pack(side="right")
         ttk.Button(b, text="사진 전체", command=self._full).pack(side="right", padx=6)
         ttk.Button(b, text="취소", command=self.destroy).pack(side="right")
