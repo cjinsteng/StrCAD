@@ -415,7 +415,8 @@ class Builder:
         # 줄 간격
         sizes = [self._size(c) for _, c in rp.chars] or [self._size(first_csid if first_csid is not None else 0)]
         mx = max(sizes) if sizes else 10
-        sp = {"w:before": TWIP(ps["pre"] / 2), "w:after": TWIP(ps["next"] / 2)}
+        # 한글은 쪽 맨 위에서 '문단 위 간격'을 띄우지 않으므로 쪽 나누기 문단은 0
+        sp = {"w:before": 0 if (rp.brk & 0x04) else TWIP(ps["pre"] / 2), "w:after": TWIP(ps["next"] / 2)}
         if not has_pic:
             if ps["ls_type"] == 0:                      # 글자에 따라 (%)
                 # 줄 간격은 한글과 똑같이 (쪽 구성 유지). 100% 미만은 Word 에서 글자가 겹치므로 글자만 줄인다
@@ -681,6 +682,9 @@ class Builder:
                 p.insert(0, ppr)
             if ppr.find(qn("w:pageBreakBefore")) is None:
                 ppr.insert(0, _el("w:pageBreakBefore"))
+            sp = ppr.find(qn("w:spacing"))
+            if sp is not None:
+                sp.set(qn("w:before"), "0")
         for idx, (k, obj) in enumerate(blocks):
             if k == "p":
                 has_text = any(ch.strip() for ch, _ in obj.chars)
@@ -691,6 +695,12 @@ class Builder:
                 # 쪽 나누기가 있던 앵커면 표/그림의 첫 문단에 쪽 나누기를 옮겨 빈 쪽이 생기지 않게 한다
                 if not has_text and nxt and nxt[0][0] in ("t", "g"):
                     carry_break = carry_break or bool(obj.brk & 0x04)
+                    continue
+                # 쪽 나누기만 하는 빈 문단 → 다음 글 문단으로 쪽 나누기를 옮기고 지움 (새 쪽 맨 위 빈 줄 방지)
+                # 다음 문단도 쪽 나누기면(일부러 비운 쪽) 그대로 둔다
+                if (not has_text and (obj.brk & 0x04) and nxt and nxt[0][0] == "p"
+                        and not (nxt[0][1].brk & 0x04) and not in_cell):
+                    carry_break = True
                     continue
                 out.append(self.make_p(obj, part))
                 if carry_break:
@@ -737,7 +747,10 @@ class Builder:
         for e in self.make_blocks(self.src.blocks, self.doc.part):
             sectpr.addprevious(e)
         if sectpr.getprevious() is None or sectpr.getprevious().tag == qn("w:tbl"):
-            sectpr.addprevious(_el("w:p"))
+            endp = _el("w:p")
+            ppr = _sub(endp, "w:pPr")
+            _sub(ppr, "w:spacing", **{"w:before": 0, "w:after": 0, "w:line": 20, "w:lineRule": "exact"})
+            sectpr.addprevious(endp)
         # 머리말 / 꼬리말
         for blocks, hf in ((self.src.header, sec.header), (self.src.footer, sec.footer)):
             if not blocks:
@@ -748,14 +761,29 @@ class Builder:
                 el.remove(c)
             for e in self.make_blocks(blocks, hf.part):
                 el.append(e)
+            # Word 는 머리말/꼬리말 끝에 문단이 꼭 있어야 함 → 표 뒤 빈 문단을 1pt 로 (본문이 밀리지 않게)
             if not len(el) or el[-1].tag != qn("w:p"):
                 el.append(_el("w:p"))
+            last = el[-1]
+            if not "".join(t.text or "" for t in last.iter(qn("w:t"))).strip() and last.find(".//" + qn("w:drawing")) is None:
+                for c in list(last):
+                    last.remove(c)
+                ppr = _sub(last, "w:pPr")
+                _sub(ppr, "w:spacing", **{"w:before": 0, "w:after": 0, "w:line": 20, "w:lineRule": "exact"})
+                rpr = _sub(ppr, "w:rPr")
+                _sub(rpr, "w:sz", **{"w:val": 2})
         self._settings()
         self.doc.save(out_path)
         return out_path
 
     def _settings(self):
         st = self.doc.settings.element
+        compat = st.find(qn("w:compat"))
+        if compat is None:
+            compat = _el("w:compat")
+            st.append(compat)
+        if compat.find(qn("w:suppressSpBfAfterPgBrk")) is None:      # 쪽 나누기 뒤 '문단 위 간격' 없앰
+            compat.insert(0, _el("w:suppressSpBfAfterPgBrk"))
         dts = st.find(qn("w:defaultTabStop"))
         if dts is None:
             dts = _el("w:defaultTabStop")

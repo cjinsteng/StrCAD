@@ -584,7 +584,51 @@ def picture_para(doc, image_path, width_cm=None):
     return new
 
 
+def tidy_header_footer(docx_document):
+    """머리말/꼬리말이 표로 끝나 뒤에 붙은 빈 문단 → 1pt (안 그러면 쪽마다 본문 위·아래에 빈 줄)"""
+    n = 0
+    for sec in docx_document.sections:
+        for hf in (sec.header, sec.footer, sec.first_page_header, sec.first_page_footer,
+                   sec.even_page_header, sec.even_page_footer):
+            try:
+                if hf.is_linked_to_previous:
+                    continue
+                el = hf._element
+            except Exception:
+                continue
+            kids = [c for c in el if c.tag in (W_P, W_TBL)]
+            if len(kids) < 2 or kids[-1].tag != W_P or kids[-2].tag != W_TBL:
+                continue
+            last = kids[-1]
+            if "".join(t.text or "" for t in last.iter(W_T)).strip() or last.find(".//" + qn("w:drawing")) is not None:
+                continue
+            ppr = last.find(W_PPR)
+            if ppr is None:
+                ppr = last.makeelement(W_PPR, {})
+                last.insert(0, ppr)
+            sp = ppr.find(qn("w:spacing"))
+            if sp is not None and sp.get(qn("w:line")) == "20":
+                continue
+            if sp is None:
+                sp = ppr.makeelement(qn("w:spacing"), {})
+                ppr.append(sp)
+            for k, v in (("w:before", "0"), ("w:after", "0"), ("w:line", "20"), ("w:lineRule", "exact")):
+                sp.set(qn(k), v)
+            rpr = ppr.find(W_RPR)
+            if rpr is None:
+                rpr = ppr.makeelement(W_RPR, {})
+                ppr.append(rpr)
+            sz = rpr.find(qn("w:sz"))
+            if sz is None:
+                sz = rpr.makeelement(qn("w:sz"), {})
+                rpr.append(sz)
+            sz.set(qn("w:val"), "2")
+            n += 1
+    return n
+
+
 def save_docx(doc, path=None):
+    tidy_header_footer(doc.docx)
     doc.docx.save(path or doc.path)
 
 
