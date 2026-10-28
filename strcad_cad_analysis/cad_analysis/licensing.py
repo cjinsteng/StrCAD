@@ -36,8 +36,10 @@ MODULES = {                          # 런처 모듈 id → 표시 이름
     "3d_design": "3D Design",
     "auto_table": "Auto Table",
     "basic_design": "Basic Design",
-    "detail_design": "Detail Design",
+    "report_design": "Report Design",
 }
+# 이름이 바뀐 모듈: 예전에 발급된 키(mods 에 옛 id)도 그대로 인정
+MODULE_ALIASES = {"report_design": ("detail_design",)}
 EDITIONS = {"trial": "체험판", "standard": "Standard", "pro": "Professional", "site": "사이트(다중 PC)"}
 
 DIR = os.path.join(os.path.expanduser("~"), ".strcad")
@@ -463,7 +465,9 @@ def status(now: datetime | None = None) -> dict:
 
 
 def allows(st: dict, module: str) -> bool:
-    return bool(st.get("ok")) and ("*" in st.get("modules", ()) or module in st.get("modules", ()))
+    mods = st.get("modules", ())
+    return bool(st.get("ok")) and ("*" in mods or module in mods
+                                   or any(m in mods for m in MODULE_ALIASES.get(module, ())))
 
 
 def should_warn(st: dict) -> bool:

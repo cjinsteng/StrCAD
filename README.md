@@ -7,6 +7,7 @@
 | CAD Analysis | `strcad_cad_analysis/` | DXF 구조·건축 평면 분석, 부재리스트, 현장조사(휴대폰·태블릿 앱 연동), 간이 휨·전단 검토, 현장 스케치 |
 | 2D Design | `design_2d/` | 2D 도면 작업 |
 | Auto Table | `autotable/` | 보·기둥·슬래브·벽 배근표 자동 작성 |
+| Report Design | `report_design/` | 진단·검토 보고서(한글 .hwp) 작성 도우미 — 반복 내용 동기화, 절 단위 AI 검토(Claude / Ollama 무료), 번호 검사, 한글 파일 반영 |
 | (구버전) | `autocad_structure_analyzer/`, `modules/` | 이전 DXF 분석기 |
 
 ## 실행

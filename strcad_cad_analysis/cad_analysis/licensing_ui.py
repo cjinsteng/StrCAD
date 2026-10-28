@@ -124,7 +124,7 @@ class LicenseDialog(tk.Toplevel):
                      ("일련번호", st.get("serial", ""))]
             mods = st.get("modules") or set()
             if mods and "*" not in mods:
-                rows.append(("사용 모듈", ", ".join(LC.MODULES.get(m, m) for m in sorted(mods))))
+                rows.append(("사용 모듈", ", ".join(LC.MODULES.get(m, {"detail_design": "Report Design"}.get(m, m)) for m in sorted(mods))))
         elif s in ("trial", "trial_expired"):
             rows += [("체험 기간", f"{st.get('trial_days')}일 · {st.get('expiry')}까지")]
         for i, (k, v) in enumerate(rows):

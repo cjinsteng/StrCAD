@@ -3,6 +3,7 @@ STR Design & Check  —  런처 메인 화면
 · 헤더: 타이틀 / 로그인 상태 / [로그인] 버튼
 · 2×3 모듈 카드 그리드 (로그인 전 잠금)
 · CAD Analysis → DXF 분석기 창 실행
+· Report Design → 진단·검토 보고서 작성 도우미 (report_design/)
 · 하단 ver. 1.0.0
 기본 계정: 1234 / 1234   |   user1 / pass1234   ·   회원가입한 계정 (accounts.py, ~/.strcad/users.json)
 """
@@ -205,7 +206,7 @@ class ModCard(tk.Frame):
         if self._s:
             tk.Label(inn, text=self._s, font=("Malgun Gothic",8),
                      bg=bg, fg=TX2 if not lk else DIS,
-                     anchor="w", wraplength=180).pack(fill="x")
+                     anchor="w", justify="left", wraplength=180).pack(fill="x")
         if not lk:
             tk.Frame(inn, bg=bg, height=6).pack()
             tk.Frame(inn, bg=ACC, height=2).pack(fill="x", side="bottom")
@@ -252,7 +253,7 @@ class Launcher(tk.Tk):
         ("3d_design",   "3D Design",    "3D 구조 모델링",     "🧱","NEW", 0,2),
         ("cad_analysis","CAD Analysis", "DXF 구조도면 분석",  "🔍",None,  1,0),
         ("auto_table",  "Auto Table",   "보·기둥·슬래브·벽\n배근표 자동 작성", "📊","NEW", 1,1),
-        ("detail_design","Detail Design","상세 구조 설계",    "📋",None,  1,2),
+        ("report_design","Report Design","진단·검토 보고서\n작성 도우미", "📝","NEW", 1,2),
     ]
     def __init__(self):
         super().__init__()
@@ -393,7 +394,7 @@ class Launcher(tk.Tk):
             elif mid == "2d_design":     self._open_2d()
             elif mid == "3d_design":     self._open_3d()
             elif mid == "auto_table":    self._open_auto_table()
-            elif mid == "detail_design": messagebox.showinfo("준비 중","Detail Design\n모듈 준비 중입니다.", parent=self)
+            elif mid == "report_design": self._open_report()
             else:                        messagebox.showinfo("준비 중","해당 모듈 준비 중입니다.", parent=self)
         return _h
 
@@ -463,6 +464,36 @@ class Launcher(tk.Tk):
         win.geometry("920x700"); win.minsize(740,560)
         win.configure(bg="#0d1117"); win.lift(); win.focus_force()
         CadPanel(win, username=self._user)
+
+    def _open_report(self):
+        """Report Design (report_design/report_assistant.py) — 한글 보고서 작성 도우미"""
+        for d in (BASE_DIR / "report_design", WORK_DIR / "report_design"):
+            if (d / "report_assistant.py").exists():
+                if str(d) in sys.path: sys.path.remove(str(d))
+                sys.path.insert(0, str(d)); break
+        for attempt in (1, 2):
+            try:
+                from report_assistant import open_report_design
+                break
+            except ImportError as e:
+                missing = getattr(e, "name", None) or str(e)
+                if attempt == 1 and not getattr(sys, "frozen", False) and missing and "report_" not in missing:
+                    if messagebox.askyesno("Report Design — 패키지 필요",
+                            f"Report Design 실행에 필요한 파이썬 패키지가 없습니다: {missing}\n\n"
+                            f"지금 설치할까요? (pip install -r requirements.txt)", parent=self):
+                        if self._pip_install():
+                            continue
+                messagebox.showerror("Report Design 실행 오류",
+                    f"Report Design을 불러오지 못했습니다.\n({e})\n\nreport_design 폴더와 "
+                    "pip install olefile pywin32 를 확인하세요.", parent=self)
+                return
+        try:
+            nm = (getattr(self, "_uinfo", None) or {}).get("name") or self._user
+            app = open_report_design(self, username=nm)
+            app.root.title(f"StrCAD - Report Design  ─  {nm}")
+        except Exception as e:
+            import traceback
+            messagebox.showerror("Report Design 오류", f"{e}\n\n{traceback.format_exc()}", parent=self)
 
     def _open_3d(self):
         try:
@@ -730,7 +761,9 @@ def _selftest(out):
     lines = []
     try:
         import importlib
-        for m in ("accounts", "cad_analysis.app", "cad_analysis.licensing", "cad_analysis.licensing_ui", "design_2d"):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_design"))
+        for m in ("accounts", "cad_analysis.app", "cad_analysis.licensing", "cad_analysis.licensing_ui", "design_2d",
+                  "olefile", "hwp_reader", "report_core", "report_assistant"):
             try: importlib.import_module(m); lines.append("OK " + m)
             except Exception as e: lines.append(f"FAIL {m} {e!r}")
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "autotable"))

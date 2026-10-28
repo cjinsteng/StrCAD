@@ -7,3 +7,6 @@ opencv-python-headless   # 종이 도면 사진 인식 (원근 보정·선/사�
 # 사진 속 부재명 글자 읽기 — onnxruntime 이 아직 Python 3.15 를 지원하지 않아 3.14 이하에서만 설치
 # (3.15 에서는 형상 인식만 되고 부재명은 읽지 않음. 설치 파일(StrCAD_Setup)에는 들어 있음)
 rapidocr_onnxruntime; python_version < "3.15"
+# Report Design (한글 보고서 도우미): .hwp 읽기 / 한글 자동화로 반영(Windows)
+olefile
+pywin32; sys_platform == "win32"
