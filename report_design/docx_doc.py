@@ -607,3 +607,66 @@ def add_table_row(tbl_el):
         tc.append(clone_para(tmpl, "") if tmpl is not None else _plain_p(""))
     trs[-1].addnext(new)
     return new
+
+
+def add_picture_to_cell(doc, tc, image_path):
+    """표 칸 안에 그림 (칸 폭에 맞춤, 비율 유지)"""
+    tcpr = tc.find(W_TCPR)
+    w_tw = None
+    if tcpr is not None and tcpr.find(qn("w:tcW")) is not None:
+        try:
+            w_tw = int(tcpr.find(qn("w:tcW")).get(qn("w:w"), "0"))
+        except ValueError:
+            w_tw = None
+    area = text_area_emu(doc.docx)
+    cell_w = int(w_tw * 635 * 0.92) if w_tw else int(area[0] * 0.4)
+    cx, cy = fit_picture_size(image_path, cell_w, (cell_w, int(area[1] * 0.6)))
+    tmp = doc.docx.add_paragraph()
+    run = tmp.add_run()
+    run.add_picture(image_path, width=Emu(cx), height=Emu(cy))
+    r = run._r
+    tmp._p.remove(r)
+    tmp._p.getparent().remove(tmp._p)
+    ps = [c for c in tc if c.tag == W_P]
+    target = None
+    for p in ps:                                      # 빈 문단이 있으면 거기에
+        txt, _, pic = para_text(p)
+        if not txt.strip() and not pic:
+            target = p
+            break
+    if target is None:
+        target = clone_para(ps[0], "") if ps else _plain_p("")
+        (ps[-1].addnext(target) if ps else tc.append(target))
+    for x in list(target):
+        if x.tag == W_R:
+            target.remove(x)
+    ppr = target.find(W_PPR)
+    if ppr is None:
+        ppr = target.makeelement(W_PPR, {})
+        target.insert(0, ppr)
+    sp = ppr.find(qn("w:spacing"))
+    if sp is not None:                                # 고정 줄 간격이면 그림이 잘리므로 해제
+        for a in (qn("w:line"), qn("w:lineRule")):
+            if a in sp.attrib:
+                del sp.attrib[a]
+    jc = ppr.find(qn("w:jc"))
+    if jc is None:
+        jc = ppr.makeelement(qn("w:jc"), {})
+        ppr.append(jc)
+    jc.set(qn("w:val"), "center")
+    target.append(r)
+    return target
+
+
+def set_cell_paragraphs(cell_paras_el, texts):
+    """칸의 글 문단들(cell_paras_el, 그림 문단 제외)을 texts 개수에 맞게 늘리거나 줄임 (글은 바꾸지 않음)
+    → 새 목록 [w:p] (texts 와 같은 길이)"""
+    els = list(cell_paras_el)
+    while len(els) < len(texts):
+        n = clone_para(els[-1], "")
+        els[-1].addnext(n)
+        els.append(n)
+    while len(els) > max(1, len(texts)):
+        e = els.pop()
+        e.getparent().remove(e)
+    return els

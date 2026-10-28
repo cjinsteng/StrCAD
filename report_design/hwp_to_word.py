@@ -126,6 +126,7 @@ class RPara:
     def __init__(self, shape, brk):
         self.shape, self.brk = shape, brk
         self.chars = []          # [(글자, 글자모양 id)] ; '\t', '\n' 포함, '\x12' = 쪽 번호 자리
+        self.pitch = None        # 한글이 실제로 쓴 줄 간격 (HWPUNIT, LINE_SEG: 줄 높이 + 줄 간격)
         self.items = []          # 문단 뒤에 놓일 표/그림/글상자
 
 
@@ -210,6 +211,11 @@ class HwpSource:
             tt, l, bb = self.recs[j]
             if l == lvl + 1 and tt == TAG_PARA_TEXT:
                 raw = bb
+            elif l == lvl + 1 and tt == 69 and len(bb) >= 36:          # PARA_LINE_SEG
+                segs = [struct.unpack_from("<IiiiiiiiI", bb, k) for k in range(0, len(bb) - 35, 36)]
+                pitches = [s_[2] + s_[5] for s_ in segs if s_[2] > 0]
+                if pitches:
+                    p.pitch = max(set(pitches), key=pitches.count)
             elif l == lvl + 1 and tt == TAG_PARA_CHAR_SHAPE:
                 cshapes = [struct.unpack_from("<II", bb, k) for k in range(0, len(bb) - 7, 8)]
             elif l == lvl + 1 and tt == TAG_CTRL_HEADER:
@@ -359,9 +365,10 @@ class Builder:
             if c.tag != qn("w:sectPr"):
                 body.remove(c)
         self.pic_count = 0
+        self.pitch_scale = 1.0          # 쪽을 꽉 채우는 표는 줄 간격을 살짝 줄여 다음 쪽으로 넘치지 않게
 
     # ------------------------------------------------------------ 글자/문단
-    def _rpr(self, csid, parent):
+    def _rpr(self, csid, parent, scale=1.0):
         cs = self.info.char[csid] if csid < len(self.info.char) else self.info.char[0]
         rpr = _sub(parent, "w:rPr")
         ko = self.info.face(cs, 0)
@@ -378,7 +385,7 @@ class Builder:
             _sub(rpr, "w:strike")
         if cs["color"] & 0xFFFFFF:
             _sub(rpr, "w:color", **{"w:val": _rgb(cs["color"])})
-        size = cs["size"] * (cs["rel"][0] or 100) / 100.0 / 100.0          # pt
+        size = cs["size"] * (cs["rel"][0] or 100) / 100.0 / 100.0 * scale  # pt
         spc = cs["spc"][0]
         if spc:
             _sub(rpr, "w:spacing", **{"w:val": int(round(size * spc / 100.0 * 20))})
@@ -411,8 +418,11 @@ class Builder:
         sp = {"w:before": TWIP(ps["pre"] / 2), "w:after": TWIP(ps["next"] / 2)}
         if not has_pic:
             if ps["ls_type"] == 0:                      # 글자에 따라 (%)
-                # 한글은 100% 미만이어도 글자가 겹치지 않게 그리지만 Word 는 겹치므로 최소 100%
-                sp["w:line"] = int(round(mx * max(ps["ls"], 100) / 100.0 * 20))
+                # 줄 간격은 한글과 똑같이 (쪽 구성 유지). 100% 미만은 Word 에서 글자가 겹치므로 글자만 줄인다
+                if rp.pitch:                             # 한글이 실제 배치한 줄 간격 그대로
+                    sp["w:line"] = max(40, int(round(rp.pitch / 5 * self.pitch_scale)))
+                else:
+                    sp["w:line"] = int(round(mx * ps["ls"] / 100.0 * 20))
                 sp["w:lineRule"] = "exact"
             elif ps["ls_type"] == 1:                    # 고정 값
                 sp["w:line"] = TWIP(ps["ls"] / 2)
@@ -437,8 +447,11 @@ class Builder:
         _sub(ppr, "w:autoSpaceDN", **{"w:val": "0"})
         _sub(ppr, "w:jc", **{"w:val": ALIGN.get(ps["align"], "both")})
         # 문단 기호 글자 모양 (빈 문단 높이)
+        scale = 1.0
+        if not has_pic and ps["ls_type"] == 0 and 0 < ps["ls"] < 100:
+            scale = max(0.5, ps["ls"] / 90.0)
         csid0 = rp.chars[0][1] if rp.chars else (first_csid or 0)
-        self._rpr(csid0, ppr)
+        self._rpr(csid0, ppr, scale)
         # run 들
         run_cs, buf = None, []
 
@@ -446,7 +459,7 @@ class Builder:
             if not buf:
                 return
             r = _sub(p, "w:r")
-            self._rpr(run_cs, r)
+            self._rpr(run_cs, r, scale)
             txt = ""
             for ch in buf:
                 if ch in "\t\n\x12":
@@ -575,6 +588,20 @@ class Builder:
             _sub(tcpr, "w:shd", **{"w:val": "clear", "w:color": "auto", "w:fill": _rgb(bf["bg"])})
 
     def make_tbl(self, tb, part, align="center"):
+        old_scale = self.pitch_scale
+        if self.src.page:
+            body_h = self.src.page[1] - sum(self.src.page[4:8])
+            total = 0
+            for r in range(max(tb.rows, 1)):
+                total += max([c["h"] for c in tb.cells if c["r"] == r and c["rs"] == 1] or [0])
+            if total > body_h * 0.95:
+                self.pitch_scale = old_scale * max(0.85, body_h * 0.95 / total)
+        try:
+            return self._make_tbl(tb, part, align)
+        finally:
+            self.pitch_scale = old_scale
+
+    def _make_tbl(self, tb, part, align="center"):
         widths = self._col_widths(tb)
         n = len(widths)
         tbl = _el("w:tbl")
@@ -602,7 +629,11 @@ class Builder:
             hs = [c["h"] for c in tb.cells if c["r"] == r and c["rs"] == 1]
             if hs:
                 _sub(trpr, "w:trHeight", **{"w:val": TWIP(min(hs)), "w:hRule": "atLeast"})
-            _sub(trpr, "w:cantSplit")
+            # 쪽 높이에 가까운 행은 나뉘어도 되게 (안 그러면 다음 쪽으로 밀려 빈 쪽이 생김)
+            body_h = (self.src.page[1] - sum(self.src.page[4:8])) if self.src.page else 60000
+            row_h = max([c["h"] for c in tb.cells if c["r"] == r] or [0])
+            if row_h < body_h * 0.6:
+                _sub(trpr, "w:cantSplit")
             col = 0
             while col < n:
                 c = start.get((r, col))
@@ -638,28 +669,58 @@ class Builder:
     def make_blocks(self, blocks, part, in_cell=False):
         out = []
         last_align = "center"
+        carry_break = False                       # 빈 앵커 문단의 '쪽 나누기'를 다음 표/그림에 옮김
+
+        def page_break_on(el):
+            p = el if el.tag == qn("w:p") else el.find(".//" + qn("w:p"))
+            if p is None:
+                return
+            ppr = p.find(qn("w:pPr"))
+            if ppr is None:
+                ppr = _el("w:pPr")
+                p.insert(0, ppr)
+            if ppr.find(qn("w:pageBreakBefore")) is None:
+                ppr.insert(0, _el("w:pageBreakBefore"))
         for idx, (k, obj) in enumerate(blocks):
             if k == "p":
                 has_text = any(ch.strip() for ch, _ in obj.chars)
                 nxt = [b for b in blocks[idx + 1:idx + 2]]
                 ps = self.info.para[obj.shape] if obj.shape < len(self.info.para) else self.info.para[0]
                 last_align = ALIGN.get(ps["align"], "both")
-                # 표/그림만 담은 빈 문단(앵커)은 건너뛴다 — 표/그림이 그 자리를 차지
-                if not has_text and nxt and nxt[0][0] in ("t", "g") and not (obj.brk & 0x04):
+                # 표/그림만 담은 빈 문단(앵커)은 건너뛴다 — 표/그림이 그 자리를 차지.
+                # 쪽 나누기가 있던 앵커면 표/그림의 첫 문단에 쪽 나누기를 옮겨 빈 쪽이 생기지 않게 한다
+                if not has_text and nxt and nxt[0][0] in ("t", "g"):
+                    carry_break = carry_break or bool(obj.brk & 0x04)
                     continue
                 out.append(self.make_p(obj, part))
+                if carry_break:
+                    page_break_on(out[-1])
+                    carry_break = False
             elif k == "t":
                 align = last_align if last_align in ("left", "center", "right") else "center"
-                if out and out[-1].tag == qn("w:tbl"):
-                    out.append(_el("w:p"))              # 표 두 개가 붙으면 Word 가 합쳐 버림
+                if (out and out[-1].tag == qn("w:tbl")) or carry_break:
+                    # 표 두 개가 붙으면 Word 가 합쳐 버리므로 1pt 짜리 빈 문단을 사이에 둔다.
+                    # 쪽 나누기도 표 안이 아니라 이 문단에 둔다 (표 안 쪽 나누기는 프로그램마다 다르게 처리)
+                    gap = _el("w:p")
+                    gppr = _sub(gap, "w:pPr")
+                    _sub(gppr, "w:spacing", **{"w:before": 0, "w:after": 0, "w:line": 20, "w:lineRule": "exact"})
+                    grpr = _sub(gppr, "w:rPr")
+                    _sub(grpr, "w:sz", **{"w:val": 2})
+                    out.append(gap)
+                    if carry_break:
+                        page_break_on(gap)
+                        carry_break = False
                 out.append(self.make_tbl(obj, part, align))
+                if carry_break:
+                    page_break_on(out[-1])
+                    carry_break = False
             elif k == "g":
                 out.append(self.pic_para(obj, part, "center" if last_align == "both" else last_align))
+                if carry_break:
+                    page_break_on(out[-1])
+                    carry_break = False
                 if obj.notes:
                     out.append(self.note_para(obj.notes))
-            # 앞 블록이 쪽 나누기 앵커였다면 표/그림 앞에 쪽 나누기 유지
-            if k in ("t", "g") and idx > 0 and blocks[idx - 1][0] == "p" and (blocks[idx - 1][1].brk & 0x04):
-                pass
         return out
 
     # ------------------------------------------------------------ 문서

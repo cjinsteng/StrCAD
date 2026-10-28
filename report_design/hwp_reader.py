@@ -19,7 +19,7 @@ class Para:
     """문단 하나. text 는 한글 '찾기'에 쓰일 수 있는 순수 텍스트.
     breaks: 표/그림/필드/탭/묶음빈칸 등 '찾아 바꾸기'가 넘어갈 수 없는 위치(오프셋)"""
     __slots__ = ("uid", "doc", "seq", "text", "orig", "breaks", "kind",
-                 "table", "row", "col", "section", "ref", "pic")
+                 "table", "row", "col", "section", "ref", "pic", "page")
 
     def __init__(self, doc, seq, text, breaks, kind="body", table=None, row=-1, col=-1):
         self.doc = doc
@@ -34,6 +34,7 @@ class Para:
         self.section = None
         self.ref = None               # Word: 해당 w:p 요소
         self.pic = False              # 그림이 들어 있는 문단
+        self.page = None              # 한글: 이 문단에서 새 쪽 시작 → (쪽 번호, 문단 중간이면 True)
 
     def __repr__(self):
         return f"<Para {self.uid} {self.kind} {self.text[:30]!r}>"
@@ -64,6 +65,7 @@ class HwpDoc:
         self.fmt = "hwp"              # hwp | hwpx | docx
         self.docx = None              # Word: python-docx Document (메모리)
         self.dirty = False            # Word: 절/표/사진 추가 등 저장 안 된 구조 변경
+        self._last_v, self._page = -1, 1  # 한글: 쪽 계산용
 
     def new_para(self, text, breaks, **kw):
         p = Para(self, len(self.paras), text, breaks, **kw)
@@ -168,9 +170,19 @@ def _parse_section(doc, recs):
         i += 1
         text, breaks = "", []
         ctrls = []
+        page_mark = None
         while i < n and recs[i][1] > lvl:
             tag, l, b = recs[i]
-            if tag == TAG_PARA_TEXT and l == lvl + 1:
+            if tag == 69 and l == lvl + 1 and lvl == 0 and kind == "body":     # 줄 위치 → 쪽 바뀜
+                for k in range(0, len(b) - 35, 36):
+                    vpos, lh = struct.unpack_from("<ii", b, k + 4)
+                    if vpos < doc._last_v:
+                        doc._page += 1
+                        if page_mark is None:
+                            page_mark = (doc._page, k > 0)
+                    doc._last_v = vpos + lh
+                i += 1
+            elif tag == TAG_PARA_TEXT and l == lvl + 1:
                 text, breaks = _decode_para_text(b)
                 i += 1
             elif tag == TAG_CTRL_HEADER and l == lvl + 1:
@@ -182,6 +194,7 @@ def _parse_section(doc, recs):
                 doc.hidden.append(text)
         else:
             p = doc.new_para(text.rstrip("\r"), breaks, kind=kind, table=table, row=row, col=col)
+            p.page = page_mark
             if sink is not None:
                 sink.append(("p", p))
             for c in ctrls:

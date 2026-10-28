@@ -285,14 +285,19 @@ class EditDialog(tk.Toplevel):
         # 버튼 줄을 먼저 아래에 붙여야 화면 배율(125%·150%)에서도 잘리지 않는다
         bf = ttk.Frame(self)
         bf.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
-        ttk.Label(bf, text="Ctrl+Enter: 저장  ·  저장 후 '파일에 반영·저장'(Ctrl+S)을 눌러야 파일에 들어갑니다",
+        self.word = para.doc.fmt == "docx"
+        ttk.Label(bf, text=("Enter: 새 문단 · Shift+Enter: 줄바꿈(↵) · Ctrl+Enter: 저장" if self.word
+                            else "Enter: 줄바꿈 · Ctrl+Enter: 저장") + "  ·  저장 후 Ctrl+S 로 파일에 반영",
                   style="Hint.TLabel").pack(side="left")
         ttk.Button(bf, text="취소", command=self.destroy).pack(side="right")
         ttk.Button(bf, text="저장", style="Accent.TButton", command=self._save).pack(side="right", padx=6)
         self.txt = tk.Text(self, wrap="word", font=(f, 11), undo=True, padx=6, pady=6, height=8)
         self.txt.pack(fill="both", expand=True, padx=10, pady=6)
-        self.txt.insert("1.0", app.rep.text(para))
+        self.txt.insert("1.0", app.rep.text(para).replace("\n", LB + "\n"))
         self.txt.focus_set()
+        self.txt.bind("<Shift-Return>", lambda e: (self.txt.insert("insert", LB + "\n"), "break")[1])
+        if not self.word:                                   # 한글: Enter 도 문단 안 줄바꿈
+            self.txt.bind("<Return>", lambda e: (self.txt.insert("insert", LB + "\n"), "break")[1])
         if para.uid in app.rep.edits:
             ttk.Button(bf, text="원문으로 되돌리기", command=self._revert).pack(side="right", padx=6)
         self.bind("<Control-Return>", lambda e: (self._save(), "break"))
@@ -300,13 +305,30 @@ class EditDialog(tk.Toplevel):
         self.wait_window(self)
 
     def _save(self):
-        new = self.txt.get("1.0", "end-1c")
-        self.saved = new
+        raw = self.txt.get("1.0", "end-1c")
+        self.saved = split_paragraphs(raw) if self.word else [raw.replace(LB + "\n", "\n").replace(LB, "")]
         self.destroy()
 
     def _revert(self):
-        self.saved = self.p.orig
+        self.saved = [self.p.orig]
         self.destroy()
+
+
+LB = "↵"          # 화면에서 '문단 안 줄바꿈' 표시
+
+
+def split_paragraphs(raw):
+    """편집 글 → 문단 목록. Enter(\n)=새 문단, '↵\n'=문단 안 줄바꿈"""
+    out, cur = [], ""
+    lines = raw.split("\n")
+    for i, line in enumerate(lines):
+        if line.endswith(LB) and i < len(lines) - 1:
+            cur += line[:-1] + "\n"
+        else:
+            cur += line.replace(LB, "")
+            out.append(cur)
+            cur = ""
+    return out or [""]
 
 
 # ====================================================================== 설정
@@ -428,32 +450,42 @@ class TableEditor(tk.Toplevel):
         px = [max(56, int(avail * w / total)) for w in widths]
         for k, w in enumerate(px):
             body.grid_columnconfigure(k, minsize=w)
-        self.entries = {}       # (r,c) origin -> (Entry, Para, 원래 글, StringVar, rs, cs)
+        self.entries = {}       # (r,c) origin -> [Text, [글 문단 Para], 원래 글, None, rs, cs]
         for (r, c), cell in sorted(table.cells.items()):
-            ps = cell["paras"]
-            p = next((q for q in ps if app.rep.text(q).strip()), ps[0] if ps else None)
-            if p is None:
+            ps = [q for q in cell["paras"] if not q.pic]
+            pics = sum(1 for q in cell["paras"] if q.pic)
+            if not ps and not pics:
                 continue
-            cur = app.rep.text(p)
-            var = tk.StringVar(value=cur)
+            cur = "\n".join(app.rep.text(q).replace("\n", LB + "\n") for q in ps)
             w = sum(px[c:c + cell["cs"]])
-            e = tk.Entry(body, textvariable=var, font=(app.font, 10), relief="flat", justify="center",
-                         bg="#FFF3B0" if p.uid in app.rep.edits else TH.PANEL, disabledbackground="#EEF1F6",
-                         width=max(4, w // 8), highlightthickness=2, highlightbackground=TH.PANEL,
-                         highlightcolor=TH.ORANGE)
-            if "\t" in cur or "\n" in cur or p.pic or len([q for q in ps if app.rep.text(q).strip()]) > 1:
-                e.config(state="disabled")              # 여러 줄·그림 칸은 본문에서 더블클릭해서 수정
+            nlines = max(1, cur.count("\n") + 1)
+            e = tk.Text(body, font=(app.font, 10), relief="flat", wrap="word", undo=True,
+                        width=max(4, w // 8), height=min(8, nlines) + (1 if pics else 0),
+                        bg="#FFF3B0" if any(q.uid in app.rep.edits for q in ps) else TH.PANEL,
+                        highlightthickness=2, highlightbackground=TH.PANEL, highlightcolor=TH.ORANGE,
+                        padx=4, pady=4)
+            e.tag_configure("c", justify="center")
+            e.tag_configure("pic", foreground=TH.NAVY_3, font=(app.font, 8))
+            if pics:
+                e.insert("1.0", f"🖼 그림 {pics}장\n", ("pic", "c"))
+            e.insert("end", cur, "c")
+            e.mark_set("insert", "end-1c")
+            if not ps:
+                e.config(state="disabled", bg="#EEF1F6")
             e.grid(row=r, column=c, rowspan=cell["rs"], columnspan=cell["cs"], sticky="nsew",
-                   padx=(0, 1), pady=(0, 1), ipady=5)
-            var.trace_add("write", lambda *a, e=e, p=p, v=var: e.config(
-                bg="#FFF3B0" if v.get() != app.rep.text(p) else TH.PANEL))
-            self.entries[(r, c)] = (e, p, cur, var, cell["rs"], cell["cs"])
-            e.bind("<Return>", lambda ev, r=r, c=c: self._move(r, c, 1))
-            e.bind("<Up>", lambda ev, r=r, c=c: self._move(r, c, -1))
-            e.bind("<Down>", lambda ev, r=r, c=c: self._move(r, c, 1))
+                   padx=(0, 1), pady=(0, 1))
+            self.entries[(r, c)] = [e, ps, cur, pics, cell["rs"], cell["cs"]]
+            e.bind("<<Modified>>", lambda ev, k=(r, c): self._modified(k))
+            e.bind("<Tab>", lambda ev, r=r, c=c: self._tab(r, c, 1))
+            e.bind("<Shift-Tab>", lambda ev, r=r, c=c: self._tab(r, c, -1))
+            e.bind("<ISO_Left_Tab>", lambda ev, r=r, c=c: self._tab(r, c, -1))
+            e.bind("<Shift-Return>", lambda ev, e=e: (e.insert("insert", LB + "\n", "c"), "break")[1])
+            if not self.word:
+                e.bind("<Return>", lambda ev, e=e: (e.insert("insert", LB + "\n", "c"), "break")[1])
             e.bind("<Button-1>", lambda ev, r=r, c=c: self._click(r, c, ev))
             e.bind("<B1-Motion>", self._drag)
             e.bind("<FocusIn>", lambda ev, r=r, c=c: self._focus(r, c))
+            e.bind("<KeyRelease>", lambda ev, e=e: self._autosize(e))
         body.update_idletasks()
         canvas.configure(scrollregion=(0, 0, body.winfo_reqwidth() + 20, body.winfo_reqheight() + 12))
         W = min(1400, max(980, body.winfo_reqwidth() + 60))
@@ -461,10 +493,17 @@ class TableEditor(tk.Toplevel):
         self.geometry(keep.get("geom") if keep and keep.get("geom") else f"{W}x{max(380, H)}")
         self._paint_sel()
         k = self.entries.get(self.cur) or next(iter(self.entries.values()), None)
-        if k is not None and str(k[0].cget("state")) != "disabled":
+        if k is not None and k[1]:
             k[0].focus_set()
         self.protocol("WM_DELETE_WINDOW", self._close)
+        self.bind("<Control-v>", self._ctrl_v)
         self.grab_set()
+
+    def _ctrl_v(self, ev):
+        if self.word and self.app._clipboard_images():
+            self.cell_picture(True)
+            return "break"
+        return None
 
     # ------------------------------------------------------------ 리본
     def _build_ribbon(self):
@@ -532,6 +571,9 @@ class TableEditor(tk.Toplevel):
                            command=lambda v=v, h=h: self.op("align", v, h)).grid(row=i, column=j, padx=0, pady=0)
         g = grp("데이터")
         btn(g, "⇈\n머리글 행\n반복", lambda: self.op("header"), 8)
+        g = grp("그림")
+        btn(g, "🖼\n칸에\n그림", lambda: self.cell_picture(False), 6)
+        btn(g, "📋\n그림\n붙여넣기", lambda: self.cell_picture(True), 6)
 
     # ------------------------------------------------------------ 선택
     def _origin(self, r, c):
@@ -591,6 +633,33 @@ class TableEditor(tk.Toplevel):
             except Exception:
                 pass
 
+    def _cell_text(self, k):
+        e, ps, cur, pics = self.entries[k][:4]
+        raw = e.get("1.0", "end-1c")
+        if pics:
+            raw = raw.split("\n", 1)[1] if "\n" in raw else ""
+        return raw
+
+    def _modified(self, k):
+        e = self.entries[k][0]
+        e.edit_modified(False)
+        e.config(bg="#FFF3B0" if self._cell_text(k) != self.entries[k][2] else TH.PANEL)
+
+    def _autosize(self, e):
+        n = int(e.index("end-1c").split(".")[0])
+        e.config(height=max(1, min(10, n)))
+
+    def _tab(self, r, c, d):
+        keys = sorted(self.entries)
+        i = keys.index((r, c)) if (r, c) in keys else 0
+        i = (i + d) % len(keys)
+        e = self.entries[keys[i]][0]
+        e.focus_set()
+        e.mark_set("insert", "end-1c")
+        self.anchor = self.cur = keys[i]
+        self._paint_sel()
+        return "break"
+
     def _move(self, r, c, d):
         rr = r + d
         rows = max(k[0] for k in self.entries) if self.entries else 0
@@ -605,13 +674,45 @@ class TableEditor(tk.Toplevel):
         return "break"
 
     # ------------------------------------------------------------ 저장 / 작업
+    def _cell_items(self):
+        """바뀐 칸: [(글 문단 Para 목록, 새 문단 글 목록)]"""
+        items = []
+        for k, (e, ps, cur, pics, rs, cs) in self.entries.items():
+            if not ps:
+                continue
+            raw = self._cell_text(k)
+            if raw == cur:
+                continue
+            texts = split_paragraphs(raw) if self.word else [raw.replace(LB + "\n", "\n").replace(LB, "")]
+            if not self.word and len(ps) > 1:          # 한글 표: 문단 수는 그대로
+                texts = [t.replace(LB, "") for t in raw.split("\n")][:len(ps)]
+                texts += [self.app.rep.text(q) for q in ps[len(texts):]]
+            items.append((ps, texts))
+        return items
+
     def _changes(self):
-        return [(p, cur, var.get()) for (e, p, cur, var, rs, cs) in self.entries.values() if var.get() != cur]
+        return self._cell_items()
+
+    def _apply_items(self):
+        items = self._cell_items()
+        if not items:
+            return []
+        if self.doc is not None:
+            return rc.set_cells_text(self.app.rep, self.doc, items)
+        return [(p, self.app.rep.text(p), t) for ps, ts in items for p, t in zip(ps, ts)]
 
     def _save(self):
-        ch = self._changes()
+        items = self._cell_items()
         self.destroy()
-        if ch:
+        if not items:
+            return
+        structural = any(len(ps) != len(ts) for ps, ts in items)
+        ch = rc.set_cells_text(self.app.rep, self.doc, items) if self.doc is not None else []
+        if structural:
+            for p, old, new in ch:
+                self.app.rep.set_edit(p, new, "표 편집")
+            self.app._after_structure(None, "표 편집 (칸 문단 수 변경)")
+        elif ch:
             self.app.commit_changes(ch, "표 편집")
 
     def _close(self):
@@ -621,9 +722,32 @@ class TableEditor(tk.Toplevel):
 
     def clear_cells(self):
         for k in self.sel_cells():
-            e = self.entries[k]
-            if str(e[0].cget("state")) != "disabled":
-                e[3].set("")
+            e, ps, cur, pics = self.entries[k][:4]
+            if ps:
+                start = "2.0" if pics else "1.0"
+                e.delete(start, "end")
+                self._modified(k)
+
+    def cell_picture(self, paste):
+        if not self.word:
+            return
+        for p, old, new in self._apply_items():
+            self.app.rep.set_edit(p, new, "표 편집")
+        ref = self.t.ref
+        t = next((t for d in self.app.rep.docs for t in d.tables if t.ref is ref), self.t)
+        key = self.anchor
+        geom = self.geometry()
+        self.grab_release()
+        ok = self.app.ui_cell_picture(t, key, paste=paste, parent=self)
+        if not ok:
+            self.grab_set()
+            return
+        self.destroy()
+        for d in self.app.rep.docs:
+            for t2 in d.tables:
+                if t2.ref is ref:
+                    TableEditor(self.app, t2, keep={"sel": (key, key), "geom": geom})
+                    return
 
     def delete_table(self):
         if not messagebox.askyesno(APP_TITLE, "이 표를 지울까요? (캡션 문단은 남습니다)", parent=self):
@@ -662,9 +786,16 @@ class TableEditor(tk.Toplevel):
         if not self.word:
             return
         import docx_table as dtb
-        for p, cur, new in self._changes():             # 입력한 글은 먼저 수정 대기로
+        for p, old, new in self._apply_items():         # 입력한 글은 먼저 반영(수정 대기)
             self.app.rep.set_edit(p, new, "표 편집")
+        cur_t = next((t for d in self.app.rep.docs for t in d.tables if t.ref is self.t.ref), self.t)
+        self.t = cur_t
+        self.doc = next((d for d in self.app.rep.docs if cur_t in d.tables), self.doc)
         a, b, c, d = self.sel_rect()
+        nr = max([k[0] + v[4] for k, v in self.entries.items()] or [1])
+        nc = max([k[1] + v[5] for k, v in self.entries.items()] or [1])
+        a, c = min(a, nr - 1), min(c, nr - 1)
+        b, d = min(b, nc - 1), min(d, nc - 1)
         rows, cols = list(range(a, c + 1)), list(range(b, d + 1))
         cells = self.sel_cells()
         doc, ref = self.doc, self.t.ref
@@ -983,7 +1114,7 @@ class App:
         return g
 
     @staticmethod
-    def _big(parent, text, cmd, w=9, accent=False):
+    def _big(parent, text, cmd, w=7, accent=False):
         b = ttk.Button(parent, text=text, command=cmd, width=w,
                        style="RibbonAccent.TButton" if accent else "Ribbon.TButton")
         b.pack(side="left", padx=2, pady=2, fill="y")
@@ -996,8 +1127,8 @@ class App:
         home = ttk.Frame(rb, padding=(6, 6))
         rb.add(home, text="  홈  ")
         g = self._grp(home, "보고서 열기")
-        self.btn_open_hwp = self._big(g, "📂\n한글 열기", lambda: self.open_folder("hwp"))
-        self.btn_open_word = self._big(g, "📂\nWord 열기", lambda: self.open_folder("word"))
+        self.btn_open_hwp = self._big(g, "📂\n한글 열기", lambda: self.open_folder("hwp"), 8)
+        self.btn_open_word = self._big(g, "📂\nWord 열기", lambda: self.open_folder("word"), 8)
         self._big(g, "＋\n파일 추가", self.add_files)
         self._big(g, "⟳\n다시 읽기", self.reload_all)
         self.btn_convert = self._big(g, "⇄\n한글→Word\n새로 만들기", self.convert_hwp_to_word, 10)
@@ -1010,13 +1141,15 @@ class App:
             self._big(g, "📋\n그림 붙여\n넣기", self.paste_image)]
         g = self._grp(home, "검사")
         self._big(g, "#\n번호 검사", self.run_numbering)
-        self._big(g, "≒\n반복 문단\n불일치", self.run_inconsistency, 10)
+        self._big(g, "≒\n반복 문단\n불일치", self.run_inconsistency, 8)
+        self.word_btns.append(self._big(g, "📄\n쪽 확인\n(Word)", self.word_repaginate))
         g = self._grp(home, "AI 검토")
         self._big(g, "✦\n선택 절\nAI 검토", lambda: (self.nb.select(self.tab_ai), self.run_ai()))
         self._big(g, "⚙\n엔진 설정", lambda: SettingsDialog(self))
         g = self._grp(home, "반영")
         self.btn_changes = self._big(g, "☰\n변경 목록\n(0)", lambda: self.nb.select(self.tab_list))
-        self._big(g, "✔\n파일에\n반영·저장", self.apply_to_hwp, 10, accent=True)
+
+        self._big(g, "✔\n파일에\n반영·저장", self.apply_to_hwp, 8, accent=True)
 
     def _build_body(self):
         pw = ttk.PanedWindow(self.root, orient="horizontal")
@@ -1063,6 +1196,10 @@ class App:
         self.view.tag_configure("edited", background="#fff3b0")
         self.view.tag_configure("picline", foreground=TH.NAVY_3, font=(f, 9, "bold"), justify="center",
                                 spacing1=6, spacing3=6)
+        self.view.tag_configure("pagebrk", foreground=TH.NG, background="#FBE3E3", font=(f, 8, "bold"),
+                                justify="center", spacing1=8, spacing3=8)
+        self.view.tag_configure("pagebrk_small", foreground=TH.NG, font=(f, 8))
+        self.view.tag_configure("pageinfo", foreground=TH.MUTED, font=(f, 8))
         self.view.tag_configure("piccenter", justify="center", spacing1=6, spacing3=4)
         self.view.tag_configure("newempty", foreground=TH.MUTED, font=(f, 9, "italic"), background=TH.ORANGE_L)
         self.view.tag_configure("origline", foreground="#9e9e9e", overstrike=1, font=(f, 9))
@@ -1397,6 +1534,7 @@ class App:
 
     # ------------------------------------------------------------ 갱신
     def refresh_all(self, keep_view=False):
+        # 문서 객체가 바뀌었으면(저장·다시 읽기) 쪽 캐시는 key 의 id(doc) 로 자동 무효
         sel = self.cur_sec.sid if self.cur_sec else None
         y = self.view.yview()[0]
         self._fill_tree()
@@ -1464,6 +1602,92 @@ class App:
         self._show_ai_for(sec)
 
     # ------------------------------------------------------------ 본문 보기
+    # ------------------------------------------------------------ 쪽 구분
+    def _pages_for(self, doc):
+        """Word: Word 저장 기준(정확) 또는 예상, 한글: None (문단의 p.page 사용)"""
+        if doc.fmt != "docx":
+            self._page_label = "한글 원본 기준"
+            return None
+        cache = self.__dict__.setdefault("_pages_cache", {})
+        key = (doc.key, id(doc))
+        if key in cache:
+            return cache[key]
+        import docx_pages as dpg
+        pg = None
+        if not doc.dirty:
+            try:
+                pg = dpg.from_word_markers(doc)
+            except Exception:
+                pg = None
+            if pg is not None:
+                pg.label = "Word 마지막 저장 기준 쪽 구분"
+        if pg is None:
+            try:
+                self.status.set("쪽 위치 계산 중…")
+                self.root.config(cursor="watch")
+                self.root.update_idletasks()
+                if getattr(self, "_measure", None) is None:
+                    self._measure = dpg.Measure(self.root)
+                pg = dpg.estimate(doc, self.root, self._measure)
+                pg.label = "예상 쪽 구분 — 정확히 보려면 '쪽 확인(Word)'"
+            except Exception as e:
+                self.status.set(f"쪽 계산 실패: {e}")
+                return None
+            finally:
+                self.root.config(cursor="")
+        # 블록별 쪽 번호
+        page, at = 1, {}
+        for k, obj in doc.blocks:
+            if obj.ref is None:
+                continue
+            if id(obj.ref) in pg.start:
+                page = pg.start[id(obj.ref)]
+            at[id(obj.ref)] = page
+            if id(obj.ref) in pg.split:
+                page = pg.split[id(obj.ref)]
+            if k == "t" and id(obj.ref) in pg.rows:
+                page = max(pg.rows[id(obj.ref)].values())
+        pg.at = at
+        cache[key] = pg
+        return pg
+
+    def _page_at(self, doc, pg, obj):
+        return pg.at.get(id(obj.ref), 1) if obj.ref is not None else 1
+
+    def word_repaginate(self):
+        """Word 로 열어 쪽을 다시 계산해 저장 → 정확한 쪽 구분"""
+        docs = [d for d in self.rep.docs if d.fmt == "docx"]
+        if not docs:
+            return
+        if self._dirty_word() or any(p.uid in self.rep.edits for d in docs for p in d.paras):
+            if not messagebox.askyesno(APP_TITLE, "먼저 지금까지의 수정을 Word 파일에 저장해야 합니다. 저장할까요?"):
+                return
+            self.apply_to_hwp(only_word=True)
+        try:
+            import win32com.client  # noqa
+        except Exception:
+            messagebox.showinfo(APP_TITLE, "Word 가 설치된 Windows PC 에서만 됩니다. (지금은 예상 쪽 구분을 보여 줍니다)")
+            return
+        import docx_pages as dpg
+        self.root.config(cursor="watch")
+        self.root.update()
+        msgs = []
+        try:
+            for d in docs:
+                self.status.set("Word 로 쪽 계산 중: " + os.path.basename(d.path))
+                self.root.update()
+                n = dpg.word_repaginate(d.path)
+                msgs.append(f"{os.path.basename(d.path)}: {n}쪽")
+                self.rep.reload(d)
+        except Exception as e:
+            messagebox.showerror(APP_TITLE, f"Word 실행 실패: {e}\n\nWord 에서 파일이 열려 있다면 닫고 다시 시도하세요.")
+        finally:
+            self.root.config(cursor="")
+        self._pages_cache = {}
+        self.refresh_all()
+        if msgs:
+            self.status.set("Word 기준 쪽 구분으로 바뀌었습니다 — " + ", ".join(msgs))
+
     def render_section(self, sec):
         v = self.view
         v.config(state="normal")
@@ -1510,7 +1734,20 @@ class App:
                 if sp:
                     v.tag_add("aispan", f"1.0+{start + sp[0]}c", f"1.0+{start + sp[1]}c")
 
-        for k, obj in rc.section_blocks(sec, True):
+        pg = self._pages_for(sec.doc)
+        blocks = rc.section_blocks(sec, True)
+        if pg is not None and blocks:
+            first = blocks[0][1]
+            put(f"▸ {self._page_at(sec.doc, pg, first)}쪽부터  ({pg.label})\n", "pageinfo")
+
+        def divider(n, mid=False):
+            put(f"✂  {n}쪽" + ("  (이 위 문단 중간에서 넘어감)" if mid else "") + "\n", "pagebrk")
+
+        for k, obj in blocks:
+            if pg is not None and obj.ref is not None and id(obj.ref) in pg.start:
+                divider(pg.start[id(obj.ref)])
+            elif pg is None and k == "p" and obj.page and not obj.page[1]:
+                divider(obj.page[0])
             if k == "p":
                 p = obj
                 t = self.rep.text(p)
@@ -1549,6 +1786,10 @@ class App:
                 put("\n")
                 if p.uid in self.rep.edits:
                     put("    원문: " + p.orig + "\n", "origline")
+                if pg is not None and p.ref is not None and id(p.ref) in pg.split:
+                    divider(pg.split[id(p.ref)], mid=True)
+                elif pg is None and p.page and p.page[1]:
+                    divider(p.page[0], mid=True)
             else:
                 put(f"[표 {obj.tid + 1}]  {obj.rows}×{obj.cols}   ", "tblhdr")
                 btn = tk.Label(v, text="✎ 표 편집", fg="white", bg=TH.NAVY_3, font=(self.font, 8, "bold"),
@@ -1558,7 +1799,12 @@ class App:
                 self._embedded.append(btn)
                 off += 1
                 put("\n", "tblhdr")
-                grid = self._table_grid(obj)
+                trows = pg.rows.get(id(obj.ref), {}) if (pg is not None and obj.ref is not None) else {}
+                if trows:
+                    pages = sorted(set(trows.values()))
+                    put(f"   ✂ 이 표는 {pages[0]}쪽" + (f"~{pages[-1]}쪽" if len(pages) > 1 else "")
+                        + "으로 넘어갑니다 (빨간 선)\n", "pagebrk_small")
+                grid = self._table_grid(obj, trows)
                 if grid is not None:
                     start = off
                     v.window_create("end", window=grid, padx=10, pady=2)
@@ -1582,7 +1828,7 @@ class App:
 
     MAX_GRID_CELLS = 700
 
-    def _table_grid(self, t):
+    def _table_grid(self, t, page_rows=None):
         """표를 실제 칸 모양으로 (Label 격자). 너무 큰 표는 None → 글자 표시"""
         if len(t.cells) > self.MAX_GRID_CELLS:
             return None
@@ -1624,6 +1870,11 @@ class App:
                 lb.bind("<Button-3>", lambda e, p=p0: self._para_menu(p, e))
                 for p in ps:
                     self.cell_labels[p.uid] = lb
+        ncols = max([c + cell["cs"] for (r, c), cell in t.cells.items()] or [1])
+        for r in sorted(k for k in (page_rows or {}) if float(k).is_integer()):
+            line = tk.Frame(fr, bg=TH.NG, height=3)
+            line.grid(row=int(r), column=0, columnspan=ncols, sticky="new")
+            line.lift()
         return fr
 
     def _cell_click(self, p, lb):
@@ -1707,6 +1958,11 @@ class App:
         m.add_command(label="아래에 표 추가…", state=st, command=lambda: self.ui_add_table(p, None))
         m.add_command(label="아래에 사진 추가…", state=st, command=lambda: self.ui_add_picture(p, None))
         m.add_command(label="클립보드 그림 붙여넣기 (Ctrl+V)", state=st, command=self.paste_image)
+        if word and p.kind == "cell" and p.table is not None:
+            m.add_separator()
+            m.add_command(label="이 칸에 그림 넣기…", command=lambda: self.ui_cell_picture(p.table, (p.row, p.col)))
+            m.add_command(label="이 칸에 그림 붙여넣기 (클립보드)", command=lambda: self.ui_cell_picture(p.table, (p.row, p.col), paste=True))
+            m.add_command(label="표 편집…", command=lambda: self.open_table_editor(p.table))
         if word and p.pic:
             m.add_separator()
             m.add_command(label="그림 크기…", command=lambda: self.ui_resize_picture(p))
@@ -1831,6 +2087,7 @@ class App:
         return after, child
 
     def _after_structure(self, new_el, msg):
+        self._pages_cache = {}
         self.ai_results.clear()
         self.issues, self.issue_paras, self.check_items = [], set(), []
         self._fill_check()
@@ -2009,11 +2266,7 @@ class App:
         rc.resize_picture(self.rep, p.doc, p, ncx, ncy)
         self._after_structure(p.ref, f"그림 크기 {ncx / 360000:.1f} × {ncy / 360000:.1f} cm")
 
-    def paste_image(self, event=None):
-        """Ctrl+V: 클립보드의 그림(캡처·복사한 이미지) 또는 복사한 그림 파일을 넣기"""
-        if self.mode != "word":
-            self.status.set("그림 붙여넣기는 Word 작업에서 됩니다.")
-            return "break"
+    def _clipboard_images(self):
         files = []
         try:
             from PIL import ImageGrab
@@ -2033,6 +2286,49 @@ class App:
                 files = [tmp]
             except Exception:
                 files = []
+        return files
+
+    def ui_cell_picture(self, table, key, paste=False, parent=None):
+        """표 칸에 그림 (칸 폭에 맞춤)"""
+        doc = next((d for d in self.rep.docs if table in d.tables), None)
+        if doc is None or doc.fmt != "docx":
+            messagebox.showinfo(APP_TITLE, "표 칸에 그림 넣기는 Word 작업에서 됩니다.", parent=parent)
+            return False
+        if paste:
+            files = self._clipboard_images()
+            if not files:
+                messagebox.showinfo(APP_TITLE, "클립보드에 그림이 없습니다. (화면 캡처나 그림 복사 후 다시)", parent=parent)
+                return False
+        else:
+            files = filedialog.askopenfilenames(parent=parent, title="칸에 넣을 그림", filetypes=[
+                ("그림", "*.png *.jpg *.jpeg *.bmp *.gif *.tif *.tiff"), ("모든 파일", "*.*")])
+        if not files:
+            return False
+        origin = key
+        for (r, c), cell in table.cells.items():                 # 병합 칸이면 왼쪽 위 칸
+            if r <= key[0] < r + cell["rs"] and c <= key[1] < c + cell["cs"]:
+                origin = (r, c)
+        try:
+            el = None
+            for f in files:
+                cur = next((t for d in self.rep.docs for t in d.tables if t.ref is table.ref), table)
+                el = rc.add_picture_in_cell(self.rep, doc, cur, origin, f)
+                doc = next(d for d in self.rep.docs if d.key == doc.key)
+        except Exception as e:
+            messagebox.showerror(APP_TITLE, f"그림 넣기 실패: {e}", parent=parent)
+            return False
+        self._after_structure(el, f"표 칸에 그림 {len(files)}장")
+        return True
+
+    def paste_image(self, event=None):
+        """Ctrl+V: 클립보드의 그림(캡처·복사한 이미지) 또는 복사한 그림 파일을 넣기"""
+        if self.mode != "word":
+            self.status.set("그림 붙여넣기는 Word 작업에서 됩니다.")
+            return "break"
+        if self.sel_para is not None and self.sel_para.kind == "cell" and self.sel_para.table is not None:
+            self.ui_cell_picture(self.sel_para.table, (self.sel_para.row, self.sel_para.col), paste=True)
+            return "break"
+        files = self._clipboard_images()
         if not files:
             self.status.set("클립보드에 그림이 없습니다. (화면 캡처나 그림 복사 후 Ctrl+V)")
             return "break"
@@ -2126,9 +2422,20 @@ class App:
     def edit_para(self, p):
         old = self.rep.text(p)
         dlg = EditDialog(self, p)
-        if dlg.saved is None or dlg.saved == old:
+        if dlg.saved is None:
             return
-        self.commit_changes([(p, old, dlg.saved)], "직접 수정")
+        parts = dlg.saved
+        if len(parts) > 1 and p.doc.fmt == "docx":          # Enter 로 문단을 나눔
+            ref = p.ref
+            els = rc.insert_paragraphs_after(self.rep, p.doc, p, parts[1:])
+            np_ = next((q for d in self.rep.docs for q in d.paras if q.ref is ref), None)
+            if np_ is not None and parts[0] != old:
+                self.commit_changes([(np_, old, parts[0])], "직접 수정")
+            self._after_structure(els[-1], f"문단 {len(parts)}개로 나눔")
+            return
+        if parts[0] == old:
+            return
+        self.commit_changes([(p, old, parts[0])], "직접 수정")
 
     def commit_changes(self, changes, src):
         """changes: [(para, 옛 텍스트, 새 텍스트)] 적용 후 다른 곳 동기화 제안"""

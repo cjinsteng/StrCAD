@@ -161,8 +161,12 @@ class TGrid:
             tw.set(qn("w:w"), str(sum(ws)))
             tw.set(qn("w:type"), "dxa")
 
+    def clamp(self, r, c):
+        return max(0, min(r, self.nrow - 1)), max(0, min(c, self.ncol - 1))
+
     def origin(self, r, c):
         """(r,c) 칸을 덮고 있는 병합 셀의 왼쪽 위 (행, 열)"""
+        r, c = self.clamp(r, c)
         e = self.at.get((r, c))
         if e is None:
             return r, c
@@ -175,7 +179,9 @@ class TGrid:
     def extent(self, r, c):
         """병합 셀의 (행 수, 열 수)"""
         r0, c0 = self.origin(r, c)
-        e = self.at[(r0, c0)]
+        e = self.at.get((r0, c0))
+        if e is None:
+            return 1, 1
         n = 1
         while (r0 + n, c0) in self.at and self.at[(r0 + n, c0)]["vm"] == "continue" \
                 and self.at[(r0 + n, c0)]["c"] == c0:
@@ -187,6 +193,7 @@ class TGrid:
 
     # ------------------------------------------------------------ 행
     def insert_row(self, r, below=True):
+        r = max(0, min(r, self.nrow - 1))
         src = self.trs[r]
         new = copy.deepcopy(src)
         for tc in new.findall(W_TC):
@@ -240,6 +247,7 @@ class TGrid:
 
     # ------------------------------------------------------------ 열
     def insert_col(self, c, right=True, new_cell_rows=None):
+        c = max(0, min(c, self.ncol - 1))
         ws = self.widths()
         base = ws[c] if c < len(ws) else 1000
         half = max(300, base // 2)
@@ -306,6 +314,8 @@ class TGrid:
         return r1, c1, r2, c2
 
     def merge(self, r1, c1, r2, c2):
+        r1, c1 = self.clamp(r1, c1)
+        r2, c2 = self.clamp(r2, c2)
         r1, c1, r2, c2 = self._expand_rect(min(r1, r2), min(c1, c2), max(r1, r2), max(c1, c2))
         if (r1, c1) == (r2, c2):
             return
@@ -338,6 +348,7 @@ class TGrid:
 
     def split(self, r, c, nrows, ncols):
         """셀 분할 (Word 와 같이): 병합된 셀은 풀어서 나누고, 모자라는 행/열은 표에 추가"""
+        r, c = self.clamp(r, c)
         r0, c0 = self.origin(r, c)
         er, ec = self.extent(r0, c0)
         nrows, ncols = max(1, nrows), max(1, ncols)

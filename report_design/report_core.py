@@ -1270,6 +1270,65 @@ def add_section(rep, doc, sec, mode, title, body="", renumber=True):
     return head_el, body_el, moved
 
 
+def insert_paragraphs_after(rep, doc, para, texts):
+    """Enter 로 나눈 문단: para 바로 뒤에 같은 모양 문단들 (제목이면 본문 모양). → 새 요소 목록"""
+    dx = _dx()
+    tmpl = para.ref
+    if para.kind == "body" and (heading_of_para(para) or para.pic):
+        tmpl = dx.find_body_template(doc, para.section)
+    prev = para.ref if para.kind == "cell" else _top_level(para.ref)
+    els = []
+    for t in texts:
+        el = dx.clone_para(tmpl, t)
+        prev.addnext(el)
+        prev = el
+        els.append(el)
+        rep.new_refs.add(id(el))
+    rebuild_docx(rep, doc)
+    return els
+
+
+def add_picture_in_cell(rep, doc, table, rc_key, image_path):
+    cell = table.cells.get(rc_key)
+    if cell is None or cell.get("ref") is None:
+        raise ValueError("Word 표 칸을 찾지 못했습니다.")
+    tc = cell["ref"]
+    el = _dx().add_picture_to_cell(doc, tc, image_path)
+    rep.new_refs.add(id(table.ref))
+    rebuild_docx(rep, doc)
+    return el
+
+
+def set_cells_text(rep, doc, items):
+    """표 편집 저장: items=[(칸의 글 문단 Para 목록, 새 문단 글 목록)].
+    문단 수가 바뀌면 Word 문단을 늘리거나 줄이고, 글은 수정 대기로 → [(Para, 옛, 새)]"""
+    dx = _dx()
+    pend = []                     # (요소, 새 글)
+    structural = False
+    for paras, texts in items:
+        if len(paras) != len(texts) and doc.fmt == "docx" and paras and paras[0].ref is not None:
+            els = dx.set_cell_paragraphs([p.ref for p in paras], texts)
+            structural = True
+            for el, t in zip(els, texts):
+                pend.append((el, t))
+        else:
+            for p, t in zip(paras, texts):
+                pend.append((p.ref if p.ref is not None else p, t))
+    if structural:
+        rebuild_docx(rep, doc)
+    by_ref = {}
+    for d in rep.docs:
+        for p in d.paras:
+            if p.ref is not None:
+                by_ref[id(p.ref)] = p
+    out = []
+    for key, t in pend:
+        p = by_ref.get(id(key)) if not hasattr(key, "uid") else key
+        if p is not None and rep.text(p) != t:
+            out.append((p, rep.text(p), t))
+    return out
+
+
 def add_paragraph(rep, doc, para, text="", as_body=True):
     """para 아래에 같은 모양(제목이면 본문 모양)의 새 문단"""
     dx = _dx()
