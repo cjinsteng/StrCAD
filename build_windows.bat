@@ -12,7 +12,7 @@ if "%VER%"=="" set VER=1.0.0
 
 echo [1/4] pip install
 python -m pip install --upgrade pip >nul
-python -m pip install ezdxf pillow tkinterdnd2 openpyxl numpy opencv-python-headless rapidocr_onnxruntime olefile pywin32 pyinstaller || goto :err
+python -m pip install ezdxf pillow tkinterdnd2 openpyxl numpy opencv-python-headless rapidocr_onnxruntime python-docx olefile pywin32 pyinstaller || goto :err
 
 echo [2/4] PyInstaller
 python -m PyInstaller launcher.py --noconfirm --clean --windowed --name StrCAD ^
@@ -24,9 +24,9 @@ python -m PyInstaller launcher.py --noconfirm --clean --windowed --name StrCAD ^
   --add-data "autotable\auto_table.py;autotable" ^
   --hidden-import cad_analysis.app --hidden-import cad_analysis.licensing_ui --hidden-import design_2d ^
   --hidden-import cad_analysis.photo_plan --hidden-import cad_analysis.sheets ^
-  --hidden-import report_assistant --hidden-import report_core --hidden-import hwp_reader ^
+  --hidden-import report_assistant --hidden-import report_core --hidden-import hwp_reader --hidden-import docx_doc ^
   --hidden-import olefile --hidden-import win32com.client --hidden-import pythoncom ^
-  --collect-all tkinterdnd2 --collect-all ezdxf --collect-all rapidocr_onnxruntime --collect-all onnxruntime ^
+  --collect-all tkinterdnd2 --collect-all ezdxf --collect-all docx --collect-all rapidocr_onnxruntime --collect-all onnxruntime ^
   --exclude-module matplotlib --exclude-module PyQt5 --exclude-module PySide6 || goto :err
 
 echo [3/4] self test

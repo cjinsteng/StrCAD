@@ -485,7 +485,7 @@ class Launcher(tk.Tk):
                             continue
                 messagebox.showerror("Report Design 실행 오류",
                     f"Report Design을 불러오지 못했습니다.\n({e})\n\nreport_design 폴더와 "
-                    "pip install olefile pywin32 를 확인하세요.", parent=self)
+                    "pip install python-docx olefile pywin32 를 확인하세요.", parent=self)
                 return
         try:
             nm = (getattr(self, "_uinfo", None) or {}).get("name") or self._user
@@ -763,7 +763,7 @@ def _selftest(out):
         import importlib
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_design"))
         for m in ("accounts", "cad_analysis.app", "cad_analysis.licensing", "cad_analysis.licensing_ui", "design_2d",
-                  "olefile", "hwp_reader", "report_core", "report_assistant"):
+                  "olefile", "docx", "hwp_reader", "docx_doc", "report_core", "report_assistant"):
             try: importlib.import_module(m); lines.append("OK " + m)
             except Exception as e: lines.append(f"FAIL {m} {e!r}")
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "autotable"))

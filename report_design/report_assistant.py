@@ -308,6 +308,84 @@ class EditDialog(tk.Toplevel):
 
 # ====================================================================== 설정
 
+def _tbl_ref(t):
+    return getattr(t, "ref", None)
+
+
+class FormDialog(tk.Toplevel):
+    """간단한 입력 창. fields: [(키, 라벨, 종류, 기본값, 설명)] 종류: entry|text|int|float|check|combo:a/b"""
+
+    def __init__(self, app, title, fields, note=""):
+        super().__init__(app.root)
+        self.title(title)
+        self.transient(app.root)
+        self.resizable(False, False)
+        self.result = None
+        frm = ttk.Frame(self, padding=14)
+        frm.pack(fill="both")
+        if note:
+            ttk.Label(frm, text=note, style="Hint.TLabel", wraplength=460, justify="left").grid(
+                row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        self.vars, self.texts = {}, {}
+        r = 1
+        first = None
+        for key, label, kind, default, hint in fields:
+            ttk.Label(frm, text=label).grid(row=r, column=0, sticky="nw", padx=(0, 10), pady=4)
+            if kind == "text":
+                w = tk.Text(frm, width=50, height=4, wrap="word", font=(app.font, 10), relief="solid", bd=1)
+                w.insert("1.0", default or "")
+                self.texts[key] = w
+            elif kind == "check":
+                v = tk.BooleanVar(value=bool(default))
+                w = ttk.Checkbutton(frm, text=hint or "", variable=v)
+                self.vars[key] = v
+                hint = None
+            elif kind.startswith("combo:"):
+                v = tk.StringVar(value=default)
+                w = ttk.Combobox(frm, textvariable=v, values=kind[6:].split("/"), state="readonly", width=12)
+                self.vars[key] = v
+            else:
+                v = tk.StringVar(value="" if default is None else str(default))
+                w = ttk.Entry(frm, textvariable=v, width=12 if kind in ("int", "float") else 52)
+                self.vars[key] = v
+            w.grid(row=r, column=1, sticky="w", pady=4)
+            first = first or w
+            r += 1
+            if hint:
+                ttk.Label(frm, text=hint, style="Hint.TLabel", wraplength=400, justify="left").grid(
+                    row=r, column=1, sticky="w")
+                r += 1
+        self.kinds = {f[0]: f[2] for f in fields}
+        bf = ttk.Frame(frm)
+        bf.grid(row=r, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        ttk.Button(bf, text="취소", command=self.destroy).pack(side="right")
+        ttk.Button(bf, text="추가", style="Accent.TButton", command=self._ok).pack(side="right", padx=6)
+        self.bind("<Return>", lambda e: self._ok() if not isinstance(e.widget, tk.Text) else None)
+        if first is not None:
+            first.focus_set()
+        self.grab_set()
+        self.wait_window(self)
+
+    def _ok(self):
+        out = {}
+        try:
+            for k, v in self.vars.items():
+                val = v.get()
+                kind = self.kinds[k]
+                if kind == "int":
+                    val = int(val)
+                elif kind == "float":
+                    val = float(val) if str(val).strip() else None
+                out[k] = val
+        except ValueError:
+            messagebox.showwarning(APP_TITLE, "숫자 칸을 확인하세요.", parent=self)
+            return
+        for k, w in self.texts.items():
+            out[k] = w.get("1.0", "end-1c").strip()
+        self.result = out
+        self.destroy()
+
+
 class SettingsDialog(tk.Toplevel):
     """AI 엔진 선택: Claude(유료) / Ollama(무료, 내 PC) / OpenAI 호환 서버"""
 
@@ -568,6 +646,12 @@ class App:
         self._big(g, "📂\n폴더 열기", self.open_folder, accent=True)
         self._big(g, "＋\n파일 추가", self.add_files)
         self._big(g, "⟳\n다시 읽기", self.reload_all)
+        self._big(g, "⇄\n한글→\nWord 변환", self.convert_hwp_to_word)
+        g = self._grp(home, "추가 (Word)")
+        self._big(g, "§\n새 절", lambda: self.ui_add_section(self._target_sec(), "after"))
+        self._big(g, "§›\n하위 절", lambda: self.ui_add_section(self._target_sec(), "child"))
+        self._big(g, "▦\n표", lambda: self.ui_add_table(self._target_para(), self._target_sec()))
+        self._big(g, "🖼\n사진", lambda: self.ui_add_picture(self._target_para(), self._target_sec()))
         g = self._grp(home, "검사")
         self._big(g, "#\n번호 검사", self.run_numbering)
         self._big(g, "≒\n반복 문단\n불일치", self.run_inconsistency, 10)
@@ -576,7 +660,7 @@ class App:
         self._big(g, "⚙\n엔진 설정", lambda: SettingsDialog(self))
         g = self._grp(home, "반영")
         self.btn_changes = self._big(g, "☰\n변경 목록\n(0)", lambda: self.nb.select(self.tab_list))
-        self._big(g, "✔\n한글 파일에\n반영", self.apply_to_hwp, 10, accent=True)
+        self._big(g, "✔\n파일에\n반영·저장", self.apply_to_hwp, 10, accent=True)
 
     def _build_body(self):
         pw = ttk.PanedWindow(self.root, orient="horizontal")
@@ -594,6 +678,7 @@ class App:
         self.tree.tag_configure("issue", foreground=TH.NG)
         self.tree.tag_configure("edited", background="#fff6cc")
         self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
+        self.tree.bind("<Button-3>", self.on_tree_menu)
         pw.add(lf, weight=1)
 
         # 가운데: 본문 보기
@@ -620,6 +705,9 @@ class App:
         self.view.tag_configure("bar", foreground=TH.NAVY_L)
         self.view.tag_configure("box", foreground="#455a64", font=(f, 9, "italic"))
         self.view.tag_configure("edited", background="#fff3b0")
+        self.view.tag_configure("picline", foreground=TH.NAVY_3, font=(f, 9, "bold"), justify="center",
+                                spacing1=6, spacing3=6)
+        self.view.tag_configure("newempty", foreground=TH.MUTED, font=(f, 9, "italic"), background=TH.ORANGE_L)
         self.view.tag_configure("origline", foreground="#9e9e9e", overstrike=1, font=(f, 9))
         self.view.tag_configure("issue", underline=1, foreground=TH.NG)
         self.view.tag_configure("aispan", background="#ffd8a8")
@@ -814,11 +902,11 @@ class App:
             return
         files = []
         for nm in sorted(os.listdir(d)):
-            if nm.startswith(("~", ".")) or not nm.lower().endswith((".hwp", ".hwpx")):
+            if nm.startswith(("~", ".")) or not nm.lower().endswith((".hwp", ".hwpx", ".docx")):
                 continue
             files.append(os.path.join(d, nm))
         if not files:
-            messagebox.showinfo(APP_TITLE, "폴더에 .hwp / .hwpx 파일이 없습니다.")
+            messagebox.showinfo(APP_TITLE, "폴더에 Word(.docx) / 한글(.hwp, .hwpx) 파일이 없습니다.")
             return
         self._save_state_quiet()
         self.rep = rc.Report()
@@ -826,7 +914,8 @@ class App:
         self._load(files)
 
     def add_files(self):
-        fs = filedialog.askopenfilenames(title="장 파일 추가", filetypes=[("한글 문서", "*.hwp *.hwpx")])
+        fs = filedialog.askopenfilenames(title="장 파일 추가", filetypes=[
+            ("보고서 (Word·한글)", "*.docx *.hwp *.hwpx"), ("Word 문서", "*.docx"), ("한글 문서", "*.hwp *.hwpx")])
         if fs:
             self._load(list(fs))
 
@@ -862,6 +951,9 @@ class App:
     def reload_all(self):
         if not self.rep.docs:
             return
+        if self._dirty_word() and not messagebox.askyesno(
+                APP_TITLE, "저장하지 않은 Word 추가 내용(절·표·사진)이 사라집니다. 다시 읽을까요?"):
+            return
         for d in list(self.rep.docs):
             try:
                 self.rep.reload(d)
@@ -877,7 +969,21 @@ class App:
         except Exception:
             pass
 
+    def _dirty_word(self):
+        return [d for d in self.rep.docs if d.fmt == "docx" and d.dirty]
+
     def on_close(self):
+        dirty = self._dirty_word()
+        if dirty:
+            a = messagebox.askyesnocancel(APP_TITLE, "Word 파일에 저장하지 않은 추가 내용(절·표·사진)이 있습니다.\n\n"
+                                          + "\n".join(os.path.basename(d.path) for d in dirty)
+                                          + "\n\n지금 저장할까요? (아니오 = 버리고 닫기)")
+            if a is None:
+                return
+            if a:
+                self.apply_to_hwp(only_word=True)
+                if self._dirty_word():
+                    return
         self._save_state_quiet()
         self.root.destroy()
 
@@ -996,9 +1102,21 @@ class App:
                 h = None
                 if p.kind == "body":
                     h = heading_of(p)
-                if not t.strip() and p.uid not in self.rep.edits:
+                is_new = p.ref is not None and id(p.ref) in self.rep.new_refs
+                if p.pic:
+                    put("🖼 [그림]" + (" " + t if t.strip() else "") + "\n", "picline")
+                    self.ranges.append((off - 1, off - 1, p))
+                    continue
+                if not t.strip() and p.uid not in self.rep.edits and not is_new:
                     continue
                 tags = (f"h{min(h[2], 3)}",) if h else (("box",) if p.kind == "box" else ())
+                if not t.strip() and is_new:
+                    start = off
+                    put("⟨새 문단 — 더블클릭해서 입력⟩", "newempty")
+                    self.ranges.append((start, off, p))
+                    self.para_pos[p.uid] = (start, off)
+                    put("\n")
+                    continue
                 put_para(p, tags)
                 put("\n")
                 if p.uid in self.rep.edits:
@@ -1009,10 +1127,19 @@ class App:
                     put("│ ", "tbl", "bar")
                     for r, c, cell in row:
                         ps = [p for p in cell["paras"] if self.rep.text(p).strip() or p.uid in self.rep.edits]
+                        if not ps and cell["paras"] and cell["paras"][0].ref is not None \
+                                and id(_tbl_ref(obj)) in self.rep.new_refs:
+                            ps = cell["paras"][:1]          # 새 표의 빈 칸도 클릭해서 입력할 수 있게
                         for i, p in enumerate(ps):
                             if i:
                                 put(" / ", "tbl", "bar")
-                            put_para(p, ("tbl",))
+                            if not self.rep.text(p).strip():
+                                start = off
+                                put("·····", "tbl", "newempty")
+                                self.ranges.append((start, off, p))
+                                self.para_pos[p.uid] = (start, off)
+                            else:
+                                put_para(p, ("tbl",))
                         if not ps:
                             put(" ", "tbl")
                         put(" │ ", "tbl", "bar")
@@ -1065,8 +1192,39 @@ class App:
         if p.uid in self.rep.edits:
             m.add_command(label="수정 취소 (원문으로)", command=lambda: (self.rep.clear_edit(p), self.refresh_all(True)))
         m.add_separator()
+        word = p.doc.fmt == "docx"
+        st = "normal" if word else "disabled"
+        m.add_command(label="아래에 문단 추가…", state=st, command=lambda: self.ui_add_paragraph(p))
+        m.add_command(label="아래에 표 추가…", state=st, command=lambda: self.ui_add_table(p, None))
+        m.add_command(label="아래에 사진 추가…", state=st, command=lambda: self.ui_add_picture(p, None))
+        if word and p.ref is not None and id(rc._top_level(p.ref)) in self.rep.new_refs:
+            m.add_command(label="새로 넣은 이 문단/표/그림 삭제", command=lambda: self.ui_delete_new(p))
+        if not word:
+            m.add_command(label="(추가 기능은 Word 파일에서 — 한글→Word 변환)", state="disabled")
+        m.add_separator()
         m.add_command(label="텍스트 복사", command=lambda: (self.root.clipboard_clear(),
                                                         self.root.clipboard_append(self.rep.text(p))))
+        m.tk_popup(e.x_root, e.y_root)
+
+    def on_tree_menu(self, e):
+        iid = self.tree.identify_row(e.y)
+        sec = self.sec_by_iid.get(iid)
+        if sec is None or not sec.number:
+            return
+        self.tree.selection_set(iid)
+        word = sec.doc.fmt == "docx"
+        st = "normal" if word else "disabled"
+        m = tk.Menu(self.root, tearoff=0, font=(self.font, 10))
+        nxt, child = self._next_numbers(sec)
+        m.add_command(label=f"이 절 뒤에 새 절 추가 ({nxt})…", state=st, command=lambda: self.ui_add_section(sec, "after"))
+        m.add_command(label=f"하위 절 추가 ({child})…", state=st, command=lambda: self.ui_add_section(sec, "child"))
+        m.add_separator()
+        m.add_command(label="이 절 끝에 표 추가…", state=st, command=lambda: self.ui_add_table(None, sec))
+        m.add_command(label="이 절 끝에 사진 추가…", state=st, command=lambda: self.ui_add_picture(None, sec))
+        if not word:
+            m.add_separator()
+            m.add_command(label="한글 파일은 읽기·검토·수정만 됩니다. 추가는 Word로 변환 후",
+                          state="disabled")
         m.tk_popup(e.x_root, e.y_root)
 
     def goto_para(self, p):
@@ -1111,6 +1269,226 @@ class App:
             p = getattr(it, key)
         if p is not None:
             self.goto_para(p)
+
+    # ------------------------------------------------------------ Word: 절·문단·표·사진 추가
+    def _target_sec(self):
+        if self.sel_para is not None and self.sel_para.section is not None and \
+                self.cur_sec is not None and self.sel_para.doc is self.cur_sec.doc:
+            return self.sel_para.section
+        return self.cur_sec
+
+    def _target_para(self):
+        p = self.sel_para
+        if p is not None and self.cur_sec is not None and p.doc is self.cur_sec.doc:
+            return p
+        return None
+
+    def _word_ok(self, sec_or_para):
+        if sec_or_para is None:
+            messagebox.showinfo(APP_TITLE, "왼쪽 트리에서 절을 선택하거나 본문에서 문단을 클릭하세요.")
+            return False
+        doc = sec_or_para.doc
+        if doc.fmt != "docx":
+            messagebox.showinfo(APP_TITLE, "절·표·사진 추가는 Word(.docx) 파일에서 됩니다.\n\n"
+                                           "한글 파일은 '한글→Word 변환'으로 Word 파일을 만든 뒤 사용하세요.\n"
+                                           "(한글 파일은 지금처럼 읽기·검사·AI 검토·수정 반영은 됩니다)")
+            return False
+        return True
+
+    def _next_numbers(self, sec):
+        kids = [c for c in sec.children if c.level == sec.level + 1]
+        if sec.level == -1:
+            after = f"제{sec.number}편 다음"
+            child = f"제{int(kids[-1].number) + 1 if kids else 1}장"
+        elif sec.level == 0:
+            after = f"제{int(sec.number) + 1}장"
+            child = f"{sec.number}.{len(kids) + 1}" if not kids else rc._bump(kids[-1].number)
+        else:
+            after = rc._bump(sec.number)
+            child = f"{sec.number}.{len(kids) + 1}" if not kids else rc._bump(kids[-1].number)
+        return after, child
+
+    def _after_structure(self, new_el, msg):
+        self.ai_results.clear()
+        self.issues, self.issue_paras, self.check_items = [], set(), []
+        self._fill_check()
+        self.refresh_all()
+        target = None
+        for d in ([] if new_el is None else self.rep.docs):
+            for p in d.paras:
+                if p.ref is new_el:
+                    target = p
+                    break
+        if target is not None:
+            self.goto_para(target)
+        self.status.set(msg + " — '파일에 반영·저장'을 눌러야 Word 파일에 저장됩니다.")
+
+    def ui_add_section(self, sec, mode):
+        if not self._word_ok(sec):
+            return
+        if not sec.number or sec.level == -1 and mode == "after":
+            messagebox.showinfo(APP_TITLE, "장 또는 절을 선택하세요.")
+            return
+        nxt, child = self._next_numbers(sec)
+        num = nxt if mode == "after" else child
+        later = []
+        if mode == "after":
+            sibs = sec.parent.children if sec.parent else self.rep.roots[sec.doc.key]
+            later = [x for x in sibs if x.block_idx > sec.block_idx and x.level == sec.level]
+        fields = [("title", "제목", "entry", "", f"번호 {num} 은(는) 자동으로 붙습니다"),
+                  ("body", "첫 문단", "text", "", "비워 두면 빈 문단이 생깁니다 (나중에 더블클릭해서 입력)")]
+        if later:
+            fields.append(("renumber", "번호 밀기", "check", True,
+                           f"뒤에 있는 {', '.join(x.number for x in later[:4])}{'…' if len(later) > 4 else ''} 의 번호를 하나씩 뒤로"))
+        where = f"'{sec.label}' 뒤" if mode == "after" else f"'{sec.label}' 의 맨 끝"
+        dlg = FormDialog(self, f"새 절 추가 — {num}", fields,
+                         note=f"{where}에 {num} 절을 넣습니다. 제목·본문 글씨체와 문단 모양은 같은 단계의 기존 제목/본문을 그대로 따릅니다.")
+        if not dlg.result:
+            return
+        if not dlg.result["title"].strip():
+            messagebox.showinfo(APP_TITLE, "제목을 입력하세요.")
+            return
+        try:
+            head, body, moved = rc.add_section(self.rep, sec.doc, sec, mode, dlg.result["title"].strip(),
+                                               dlg.result.get("body", ""), dlg.result.get("renumber", True))
+        except Exception as e:
+            messagebox.showerror(APP_TITLE, f"절 추가 실패: {e}")
+            return
+        self._after_structure(head, f"{num} 절 추가" + (f" · 뒤 절 번호 {moved}개 밀림(변경 목록)" if moved else ""))
+
+    def ui_add_paragraph(self, p):
+        if not self._word_ok(p):
+            return
+        dlg = FormDialog(self, "문단 추가", [("text", "내용", "text", "", "비워 두면 빈 문단")],
+                         note="선택한 문단 아래에 같은 모양의 본문 문단을 넣습니다.")
+        if not dlg.result:
+            return
+        el = rc.add_paragraph(self.rep, p.doc, p, dlg.result["text"])
+        self._after_structure(el, "문단 추가")
+
+    def ui_add_table(self, p, sec):
+        target = p or sec
+        if not self._word_ok(target):
+            return
+        dlg = FormDialog(self, "표 추가", [
+            ("rows", "행 수", "int", 4, "머리글 행 포함"),
+            ("cols", "열 수", "int", 3, None),
+            ("header", "머리글", "entry", "", "쉼표로 구분 (예: 구 분, 검토결과, 비 고) — 비워도 됨"),
+            ("caption", "표 제목", "entry", "", "번호는 자동 (예: <표 5.3 지붕 검토 결과>). 비우면 제목 없이"),
+            ("pos", "제목 위치", "combo:표 위/표 아래", "표 위", None)],
+            note=("선택한 문단 아래" if p else f"'{sec.label}' 끝") + "에 표를 넣습니다. 테두리·글씨는 보고서의 기존 표를 본뜹니다.")
+        if not dlg.result:
+            return
+        r = dlg.result
+        if not (1 <= r["rows"] <= 200 and 1 <= r["cols"] <= 30):
+            messagebox.showinfo(APP_TITLE, "행 1~200, 열 1~30 사이로 입력하세요.")
+            return
+        header = [h.strip() for h in r["header"].split(",")] if r["header"].strip() else None
+        try:
+            tbl, moved = rc.add_table(self.rep, target.doc, p, sec, r["rows"], r["cols"], header, r["caption"],
+                                      "above" if r["pos"] == "표 위" else "below")
+        except Exception as e:
+            messagebox.showerror(APP_TITLE, f"표 추가 실패: {e}")
+            return
+        first = None
+        for d in self.rep.docs:
+            for t in d.tables:
+                if t.ref is tbl:
+                    cells = [c for k, c in sorted(t.cells.items())]
+                    first = cells[0]["paras"][0].ref if cells and cells[0]["paras"] else None
+        self._after_structure(first if first is not None else tbl,
+                              "표 추가 — 빈 칸(·····)을 더블클릭해서 내용을 입력하세요"
+                              + (f" · 뒤 표 번호 {moved}개 밀림" if moved else ""))
+
+    def ui_add_picture(self, p, sec):
+        target = p or sec
+        if not self._word_ok(target):
+            return
+        files = filedialog.askopenfilenames(title="넣을 사진 선택", filetypes=[
+            ("그림", "*.png *.jpg *.jpeg *.bmp *.gif *.tif *.tiff"), ("모든 파일", "*.*")])
+        if not files:
+            return
+        dlg = FormDialog(self, "사진 추가", [
+            ("caption", "그림 제목", "entry", "", "번호는 자동 (예: <그림 5.2 지붕 전경>). 여러 장이면 제목 뒤에 (1), (2)…"),
+            ("width", "폭 (cm)", "float", "", "비우면 보고서에 이미 있는 그림과 같은 폭")],
+            note=f"사진 {len(files)}장을 " + ("선택한 문단 아래" if p else f"'{sec.label}' 끝") + "에 넣습니다.")
+        if not dlg.result:
+            return
+        cap = dlg.result["caption"]
+        anchor_para, last_el, moved = p, None, 0
+        for i, f in enumerate(files):
+            title = (f"{cap} ({i + 1})" if cap and len(files) > 1 else cap)
+            try:
+                el, mv = rc.add_picture(self.rep, target.doc if anchor_para is None else anchor_para.doc,
+                                        anchor_para, sec, f, dlg.result["width"], title)
+            except Exception as e:
+                messagebox.showerror(APP_TITLE, f"사진 추가 실패 ({os.path.basename(f)}): {e}")
+                break
+            moved += mv
+            last_el = el
+            # 다음 사진은 방금 넣은 사진(캡션) 뒤에
+            nxt = el.getnext() if cap else el
+            anchor_para = next((q for d in self.rep.docs for q in d.paras if q.ref is nxt), None)
+            sec = None if anchor_para is not None else sec
+        if last_el is not None:
+            self._after_structure(last_el, f"사진 {len(files)}장 추가" + (f" · 뒤 그림 번호 {moved}개 밀림" if moved else ""))
+
+    def ui_delete_new(self, p):
+        if messagebox.askyesno(APP_TITLE, "새로 넣은 이 문단/표/그림을 지울까요?"):
+            rc.delete_block(self.rep, p.doc, p)
+            self.sel_para = None
+            self._after_structure(None, "삭제")
+
+    def convert_hwp_to_word(self):
+        hwps = [d for d in self.rep.docs if d.fmt != "docx"]
+        paths = [d.path for d in hwps]
+        if not paths:
+            fs = filedialog.askopenfilenames(title="Word로 바꿀 한글 파일", filetypes=[("한글 문서", "*.hwp *.hwpx")])
+            paths = list(fs)
+        if not paths:
+            return
+        if not rc.HwpApplier.available():
+            messagebox.showinfo(APP_TITLE, "이 PC에서는 한글 자동화를 쓸 수 없습니다 (Windows + 한글 + pywin32 필요).\n\n"
+                                           "한글에서 직접 '파일 → 다른 이름으로 저장 → 파일 형식: Word 문서(*.docx)'로 저장한 뒤\n"
+                                           "'폴더 열기'로 Word 파일을 여세요.")
+            return
+        if not messagebox.askyesno(APP_TITLE, f"한글 파일 {len(paths)}개를 같은 폴더에 Word(.docx)로 저장합니다.\n"
+                                              "(원본 한글 파일은 그대로 둡니다)\n\n진행할까요?"):
+            return
+        done, errs = [], []
+        app = None
+        self.root.config(cursor="watch")
+        self.root.update()
+        try:
+            app = rc.HwpApplier(visible=self.settings.get("hwp_visible", False))
+            for src in paths:
+                dst = os.path.splitext(src)[0] + ".docx"
+                if os.path.exists(dst) and not messagebox.askyesno(APP_TITLE, f"이미 있습니다. 덮어쓸까요?\n{dst}"):
+                    continue
+                try:
+                    self.status.set("변환 중: " + os.path.basename(src))
+                    self.root.update()
+                    rc.hwp_to_docx(app, src, dst)
+                    done.append((src, dst))
+                except Exception as e:
+                    errs.append(f"{os.path.basename(src)}: {e}")
+        except Exception as e:
+            errs.append(str(e))
+        finally:
+            if app:
+                app.quit()
+            self.root.config(cursor="")
+        if errs:
+            messagebox.showwarning(APP_TITLE, "일부 변환 실패:\n\n" + "\n".join(errs))
+        if done and messagebox.askyesno(APP_TITLE, f"{len(done)}개를 Word로 저장했습니다.\n\n"
+                                                   "프로그램에서 한글 파일 대신 Word 파일로 바꿔 열까요?\n"
+                                                   "(변환 후 표·쪽 모양이 조금 달라질 수 있으니 Word에서 한 번 확인하세요)"):
+            for src, dst in done:
+                for d in list(self.rep.docs):
+                    if os.path.abspath(d.path) == os.path.abspath(src):
+                        self.rep.remove_doc(d)
+            self.ai_results.clear()
+            self._load([dst for _, dst in done])
 
     # ------------------------------------------------------------ 수정 + 동기화
     def edit_para(self, p):
@@ -1386,8 +1764,12 @@ class App:
                 changes.append((a, self.rep.text(a), self.rep.text(b)))
             elif it.fix and it.fix != self.rep.text(it.para):
                 changes.append((it.para, self.rep.text(it.para), it.fix))
+        if not sel:
+            messagebox.showinfo(APP_TITLE, "목록에서 고칠 항목을 먼저 선택하세요 (Ctrl/Shift로 여러 개).")
+            return
         if not changes:
-            messagebox.showinfo(APP_TITLE, "자동 수정 제안이 있는 항목을 선택하세요.")
+            messagebox.showinfo(APP_TITLE, "선택한 항목은 이미 수정했거나, 자동으로 고칠 수 있는 제안이 없는 항목입니다.\n"
+                                           "(캡션 번호 '건너뜀/중복' 등은 위치로 이동해 직접 수정하세요)")
             return
         self.commit_changes(changes, "검사 결과 수정")
         for i in self.chk_tv.selection():
@@ -1502,10 +1884,39 @@ class App:
             self.status.set("저장: " + f)
 
     # ------------------------------------------------------------ 한글 반영
-    def apply_to_hwp(self):
-        if not self.rep.edits:
+    def apply_to_hwp(self, only_word=False):
+        """Word 파일은 바로 저장, 한글 파일은 한글 자동화로 반영"""
+        has_edit = lambda d: any(p.uid in self.rep.edits for p in d.paras)
+        words = [d for d in self.rep.docs if d.fmt == "docx" and (d.dirty or has_edit(d))]
+        hwps = [] if only_word else [d for d in self.rep.docs if d.fmt != "docx" and has_edit(d)]
+        if not words and not hwps:
             messagebox.showinfo(APP_TITLE, "반영할 수정 사항이 없습니다.")
             return
+        log, ok_total, fail_total = [], 0, 0
+        if words:
+            if not messagebox.askyesno(APP_TITLE, f"Word 파일 {len(words)}개를 저장합니다.\n"
+                                       "원본은 '_백업' 폴더에 복사한 뒤 저장합니다.\n"
+                                       "Word에서 열려 있으면 먼저 닫아 주세요.\n\n진행할까요?"):
+                return
+            for d in words:
+                try:
+                    ok, fail = rc.save_word(self.rep, d)
+                    ok_total += ok
+                    fail_total += len(fail)
+                    log.append(f"■ {os.path.basename(d.path)} — 저장 완료 (문단 수정 {ok}개"
+                               + (f", 실패 {len(fail)}개" if fail else "") + ")")
+                except Exception as e:
+                    log.append(f"■ {os.path.basename(d.path)} — 저장 실패: {e}")
+                    messagebox.showerror(APP_TITLE, str(e))
+            self.rep.new_refs.clear()
+            if not hwps:
+                self.ai_results.clear()
+                self.refresh_all()
+                self._show_result(ok_total, fail_total, [], log)
+                return
+        self._apply_hwp_docs(hwps, log, ok_total, fail_total)
+
+    def _apply_hwp_docs(self, hwps, log, ok_total, fail_total):
         if not rc.HwpApplier.available():
             if messagebox.askyesno(APP_TITLE, "이 PC에서는 한글 자동화를 사용할 수 없습니다.\n"
                                               "(Windows + 한글 설치 + 'pip install pywin32' 필요)\n\n"
@@ -1514,23 +1925,19 @@ class App:
             return
         plans = []
         n_auto = n_man = 0
-        for d in self.rep.docs:
-            if not any(p.uid in self.rep.edits for p in d.paras):
-                continue
+        for d in hwps:
             reps, man = rc.plan_changes(self.rep, d)
             plans.append((d, reps, man))
             n_auto += len({id(p) for r in reps for p in r.paras})
             n_man += len(man)
-        msg = (f"파일 {len(plans)}개에 반영합니다.\n\n"
+        msg = (f"한글 파일 {len(plans)}개에 반영합니다.\n\n"
                f" · 자동 반영: 문단 {n_auto}개\n"
                f" · 수동 확인 필요: 문단 {n_man}개 (같은 문구가 여러 번 있거나 표·탭 경계에 걸친 경우)\n\n"
                f"원본은 각 폴더의 '_백업'에 복사한 뒤 수정합니다.\n"
                f"반영할 파일이 한글에서 열려 있다면 먼저 닫아주세요.\n\n진행할까요?")
         if not messagebox.askyesno(APP_TITLE, msg):
             return
-        log = []
         manual_all = []
-        ok_total = fail_total = 0
         self.root.config(cursor="watch")
         self.root.update()
         app = None

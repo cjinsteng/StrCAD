@@ -19,7 +19,7 @@ class Para:
     """문단 하나. text 는 한글 '찾기'에 쓰일 수 있는 순수 텍스트.
     breaks: 표/그림/필드/탭/묶음빈칸 등 '찾아 바꾸기'가 넘어갈 수 없는 위치(오프셋)"""
     __slots__ = ("uid", "doc", "seq", "text", "orig", "breaks", "kind",
-                 "table", "row", "col", "section")
+                 "table", "row", "col", "section", "ref", "pic")
 
     def __init__(self, doc, seq, text, breaks, kind="body", table=None, row=-1, col=-1):
         self.doc = doc
@@ -32,6 +32,8 @@ class Para:
         self.table = table
         self.row, self.col = row, col
         self.section = None
+        self.ref = None               # Word: 해당 w:p 요소
+        self.pic = False              # 그림이 들어 있는 문단
 
     def __repr__(self):
         return f"<Para {self.uid} {self.kind} {self.text[:30]!r}>"
@@ -42,6 +44,7 @@ class Table:
         self.tid = tid
         self.rows, self.cols = rows, cols
         self.cells = {}               # (r, c) -> dict(paras=[...], rs, cs)
+        self.ref = None               # Word: w:tbl 요소
 
     def add_cell(self, r, c, rs, cs):
         cell = {"paras": [], "rs": rs, "cs": cs}
@@ -58,6 +61,9 @@ class HwpDoc:
         self.paras = []               # 모든 문단 (본문+셀+글상자)
         self.tables = []
         self.hidden = []              # 머리말/꼬리말/각주 등 (찾아 바꾸기 고유성 검사용)
+        self.fmt = "hwp"              # hwp | hwpx | docx
+        self.docx = None              # Word: python-docx Document (메모리)
+        self.dirty = False            # Word: 절/표/사진 추가 등 저장 안 된 구조 변경
 
     def new_para(self, text, breaks, **kw):
         p = Para(self, len(self.paras), text, breaks, **kw)
@@ -326,11 +332,16 @@ def _hx_table(doc, tel):
 
 def read_document(path, key=None):
     low = path.lower()
+    if low.endswith(".docx"):
+        from docx_doc import read_docx
+        return read_docx(path, key)
     if low.endswith(".hwpx"):
-        return read_hwpx(path, key)
+        d = read_hwpx(path, key)
+        d.fmt = "hwpx"
+        return d
     if low.endswith(".hwp"):
         return read_hwp(path, key)
-    raise ValueError("지원하지 않는 형식입니다 (.hwp / .hwpx 만 가능)")
+    raise ValueError("지원하지 않는 형식입니다 (.docx / .hwp / .hwpx 만 가능)")
 
 
 # ---------------------------------------------------------------- 제목(장/절) 인식
@@ -425,7 +436,9 @@ def build_sections(doc):
     keep = []
     for idx, (bi, h) in enumerate(heads):
         nxt = heads[idx + 1][0] if idx + 1 < len(heads) else len(doc.blocks)
-        later = ctx_keys[idx] in ctx_keys[idx + 1:]
+        k = ctx_keys[idx]
+        later = k in ctx_keys[idx + 1:] or (                 # 장 제목 앞에 나온 목차 항목
+            h[2] > 0 and k[1] == "" and any(k2[0] == k[0] and k2[2:] == k[2:] for k2 in ctx_keys[idx + 1:]))
         if later and not has_content(bi, nxt):
             continue
         keep.append((bi, h))

@@ -31,6 +31,7 @@ class Report:
         self.edits = {}                # uid -> 새 텍스트
         self.edit_src = {}             # uid -> 출처 설명
         self.common = []               # [[항목, 값], ...]
+        self.new_refs = set()          # Word: 이번에 새로 넣은 요소(id) — 빈 문단도 화면에 표시
         self._index = None
 
     # ------------------------------------------------------------ 로드
@@ -377,7 +378,8 @@ def check_numbering(rep, doc):
                 why = "중복" if no <= prev else "건너뜀"
                 issues.append(Issue("캡션 번호", p, f"{label} — 이전 {kind} 번호가 {prev}이므로 {prev + 1} 예상 ({why})"))
             last[kind] = max(prev, no)
-    return issues
+    # 고칠 내용이 현재와 같은 항목(이미 맞음)은 보고하지 않음
+    return [i for i in issues if not (i.fix is not None and i.para is not None and i.fix == rep.text(i.para))]
 
 
 # ====================================================================== 문구 비교/전파
@@ -1103,3 +1105,315 @@ def export_changes_csv(rep, path, manual_only=None):
             w.writerow([os.path.basename(p.doc.path), p.section.label if p.section else "",
                         {"body": "본문", "cell": "표", "box": "글상자"}.get(p.kind, p.kind),
                         p.orig, m.new_text, rep.edit_src.get(p.uid, ""), m.why])
+
+
+# ====================================================================== Word: 구조 편집 (절·문단·표·사진 추가)
+
+def _dx():
+    import docx_doc
+    return docx_doc
+
+
+def rebuild_docx(rep, doc):
+    """메모리의 Word 문서를 다시 분석 (구조 추가 후). 수정 대기는 문단 요소 기준으로 유지"""
+    dx = _dx()
+    keep = {}
+    for p in doc.paras:
+        if p.uid in rep.edits and p.ref is not None:
+            keep[id(p.ref)] = (p.orig, rep.edits.pop(p.uid), rep.edit_src.pop(p.uid, ""))
+    for p in doc.paras:
+        rep.paras.pop(p.uid, None)
+    new = dx.read_docx(doc.path, doc.key, document=doc.docx)
+    new.dirty = True
+    i = rep.docs.index(doc)
+    rep.docs[i] = new
+    rep._register(new)
+    for p in new.paras:
+        k = keep.get(id(p.ref))
+        if k and p.orig == k[0]:
+            rep.edits[p.uid] = k[1]
+            rep.edit_src[p.uid] = k[2]
+    return new
+
+
+def _top_level(el):
+    """표 안 문단이면 바깥 표 요소까지 올라감"""
+    while el is not None and el.getparent() is not None:
+        par = el.getparent()
+        if par.tag in (_dx().qn("w:body"), _dx().W_SDTC):
+            return el
+        el = par
+    return el
+
+
+def _bump(num, delta=1):
+    parts = num.split(".")
+    parts[-1] = str(int(parts[-1]) + delta)
+    return ".".join(parts)
+
+
+RE_HEAD_NUM = re.compile(r"^(\s*)(\d+(?:\.\d+)*)(\.?\s+)")
+
+
+def _heading_text_like(template_text, number, title, level):
+    if level == 0:
+        m = RE_CH_NUM.search(template_text)
+        if m:
+            pre = template_text[:m.start()]
+            gap = re.match(r"^(\s*)", template_text[m.end():]).group(1) or "  "
+            return f"{pre}{m.group(1)}{number}{m.group(3)}{gap}{title}"
+        return f"제 {number} 장  {title}"
+    m = RE_HEAD_NUM.match(template_text)
+    if m:
+        return f"{m.group(1)}{number}{m.group(3)}{title}"
+    return f"{number} {title}"
+
+
+def _renumber_sections(rep, secs, level_index, delta, src):
+    """secs(형제 절들)와 하위 절의 번호 중 level_index 번째 자리를 delta 만큼 밀기"""
+    n = 0
+    for s in secs:
+        for d in s.iter():
+            if d.para is None:
+                continue
+            t = rep.text(d.para)
+            if d.level == 0:
+                m = RE_CH_NUM.search(t)
+                if m and level_index == 0:
+                    rep.set_edit(d.para, t[:m.start(2)] + str(int(m.group(2)) + delta) + t[m.end(2):], src)
+                    n += 1
+                continue
+            m = RE_HEAD_NUM.match(t)
+            if not m:
+                continue
+            parts = m.group(2).split(".")
+            if level_index < len(parts):
+                parts[level_index] = str(int(parts[level_index]) + delta)
+                rep.set_edit(d.para, t[:m.start(2)] + ".".join(parts) + t[m.end(2):], src)
+                n += 1
+    return n
+
+
+def add_section(rep, doc, sec, mode, title, body="", renumber=True):
+    """mode: 'after' (같은 단계, 다음 번호) | 'child' (하위 절). → (새 제목 문단 요소, 밀린 번호 수)"""
+    dx = _dx()
+    if mode == "after":
+        level = sec.level
+        if level == 0:
+            number = str(int(sec.number) + 1)
+        else:
+            number = _bump(sec.number)
+        tmpl = sec.para.ref
+        siblings = sec.parent.children if sec.parent else rep.roots[doc.key]
+        later = [s for s in siblings if s.block_idx > sec.block_idx and s.level == level]
+    else:
+        level = sec.level + 1
+        kids = [c for c in sec.children if c.level == level]
+        if level == 0:
+            number = str(int(kids[-1].number) + 1) if kids else "1"
+        else:
+            base = sec.number
+            number = f"{base}.{len(kids) + 1}" if not kids else _bump(kids[-1].number)
+        tmpl = dx.find_heading_template(rep, doc, level, prefer=kids[0] if kids else None)
+        later = []
+    if tmpl is None:
+        raise ValueError("본뜰 제목 문단을 찾지 못했습니다.")
+    anchor = _top_level(dx.end_anchor(doc, sec))
+    head_txt = _heading_text_like("".join(dx.para_text(tmpl)[0]), number, title, level)
+    head_el = dx.clone_para(tmpl, head_txt)
+    body_tmpl = dx.find_body_template(doc, sec)
+    body_el = dx.clone_para(body_tmpl, body) if body_tmpl is not None else dx._plain_p(body)
+    # 밀린 번호 (새 절 뒤에 있던 같은 단계 절들)
+    moved = 0
+    if renumber and later:
+        idx = 0 if level == 0 else len(sec.number.split(".")) - 1
+        moved = _renumber_sections(rep, later, idx, 1, "번호 밀기 (절 추가)")
+    anchor.addnext(head_el)
+    head_el.addnext(body_el)
+    rep.new_refs.update({id(head_el), id(body_el)})
+    rebuild_docx(rep, doc)
+    return head_el, body_el, moved
+
+
+def add_paragraph(rep, doc, para, text="", as_body=True):
+    """para 아래에 같은 모양(제목이면 본문 모양)의 새 문단"""
+    dx = _dx()
+    tmpl = para.ref
+    if as_body and (heading_of_para(para) or para.pic or para.kind != "body"):
+        tmpl = dx.find_body_template(doc, para.section)
+    el = dx.clone_para(tmpl, text)
+    _top_level(para.ref).addnext(el)
+    rep.new_refs.add(id(el))
+    rebuild_docx(rep, doc)
+    return el
+
+
+def heading_of_para(p):
+    from hwp_reader import heading_of
+    return heading_of(p)
+
+
+def _chapter_no(sec):
+    ch = chapter_of(sec)
+    return ch.number if ch else (sec.number.split(".")[0] if sec and sec.number else "1")
+
+
+def _caption_plan(rep, doc, after_el, kind, sec):
+    """새 캡션 번호와, 뒤로 밀어야 할 같은 장 캡션들"""
+    dx = _dx()
+    chap = _chapter_no(sec)
+    body = list(doc.docx.element.body.iter(dx.W_P))
+    pos = {id(e): i for i, e in enumerate(body)}
+    after_i = max((pos.get(id(e), -1) for e in [after_el] + list(after_el.iter(dx.W_P))), default=-1)
+    before, later = 0, []
+    for p in doc.paras:
+        m = dx.RE_CAP_ANY.match(rep.text(p))
+        if not m or m.group(2) != chap:
+            continue
+        same = m.group(1) == kind or (kind == "그림" and m.group(1) == "사진")
+        if not same:
+            continue
+        if pos.get(id(p.ref), -1) <= after_i:
+            before = max(before, int(m.group(3)))
+        else:
+            later.append((p, m))
+    return chap, before + 1, later
+
+
+def _shift_captions(rep, later, src):
+    for p, m in later:
+        t = rep.text(p)
+        rep.set_edit(p, t[:m.start(3)] + str(int(m.group(3)) + 1) + t[m.end(3):], src)
+    return len(later)
+
+
+def _anchor_for(doc, para, sec):
+    if para is not None:
+        return _top_level(para.ref)
+    return _top_level(_dx().end_anchor(doc, sec))
+
+
+def add_table(rep, doc, para, sec, rows, cols, header=None, caption="", caption_pos="above"):
+    dx = _dx()
+    anchor = _anchor_for(doc, para, sec)
+    sec = (para.section if para is not None else sec) or sec
+    # 본뜰 표: 삽입 위치 앞쪽에서 가장 가까운 2×2 이상 표
+    body_children = list(anchor.getparent())
+    a_idx = body_children.index(anchor) if anchor in body_children else len(body_children)
+    cands = [t for t in doc.tables if t.ref is not None and t.rows >= 2 and t.cols >= 2
+             and t.ref.getparent() is anchor.getparent()]
+    before = [t for t in cands if body_children.index(t.ref) < a_idx]
+    tmpl = (before[-1] if before else (cands[0] if cands else None))
+    if tmpl is not None:
+        tbl = dx.build_table_like(tmpl.ref, rows, cols, header)
+    else:
+        tbl = dx.simple_table(doc.docx, rows, cols, header)
+    moved = 0
+    cap_el = None
+    if caption is not None and caption.strip():
+        chap, no, later = _caption_plan(rep, doc, anchor, "표", sec)
+        cref, sample = dx.find_caption_template(doc, "표")
+        txt = dx.caption_text_like(sample, "표", chap, no, caption.strip())
+        cap_el = dx.clone_para(cref, txt) if cref is not None else dx.clone_para(anchor if anchor.tag == dx.W_P else dx.find_body_template(doc), txt)
+        moved = _shift_captions(rep, later, "캡션 번호 밀기 (표 추가)")
+    if cap_el is not None and caption_pos == "above":
+        anchor.addnext(cap_el)
+        cap_el.addnext(tbl)
+    else:
+        anchor.addnext(tbl)
+        if cap_el is not None:
+            tbl.addnext(cap_el)
+    # Word 는 붙어 있는 두 표를 하나로 합쳐 보이므로 사이에 빈 문단을 둔다
+    for t_el in (tbl,):
+        for nb in (t_el.getprevious(), t_el.getnext()):
+            if nb is not None and nb.tag == dx.W_TBL:
+                gap = dx.clone_para(dx.find_body_template(doc) or anchor, "")
+                if nb is t_el.getprevious():
+                    t_el.addprevious(gap)
+                else:
+                    t_el.addnext(gap)
+    rep.new_refs.add(id(tbl))
+    if cap_el is not None:
+        rep.new_refs.add(id(cap_el))
+    rebuild_docx(rep, doc)
+    return tbl, moved
+
+
+def add_picture(rep, doc, para, sec, image_path, width_cm=None, caption=""):
+    dx = _dx()
+    anchor = _anchor_for(doc, para, sec)
+    sec = (para.section if para is not None else sec) or sec
+    pic_el = dx.picture_para(doc, image_path, width_cm)
+    moved = 0
+    cap_el = None
+    if caption is not None and caption.strip():
+        chap, no, later = _caption_plan(rep, doc, anchor, "그림", sec)
+        cref, sample = dx.find_caption_template(doc, "그림")
+        txt = dx.caption_text_like(sample, "그림", chap, no, caption.strip())
+        cap_el = dx.clone_para(cref, txt) if cref is not None else dx.clone_para(pic_el, txt)
+        moved = _shift_captions(rep, later, "캡션 번호 밀기 (사진 추가)")
+    anchor.addnext(pic_el)
+    if cap_el is not None:
+        pic_el.addnext(cap_el)
+        rep.new_refs.add(id(cap_el))
+    rep.new_refs.add(id(pic_el))
+    rebuild_docx(rep, doc)
+    return pic_el, moved
+
+
+def delete_block(rep, doc, para):
+    """새로 넣은 문단/표/그림 지우기 (실수 되돌리기용)"""
+    el = _top_level(para.ref)
+    el.getparent().remove(el)
+    rebuild_docx(rep, doc)
+
+
+def save_word(rep, doc, backup=True):
+    """Word 파일에 수정 대기 + 구조 변경 저장 → (반영 문단 수, 실패 문단 [Para])"""
+    dx = _dx()
+    if backup and os.path.exists(doc.path):
+        backup_file(doc.path)
+    fail = []
+    ok = 0
+    for p in doc.paras:
+        if p.uid not in rep.edits:
+            continue
+        try:
+            dx.set_para_text(p.ref, p.orig, rep.edits[p.uid])
+            ok += 1
+        except Exception:
+            fail.append(p)
+    try:
+        dx.save_docx(doc)
+    except PermissionError:
+        raise RuntimeError("Word 파일에 저장할 수 없습니다. Word에서 이 파일을 닫고 다시 시도하세요.\n" + doc.path)
+    for p in doc.paras:
+        if p not in fail:
+            rep.edits.pop(p.uid, None)
+            rep.edit_src.pop(p.uid, None)
+    new, kept = rep.reload(doc)
+    new.dirty = False
+    return ok, fail
+
+
+def hwp_to_docx(applier, src, dst):
+    """한글 자동화로 .hwp → .docx 변환 (한글의 '다른 이름으로 저장 → Word 문서')"""
+    h = applier.hwp
+    fmt_in = "HWPX" if src.lower().endswith(".hwpx") else "HWP"
+    if not h.Open(src, fmt_in, "forceopen:true"):
+        raise RuntimeError("한글에서 파일을 열지 못했습니다: " + src)
+    try:
+        last = None
+        for fmt in ("OOXML", "DOCX", "MSWORD"):
+            try:
+                if h.SaveAs(dst, fmt, "") and os.path.exists(dst) and os.path.getsize(dst) > 0:
+                    return dst
+            except Exception as e:  # noqa: BLE001
+                last = e
+        raise RuntimeError(f"Word 형식으로 저장하지 못했습니다 ({last or '형식 미지원'}).\n"
+                           "한글에서 '파일 → 다른 이름으로 저장 → Word 문서(*.docx)'로 직접 저장하세요.")
+    finally:
+        try:
+            h.Clear(1)
+        except Exception:
+            pass

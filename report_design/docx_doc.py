@@ -1,0 +1,516 @@
+# -*- coding: utf-8 -*-
+"""
+docx_doc.py — Word(.docx) 보고서 읽기 / 서식 유지 수정 / 절·문단·표·사진 추가
+
+원칙: 새로 넣는 모든 것은 '같은 종류의 기존 요소'를 복사해서 글만 바꾼다.
+      → 글씨체(rPr)·문단 모양(pPr)·표 테두리(tblPr/tcPr)가 원래 보고서와 같게 유지된다.
+
+필요: pip install python-docx
+"""
+import copy
+import difflib
+import os
+import re
+
+from docx import Document
+from docx.oxml.ns import qn
+from docx.shared import Cm, Emu
+
+from hwp_reader import HwpDoc, Table, heading_of
+
+W_P, W_TBL, W_R, W_T = qn("w:p"), qn("w:tbl"), qn("w:r"), qn("w:t")
+W_TAB, W_BR, W_CR = qn("w:tab"), qn("w:br"), qn("w:cr")
+W_DRAWING, W_PICT, W_OBJECT = qn("w:drawing"), qn("w:pict"), qn("w:object")
+W_PPR, W_RPR, W_SDT, W_SDTC = qn("w:pPr"), qn("w:rPr"), qn("w:sdt"), qn("w:sdtContent")
+W_TR, W_TC, W_TCPR = qn("w:tr"), qn("w:tc"), qn("w:tcPr")
+W_DELTEXT, W_INSTR = qn("w:delText"), qn("w:instrText")
+W_DEL = qn("w:del")
+XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
+
+RE_CAP_ANY = re.compile(r"^\s*[<\[〈(]?\s*(그림|표|사진)\s*(\d+)\s*[.\-]\s*(\d+)")
+
+
+# ====================================================================== 읽기
+
+def _walk_tokens(p_el):
+    """문단 안의 글자 조각을 문서 순서대로: ('t', w:t) | ('x', 요소, 글자) | ('pic', 요소)"""
+    out = []
+
+    def rec(el):
+        for ch in el:
+            tag = ch.tag
+            if tag == W_T:
+                out.append(("t", ch))
+            elif tag == W_TAB:
+                out.append(("x", ch, "\t"))
+            elif tag in (W_BR, W_CR):
+                out.append(("x", ch, "\n"))
+            elif tag in (W_DRAWING, W_PICT, W_OBJECT):
+                out.append(("pic", ch))           # 그림/글상자 속은 들어가지 않음
+            elif tag in (W_PPR, W_RPR, W_DEL, W_DELTEXT, W_INSTR):
+                continue
+            elif tag == W_P or tag == W_TBL:
+                continue
+            else:
+                rec(ch)
+    rec(p_el)
+    return out
+
+
+def para_text(p_el):
+    """(text, breaks, has_pic)"""
+    buf, breaks, pic = [], [], False
+    for tok in _walk_tokens(p_el):
+        if tok[0] == "t":
+            buf.append(tok[1].text or "")
+        elif tok[0] == "x":
+            breaks.append(sum(map(len, buf)))
+            buf.append(tok[2])
+        else:
+            pic = True
+            breaks.append(sum(map(len, buf)))
+    return "".join(buf), breaks, pic
+
+
+def read_docx(path, key=None, document=None):
+    """document 를 주면 파일 대신 메모리의 문서를 다시 분석 (구조 추가 후)"""
+    dx = document or Document(path)
+    doc = HwpDoc(path, key or path)
+    doc.fmt = "docx"
+    doc.docx = dx
+    body = dx.element.body
+    _parse_container(doc, body, doc.blocks)
+    return doc
+
+
+def _parse_container(doc, el, sink):
+    for ch in el:
+        if ch.tag == W_P:
+            _add_para(doc, ch, sink, "body")
+        elif ch.tag == W_TBL:
+            sink.append(("t", _parse_table(doc, ch)))
+        elif ch.tag == W_SDT:
+            c = ch.find(W_SDTC)
+            if c is not None:
+                _parse_container(doc, c, sink)
+
+
+def _add_para(doc, p_el, sink, kind, table=None, row=-1, col=-1):
+    text, breaks, pic = para_text(p_el)
+    p = doc.new_para(text, breaks, kind=kind, table=table, row=row, col=col)
+    p.ref = p_el
+    p.pic = pic
+    if sink is not None:
+        sink.append(("p", p))
+    return p
+
+
+def _parse_table(doc, tbl_el):
+    t = Table(len(doc.tables), 0, 0)
+    t.ref = tbl_el
+    doc.tables.append(t)
+    vmerge_origin = {}                 # 열 → 세로 병합 시작 셀
+    r = -1
+    ncols = 0
+    for tr in tbl_el.iter(W_TR):
+        if tr.getparent() is not tbl_el:
+            continue                    # 중첩 표의 행은 건너뜀
+        r += 1
+        c = 0
+        for tc in tr.findall(W_TC):
+            tcpr = tc.find(W_TCPR)
+            span, vm = 1, None
+            if tcpr is not None:
+                gs = tcpr.find(qn("w:gridSpan"))
+                if gs is not None:
+                    span = int(gs.get(qn("w:val"), "1"))
+                v = tcpr.find(qn("w:vMerge"))
+                if v is not None:
+                    vm = v.get(qn("w:val"), "continue")
+            if vm == "continue" and c in vmerge_origin:
+                vmerge_origin[c]["rs"] += 1
+                c += span
+                continue
+            cell = t.add_cell(r, c, 1, span)
+            cell["ref"] = tc
+            if vm == "restart":
+                vmerge_origin[c] = cell
+            else:
+                vmerge_origin.pop(c, None)
+            for ch in tc:
+                if ch.tag == W_P:
+                    cell["paras"].append(_add_para(doc, ch, None, "cell", t, r, c))
+                elif ch.tag == W_TBL:               # 중첩 표 → 셀 문단으로 평탄화
+                    sub = _parse_table(doc, ch)
+                    for key in sorted(sub.cells):
+                        cell["paras"].extend(sub.cells[key]["paras"])
+            c += span
+        ncols = max(ncols, c)
+    t.rows, t.cols = r + 1, ncols
+    return t
+
+
+# ====================================================================== 글자 수정 (서식 유지)
+
+def _new_t(text):
+    t = copy.deepcopy(_T_PROTO)
+    t.text = text
+    t.set(XML_SPACE, "preserve")
+    return t
+
+
+_T_PROTO = Document().element.body.makeelement(W_T, {})
+
+
+def _mk(tag):
+    return _T_PROTO.makeelement(tag, {})
+
+
+def _pieces_to_elems(s):
+    """'가\t나\n다' → [w:t, w:tab, w:t, w:br, w:t]"""
+    out = []
+    buf = ""
+    for ch in s:
+        if ch in "\t\n":
+            if buf:
+                out.append(_new_t(buf))
+                buf = ""
+            out.append(_mk(W_TAB if ch == "\t" else W_BR))
+        else:
+            buf += ch
+    if buf:
+        out.append(_new_t(buf))
+    return out
+
+
+def set_para_text(p_el, old, new):
+    """문단 글자를 old → new 로. 바뀐 부분만 고치고, 새 글자는 바로 앞 글자의 서식(run)을 따른다."""
+    toks = _walk_tokens(p_el)
+    cur = "".join(tok[1].text or "" if tok[0] == "t" else (tok[2] if tok[0] == "x" else "") for tok in toks)
+    if cur != old:
+        raise ValueError("문단 내용이 예상과 다릅니다 (다른 곳에서 바뀜)")
+    if old == new:
+        return
+    if not any(tok[0] == "t" for tok in toks):
+        _ensure_text_run(p_el)
+        toks = _walk_tokens(p_el)
+    sm = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    ops = [op for op in sm.get_opcodes() if op[0] != "equal"]
+    for tag, i1, i2, j1, j2 in reversed(ops):
+        _replace_range(p_el, i1, i2, new[j1:j2])
+
+
+def _segments(p_el):
+    segs, pos = [], 0
+    for tok in _walk_tokens(p_el):
+        if tok[0] == "t":
+            n = len(tok[1].text or "")
+            segs.append(["t", tok[1], pos, pos + n])
+            pos += n
+        elif tok[0] == "x":
+            segs.append(["x", tok[1], pos, pos + 1])
+            pos += 1
+        else:
+            segs.append(["pic", tok[1], pos, pos])
+    return segs
+
+
+def _replace_range(p_el, i1, i2, ins):
+    segs = _segments(p_el)
+    tsegs = [s for s in segs if s[0] == "t"]
+    # 서식을 물려받을 w:t: 바뀌는 첫 글자 / 삽입이면 바로 앞 글자
+    anchor = None
+    if i2 > i1:
+        anchor = next((s for s in tsegs if s[2] <= i1 < s[3]), None)
+    if anchor is None:
+        anchor = next((s for s in tsegs if s[2] < i1 <= s[3]), None)
+    if anchor is None:
+        anchor = next((s for s in tsegs if s[2] >= i1), None) or (tsegs[-1] if tsegs else None)
+    if anchor is None:
+        _ensure_text_run(p_el)
+        return _replace_range(p_el, i1, i2, ins)
+    # 1) 지우기 (anchor 이외)
+    for s in segs:
+        if s is anchor:
+            continue
+        a, b = max(i1, s[2]), min(i2, s[3])
+        if a >= b:
+            continue
+        if s[0] == "t":
+            t = s[1].text or ""
+            s[1].text = t[:a - s[2]] + t[b - s[2]:]
+            s[1].set(XML_SPACE, "preserve")
+        else:
+            s[1].getparent().remove(s[1])
+    # 2) anchor 안에서 바꾸기
+    t = anchor[1].text or ""
+    la = min(max(i1 - anchor[2], 0), len(t))
+    lb = min(max(i2 - anchor[2], la), len(t))
+    head, tail = t[:la], t[lb:]
+    if "\t" not in ins and "\n" not in ins:
+        anchor[1].text = head + ins + tail
+        anchor[1].set(XML_SPACE, "preserve")
+        return
+    parts = _pieces_to_elems(ins)
+    anchor[1].text = head
+    anchor[1].set(XML_SPACE, "preserve")
+    prev = anchor[1]
+    for e in parts + ([_new_t(tail)] if tail else []):
+        prev.addnext(e)
+        prev = e
+
+
+def _ensure_text_run(p_el):
+    """글자가 하나도 없는 문단에 run 하나 만들기 (문단 기호의 글자 서식 사용)"""
+    r = p_el.makeelement(W_R, {})
+    ppr = p_el.find(W_PPR)
+    if ppr is not None and ppr.find(W_RPR) is not None:
+        r.append(copy.deepcopy(ppr.find(W_RPR)))
+    r.append(_new_t(""))
+    p_el.append(r)
+
+
+# ====================================================================== 복제 도우미
+
+def _first_text_run(p_el):
+    for r in p_el.iter(W_R):
+        if r.find(W_T) is not None:
+            return r
+    return None
+
+
+def clone_para(template_el, text=""):
+    """문단 모양(pPr) + 첫 글자 서식(rPr)만 가져온 새 문단"""
+    new = template_el.makeelement(W_P, {})
+    ppr = template_el.find(W_PPR)
+    if ppr is not None:
+        ppr = copy.deepcopy(ppr)
+        for tag in ("w:sectPr",):                    # 구역 나누기는 복사하지 않음
+            for x in ppr.findall(qn(tag)):
+                ppr.remove(x)
+        new.append(ppr)
+    r = new.makeelement(W_R, {})
+    src = _first_text_run(template_el)
+    rpr = src.find(W_RPR) if src is not None else (ppr.find(W_RPR) if ppr is not None else None)
+    if rpr is not None:
+        r.append(copy.deepcopy(rpr))
+    new.append(r)
+    for e in _pieces_to_elems(text) or [_new_t("")]:
+        r.append(e)
+    return new
+
+
+def block_el(blk):
+    k, obj = blk
+    return obj.ref
+
+
+def insert_after(ref_el, new_el):
+    ref_el.addnext(new_el)
+    return new_el
+
+
+def end_anchor(doc, sec):
+    """절(하위 포함) 마지막 요소 — 그 뒤에 새 내용을 넣는다"""
+    for k, obj in reversed(doc.blocks[sec.block_idx:sec.end_idx]):
+        if obj.ref is not None:
+            return obj.ref
+    return sec.para.ref
+
+
+def _is_caption(p):
+    return bool(RE_CAP_ANY.match(p.orig))
+
+
+def find_heading_template(rep, doc, level, prefer=None):
+    """같은 단계 제목 문단 (없으면 가장 가까운 단계)"""
+    if prefer is not None and prefer.para is not None and prefer.level == level:
+        return prefer.para.ref
+    best = None
+    for s in rep.all_sections(doc):
+        if s.para is None or s.para.ref is None:
+            continue
+        if s.level == level:
+            return s.para.ref
+        if best is None or abs(s.level - level) < abs(best.level - level):
+            best = s
+    return best.para.ref if best else None
+
+
+def find_body_template(doc, sec=None):
+    """본문 문단(제목·캡션·그림·빈 문단 제외). 같은 절 안을 먼저 찾음"""
+    def ok(p):
+        return (p.kind == "body" and p.orig.strip() and not p.pic and heading_of(p) is None
+                and not _is_caption(p) and not re.match(r"^\s*(\(\d+\)|[①-⑳]|-|·|⦁)", p.orig))
+    rng = []
+    if sec is not None:
+        rng = [b for b in doc.blocks[sec.block_idx:sec.end_idx]]
+    for k, obj in rng + doc.blocks:
+        if k == "p" and ok(obj):
+            return obj.ref
+    for k, obj in doc.blocks:
+        if k == "p" and obj.kind == "body" and obj.orig.strip():
+            return obj.ref
+    return None
+
+
+def find_caption_template(doc, kind):
+    """kind: '표' | '그림' — 같은 종류 캡션, 없으면 다른 종류 캡션"""
+    other = None
+    for p in doc.paras:
+        m = RE_CAP_ANY.match(p.orig)
+        if m:
+            if m.group(1) == kind or (kind == "그림" and m.group(1) == "사진"):
+                return p.ref, p.orig
+            other = other or (p.ref, p.orig)
+    return other or (None, None)
+
+
+def caption_text_like(sample, kind, chap, no, title):
+    """기존 캡션 표기법(<표 5.1 제목>, [그림 5-1] 제목 …)을 따라 새 캡션 글"""
+    if sample:
+        m = RE_CAP_ANY.match(sample)
+        if m:
+            sep = sample[m.end(2):m.start(3)].strip() or "."
+            pre = sample[:m.start(1)]
+            mid = sample[m.end(1):m.start(2)]
+            close = {"<": ">", "[": "]", "〈": "〉", "(": ")"}.get(pre.strip()[:1], "")
+            rest = sample[m.end(3):]
+            if close and close in rest and rest.strip().startswith(close):     # [표 5.1] 제목
+                return f"{pre}{kind}{mid}{chap}{sep}{no}{close} {title}".rstrip()
+            return f"{pre}{kind}{mid}{chap}{sep}{no} {title}{close}".rstrip()
+    return f"<{kind} {chap}.{no} {title}>"
+
+
+# ====================================================================== 표·그림 만들기
+
+def build_table_like(template_tbl, rows, cols, header=None):
+    """기존 표의 테두리·셀 서식·글씨를 본떠 rows×cols 새 표"""
+    t = copy.deepcopy(template_tbl)
+    trs = [tr for tr in t.findall(W_TR)]
+    hdr_tr = copy.deepcopy(trs[0])
+    body_tr = copy.deepcopy(trs[1] if len(trs) > 1 else trs[0])
+    for tr in trs:
+        t.remove(tr)
+    grid = t.find(qn("w:tblGrid"))
+    total = 0
+    if grid is not None:
+        total = sum(int(g.get(qn("w:w"), "0") or 0) for g in grid.findall(qn("w:gridCol")))
+        for g in list(grid):
+            grid.remove(g)
+    if not total:
+        total = 9000
+    cw = int(total / cols)
+    if grid is not None:
+        for _ in range(cols):
+            g = grid.makeelement(qn("w:gridCol"), {qn("w:w"): str(cw)})
+            grid.append(g)
+
+    def make_row(proto, texts):
+        tr = copy.deepcopy(proto)
+        tcs = tr.findall(W_TC)
+        cell_proto = copy.deepcopy(tcs[0]) if tcs else None
+        # 머리글 행이 아니면 두 번째 칸(값 칸) 모양이 더 일반적
+        if len(tcs) > 1 and proto is body_tr:
+            cell_proto = copy.deepcopy(tcs[1])
+        for tc in tcs:
+            tr.remove(tc)
+        for ci in range(cols):
+            tc = copy.deepcopy(cell_proto)
+            tcpr = tc.find(W_TCPR)
+            if tcpr is not None:
+                for tag in ("w:gridSpan", "w:vMerge", "w:hMerge"):
+                    for x in tcpr.findall(qn(tag)):
+                        tcpr.remove(x)
+                w = tcpr.find(qn("w:tcW"))
+                if w is not None:
+                    w.set(qn("w:w"), str(cw))
+                    w.set(qn("w:type"), "dxa")
+            ps = [c for c in tc if c.tag == W_P]
+            tmpl = ps[0] if ps else None
+            for c in list(tc):
+                if c.tag in (W_P, W_TBL):
+                    tc.remove(c)
+            txt = texts[ci] if texts and ci < len(texts) else ""
+            tc.append(clone_para(tmpl, txt) if tmpl is not None else _plain_p(txt))
+            tr.append(tc)
+        return tr
+
+    t.append(make_row(hdr_tr, header))
+    for _ in range(rows - 1):
+        t.append(make_row(body_tr, None))
+    return t
+
+
+def _plain_p(text):
+    p = _T_PROTO.makeelement(W_P, {})
+    r = p.makeelement(W_R, {})
+    r.append(_new_t(text))
+    p.append(r)
+    return p
+
+
+def simple_table(docx_document, rows, cols, header=None):
+    """보고서에 표가 하나도 없을 때"""
+    tb = docx_document.add_table(rows=rows, cols=cols)
+    try:
+        tb.style = "Table Grid"
+    except Exception:
+        pass
+    if header:
+        for i, h in enumerate(header[:cols]):
+            tb.cell(0, i).text = h
+    el = tb._tbl
+    el.getparent().remove(el)
+    return el
+
+
+def picture_run(docx_document, image_path, width_cm=None, width_emu=None):
+    """python-docx 로 그림 run 을 만들고 떼어 낸다"""
+    tmp = docx_document.add_paragraph()
+    run = tmp.add_run()
+    if width_emu:
+        run.add_picture(image_path, width=Emu(width_emu))
+    else:
+        run.add_picture(image_path, width=Cm(width_cm or 12))
+    r = run._r
+    tmp._p.remove(r)
+    tmp._p.getparent().remove(tmp._p)
+    return r
+
+
+def existing_picture(doc):
+    """(그림 문단 요소, 그림 너비 EMU) — 보고서에 이미 있는 그림"""
+    for p in doc.paras:
+        if p.pic and p.ref is not None:
+            ext = p.ref.find(".//" + qn("wp:extent"))
+            cx = int(ext.get("cx")) if ext is not None else None
+            return p.ref, cx
+    return None, None
+
+
+def picture_para(doc, image_path, width_cm=None):
+    tmpl, cx = existing_picture(doc)
+    if tmpl is not None:
+        new = tmpl.makeelement(W_P, {})
+        ppr = tmpl.find(W_PPR)
+        if ppr is not None:
+            new.append(copy.deepcopy(ppr))
+    else:
+        new = _T_PROTO.makeelement(W_P, {})
+        ppr = new.makeelement(W_PPR, {})
+        jc = ppr.makeelement(qn("w:jc"), {qn("w:val"): "center"})
+        ppr.append(jc)
+        new.append(ppr)
+    if width_cm:
+        r = picture_run(doc.docx, image_path, width_cm=width_cm)
+    elif cx:
+        r = picture_run(doc.docx, image_path, width_emu=cx)
+    else:
+        r = picture_run(doc.docx, image_path, width_cm=12)
+    new.append(r)
+    return new
+
+
+def save_docx(doc, path=None):
+    doc.docx.save(path or doc.path)
