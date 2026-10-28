@@ -116,7 +116,9 @@ class Report:
     def state_path(self):
         if not self.docs:
             return None
-        return os.path.join(os.path.dirname(self.docs[0].path), "보고서도우미_작업상태.json")
+        # 한글 작업과 Word 작업은 따로 저장 (Word 는 새로 분석)
+        name = "보고서도우미_작업상태_Word.json" if self.docs[0].fmt == "docx" else "보고서도우미_작업상태.json"
+        return os.path.join(os.path.dirname(self.docs[0].path), name)
 
     def save_state(self):
         sp = self.state_path()
@@ -180,6 +182,39 @@ def table_rows(table):
     for (r, c), cell in table.cells.items():
         rows.setdefault(r, []).append((r, c, cell))
     return [sorted(rows[r], key=lambda x: x[1]) for r in sorted(rows)]
+
+
+def table_col_widths(table):
+    """열 너비(상대값). 셀 너비 정보가 없으면 글자 수로 추정"""
+    n = max([table.cols] + [c + cell["cs"] for (r, c), cell in table.cells.items()])
+    widths = [None] * n
+    for (r, c), cell in table.cells.items():
+        if cell["cs"] == 1 and cell.get("w") and c < n:
+            widths[c] = max(widths[c] or 0, cell["w"])
+    for (r, c), cell in table.cells.items():
+        rng = range(c, min(n, c + cell["cs"]))
+        unknown = [k for k in rng if widths[k] is None]
+        if unknown and cell.get("w"):
+            known = sum(widths[k] for k in rng if widths[k] is not None)
+            for k in unknown:
+                widths[k] = max(1, (cell["w"] - known) / len(unknown))
+    if any(w is None for w in widths):
+        lens = [4] * n
+        for (r, c), cell in table.cells.items():
+            if cell["cs"] == 1 and c < n:
+                t = " ".join(p.orig for p in cell["paras"])
+                lens[c] = max(lens[c], min(40, len(t)))
+        widths = [w if w is not None else lens[k] * (sum(x for x in widths if x) / max(1, sum(lens)) or 1)
+                  for k, w in enumerate(widths)]
+    return widths
+
+
+def add_table_row(rep, doc, table):
+    """Word 표에 빈 행 추가"""
+    tr = _dx().add_table_row(table.ref)
+    rep.new_refs.add(id(table.ref))
+    rebuild_docx(rep, doc)
+    return tr
 
 
 def section_blocks(sec, include_children=True):
@@ -1327,7 +1362,8 @@ def add_table(rep, doc, para, sec, rows, cols, header=None, caption="", caption_
     for t_el in (tbl,):
         for nb in (t_el.getprevious(), t_el.getnext()):
             if nb is not None and nb.tag == dx.W_TBL:
-                gap = dx.clone_para(dx.find_body_template(doc) or anchor, "")
+                bt = dx.find_body_template(doc)
+                gap = dx.clone_para(bt if bt is not None else anchor, "")
                 if nb is t_el.getprevious():
                     t_el.addprevious(gap)
                 else:

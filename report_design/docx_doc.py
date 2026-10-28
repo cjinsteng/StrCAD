@@ -133,6 +133,11 @@ def _parse_table(doc, tbl_el):
                 continue
             cell = t.add_cell(r, c, 1, span)
             cell["ref"] = tc
+            if tcpr is not None and tcpr.find(qn("w:tcW")) is not None:
+                try:
+                    cell["w"] = int(tcpr.find(qn("w:tcW")).get(qn("w:w"), "0"))
+                except ValueError:
+                    pass
             if vm == "restart":
                 vmerge_origin[c] = cell
             else:
@@ -514,3 +519,24 @@ def picture_para(doc, image_path, width_cm=None):
 
 def save_docx(doc, path=None):
     doc.docx.save(path or doc.path)
+
+
+def add_table_row(tbl_el):
+    """표 맨 아래에 마지막 행 모양 그대로 빈 행 추가"""
+    trs = [tr for tr in tbl_el.findall(W_TR)]
+    if not trs:
+        return None
+    new = copy.deepcopy(trs[-1])
+    for tc in new.findall(W_TC):
+        tcpr = tc.find(W_TCPR)
+        if tcpr is not None:
+            for x in tcpr.findall(qn("w:vMerge")):
+                tcpr.remove(x)
+        ps = [c for c in tc if c.tag == W_P]
+        tmpl = ps[0] if ps else None
+        for c in list(tc):
+            if c.tag in (W_P, W_TBL):
+                tc.remove(c)
+        tc.append(clone_para(tmpl, "") if tmpl is not None else _plain_p(""))
+    trs[-1].addnext(new)
+    return new

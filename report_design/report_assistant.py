@@ -386,6 +386,115 @@ class FormDialog(tk.Toplevel):
         self.destroy()
 
 
+class TableEditor(tk.Toplevel):
+    """표를 칸 모양 그대로 보면서 입력 (Tab/Shift+Tab, Enter=아래 칸)"""
+
+    def __init__(self, app, table):
+        super().__init__(app.root)
+        self.app, self.t = app, table
+        self.title(f"표 편집 — [표 {table.tid + 1}]  {loc_of(next(iter(table.cells.values()))['paras'][0]) if table.cells and next(iter(table.cells.values()))['paras'] else ''}")
+        self.transient(app.root)
+        self.configure(bg=TH.SURFACE)
+        top = ttk.Frame(self, padding=(10, 8))
+        top.pack(fill="x")
+        ttk.Label(top, text="칸을 클릭해서 입력 · Tab 다음 칸 · Enter 아래 칸 · 노란 칸 = 고친 칸",
+                  style="Hint.TLabel").pack(side="left")
+        word = table.ref is not None and app.rep.docs and any(d.fmt == "docx" and table in d.tables for d in app.rep.docs)
+        canvas = tk.Canvas(self, bg=TH.SURFACE, highlightthickness=0)
+        sb = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        sbx = ttk.Scrollbar(self, orient="horizontal", command=canvas.xview)
+        canvas.configure(yscrollcommand=sb.set, xscrollcommand=sbx.set)
+        body = tk.Frame(canvas, bg="#9AA5B8", padx=1, pady=1)
+        canvas.create_window((10, 6), window=body, anchor="nw")
+        widths = rc.table_col_widths(table)
+        total = sum(widths) or 1
+        avail = min(1300, max(700, int(sum(widths) / 15)))
+        px = [max(60, int(avail * w / total)) for w in widths]
+        for k, w in enumerate(px):
+            body.grid_columnconfigure(k, minsize=w)
+        self.entries = {}       # (r,c) -> (Entry, Para, 원래 글)
+        rows = {}
+        for (r, c), cell in sorted(table.cells.items()):
+            ps = cell["paras"]
+            p = next((q for q in ps if app.rep.text(q).strip()), ps[0] if ps else None)
+            if p is None:
+                continue
+            cur = app.rep.text(p)
+            var = tk.StringVar(value=cur)
+            w = sum(px[c:c + cell["cs"]])
+            e = tk.Entry(body, textvariable=var, font=(app.font, 10), relief="flat", justify="center",
+                         bg="#FFF3B0" if p.uid in app.rep.edits else TH.PANEL,
+                         disabledbackground="#EEF1F6", width=max(4, w // 8))
+            if "\t" in cur or "\n" in cur or p.pic:
+                e.config(state="disabled")              # 탭·줄바꿈·그림이 든 칸은 본문에서 더블클릭
+            e.grid(row=r, column=c, rowspan=cell["rs"], columnspan=cell["cs"], sticky="nsew",
+                   padx=(0, 1), pady=(0, 1), ipady=4)
+            var.trace_add("write", lambda *a, e=e, p=p, v=var: e.config(
+                bg="#FFF3B0" if v.get() != app.rep.text(p) else TH.PANEL))
+            self.entries[(r, c)] = (e, p, cur, var)
+            rows.setdefault(r, []).append(c)
+            e.bind("<Return>", lambda ev, r=r, c=c: self._move(r, c, 1))
+            e.bind("<Up>", lambda ev, r=r, c=c: self._move(r, c, -1))
+            e.bind("<Down>", lambda ev, r=r, c=c: self._move(r, c, 1))
+        body.update_idletasks()
+        canvas.configure(scrollregion=(0, 0, body.winfo_reqwidth() + 20, body.winfo_reqheight() + 12))
+        sbx.pack(side="bottom", fill="x")
+        bf = ttk.Frame(self, padding=(10, 8))
+        bf.pack(side="bottom", fill="x")
+        if word:
+            ttk.Button(bf, text="＋ 행 추가", command=self._add_row).pack(side="left")
+        ttk.Button(bf, text="취소", command=self.destroy).pack(side="right")
+        ttk.Button(bf, text="저장", style="Accent.TButton", command=self._save).pack(side="right", padx=6)
+        sb.pack(side="right", fill="y")
+        canvas.pack(fill="both", expand=True)
+        W = min(1400, body.winfo_reqwidth() + 60)
+        H = min(760, body.winfo_reqheight() + 120)
+        self.geometry(f"{max(600, W)}x{max(260, H)}")
+        first = next((v[0] for k, v in sorted(self.entries.items()) if str(v[0].cget("state")) != "disabled"), None)
+        if first is not None:
+            first.focus_set()
+        self.grab_set()
+
+    def _move(self, r, c, d):
+        keys = sorted(self.entries)
+        rr = r + d
+        while 0 <= rr <= keys[-1][0]:
+            if (rr, c) in self.entries:
+                self.entries[(rr, c)][0].focus_set()
+                return "break"
+            rr += d
+        return "break"
+
+    def _changes(self):
+        out = []
+        for (r, c), (e, p, cur, var) in self.entries.items():
+            v = var.get()
+            if v != cur:
+                out.append((p, cur, v))
+        return out
+
+    def _save(self):
+        ch = self._changes()
+        self.destroy()
+        if ch:
+            self.app.commit_changes(ch, "표 편집")
+
+    def _add_row(self):
+        ch = self._changes()
+        doc = next(d for d in self.app.rep.docs if self.t in d.tables)
+        for p, cur, v in ch:
+            self.app.rep.set_edit(p, v, "표 편집")
+        ref = self.t.ref
+        rc.add_table_row(self.app.rep, doc, self.t)
+        self.destroy()
+        self.app._after_structure(None, "표에 행 추가")
+        for d in self.app.rep.docs:
+            for t in d.tables:
+                if t.ref is ref:
+                    TableEditor(self.app, t)
+                    return
+
+
 class SettingsDialog(tk.Toplevel):
     """AI 엔진 선택: Claude(유료) / Ollama(무료, 내 PC) / OpenAI 호환 서버"""
 
@@ -650,7 +759,7 @@ class App:
         self.btn_open_word = self._big(g, "📂\nWord 열기", lambda: self.open_folder("word"))
         self._big(g, "＋\n파일 추가", self.add_files)
         self._big(g, "⟳\n다시 읽기", self.reload_all)
-        self.btn_convert = self._big(g, "⇄\n한글→\nWord 변환", self.convert_hwp_to_word)
+        self.btn_convert = self._big(g, "⇄\n한글→Word\n새로 만들기", self.convert_hwp_to_word, 10)
         g = self._grp(home, "추가 (Word)")
         self.word_btns = [
             self._big(g, "§\n새 절", lambda: self.ui_add_section(self._target_sec(), "after")),
@@ -1116,6 +1225,13 @@ class App:
         v = self.view
         v.config(state="normal")
         v.delete("1.0", "end")
+        for w in getattr(self, "_embedded", []):
+            try:
+                w.destroy()
+            except tk.TclError:
+                pass
+        self._embedded = []
+        self.cell_labels = {}
         self.ranges = []
         self.para_pos = {}
         self.sec_title.set(f"{os.path.basename(sec.doc.path)}  ›  {sec.label}")
@@ -1178,33 +1294,104 @@ class App:
                 if p.uid in self.rep.edits:
                     put("    원문: " + p.orig + "\n", "origline")
             else:
-                put(f"[표 {obj.tid + 1}]  {obj.rows}×{obj.cols}\n", "tblhdr")
-                for row in rc.table_rows(obj):
-                    put("│ ", "tbl", "bar")
-                    for r, c, cell in row:
-                        ps = [p for p in cell["paras"] if self.rep.text(p).strip() or p.uid in self.rep.edits]
-                        if not ps and cell["paras"] and cell["paras"][0].ref is not None \
-                                and id(_tbl_ref(obj)) in self.rep.new_refs:
-                            ps = cell["paras"][:1]          # 새 표의 빈 칸도 클릭해서 입력할 수 있게
-                        for i, p in enumerate(ps):
-                            if i:
-                                put(" / ", "tbl", "bar")
-                            if not self.rep.text(p).strip():
-                                start = off
-                                put("·····", "tbl", "newempty")
-                                self.ranges.append((start, off, p))
-                                self.para_pos[p.uid] = (start, off)
-                            else:
-                                put_para(p, ("tbl",))
-                        if not ps:
-                            put(" ", "tbl")
-                        put(" │ ", "tbl", "bar")
-                    put("\n", "tbl")
+                put(f"[표 {obj.tid + 1}]  {obj.rows}×{obj.cols}   ", "tblhdr")
+                btn = tk.Label(v, text="✎ 표 편집", fg="white", bg=TH.NAVY_3, font=(self.font, 8, "bold"),
+                               padx=6, cursor="hand2")
+                btn.bind("<Button-1>", lambda e, t=obj: self.open_table_editor(t))
+                v.window_create("end", window=btn)
+                self._embedded.append(btn)
+                off += 1
+                put("\n", "tblhdr")
+                grid = self._table_grid(obj)
+                if grid is not None:
+                    start = off
+                    v.window_create("end", window=grid, padx=10, pady=2)
+                    self._embedded.append(grid)
+                    off += 1
+                    for cell in obj.cells.values():
+                        for p in cell["paras"]:
+                            self.para_pos[p.uid] = (start, off)
+                    put("\n")
+                else:
+                    self._table_text(obj, put, put_para, lambda: off, self._add_range)
                 put("\n")
         self.range_starts = [r[0] for r in self.ranges]
         v.config(state="normal")
         if self.sel_para and self.sel_para.uid in self.para_pos:
             self._mark_sel(self.sel_para)
+
+    def _add_range(self, start, end, p):
+        self.ranges.append((start, end, p))
+        self.para_pos[p.uid] = (start, end)
+
+    MAX_GRID_CELLS = 700
+
+    def _table_grid(self, t):
+        """표를 실제 칸 모양으로 (Label 격자). 너무 큰 표는 None → 글자 표시"""
+        if len(t.cells) > self.MAX_GRID_CELLS:
+            return None
+        widths = rc.table_col_widths(t)
+        total = sum(widths) or 1
+        avail = max(400, self.view.winfo_width() - 70)
+        px = [max(36, int(avail * w / total)) for w in widths]
+        fr = tk.Frame(self.view, bg="#9AA5B8", bd=0, padx=1, pady=1)
+        for k, w in enumerate(px):
+            fr.grid_columnconfigure(k, minsize=w)
+        new_tbl = getattr(t, "ref", None) is not None and id(t.ref) in self.rep.new_refs
+        for (r, c), cell in sorted(t.cells.items()):
+            ps = cell["paras"]
+            texts = [self.rep.text(p) for p in ps]
+            txt = "\n".join(x for x in texts if x.strip())
+            p0 = next((p for p in ps if self.rep.text(p).strip()), ps[0] if ps else None)
+            edited = any(p.uid in self.rep.edits for p in ps)
+            issue = any(p in self.issue_paras for p in ps)
+            pic = any(p.pic for p in ps)
+            if pic and not txt:
+                txt = "🖼 [그림]"
+            bg = "#FFF3B0" if edited else (TH.ORANGE_L if (new_tbl and not txt) else TH.PANEL)
+            w = sum(px[c:c + cell["cs"]])
+            lb = tk.Label(fr, text=txt, bg=bg, fg=TH.NG if issue else TH.INK, font=(self.font, 9),
+                          justify="center" if len(txt) < 30 else "left", wraplength=max(30, w - 10),
+                          anchor="center", padx=4, pady=2, cursor="hand2")
+            lb.grid(row=r, column=c, rowspan=cell["rs"], columnspan=cell["cs"], sticky="nsew",
+                    padx=(0, 1), pady=(0, 1))
+            if p0 is not None:
+                lb.bind("<Button-1>", lambda e, p=p0, l=lb: self._cell_click(p, l))
+                lb.bind("<Double-Button-1>", lambda e, p=p0: self.edit_para(p))
+                lb.bind("<Button-3>", lambda e, p=p0: self._para_menu(p, e))
+                for p in ps:
+                    self.cell_labels[p.uid] = lb
+        return fr
+
+    def _cell_click(self, p, lb):
+        self.sel_para = p
+        self._mark_sel(p)
+        for l in getattr(self, "_sel_cells", []):
+            try:
+                l.config(highlightthickness=0)
+            except tk.TclError:
+                pass
+        lb.config(highlightthickness=2, highlightbackground=TH.ORANGE, highlightcolor=TH.ORANGE)
+        self._sel_cells = [lb]
+        self.show_similar(p)
+
+    def _table_text(self, obj, put, put_para, get_off, add_range):
+        """아주 큰 표는 글자로 (예전 방식)"""
+        for row in rc.table_rows(obj):
+            put("│ ", "tbl", "bar")
+            for r, c, cell in row:
+                ps = [p for p in cell["paras"] if self.rep.text(p).strip() or p.uid in self.rep.edits]
+                for i, p in enumerate(ps):
+                    if i:
+                        put(" / ", "tbl", "bar")
+                    put_para(p, ("tbl",))
+                if not ps:
+                    put(" ", "tbl")
+                put(" │ ", "tbl", "bar")
+            put("\n", "tbl")
+
+    def open_table_editor(self, t):
+        TableEditor(self, t)
 
     def _para_at(self, event):
         idx = self.view.index(f"@{event.x},{event.y}")
@@ -1240,6 +1427,9 @@ class App:
         p = self._para_at(e)
         if not p:
             return
+        self._para_menu(p, e)
+
+    def _para_menu(self, p, e):
         self.sel_para = p
         self._mark_sel(p)
         m = tk.Menu(self.root, tearoff=0, font=(self.font, 10))
@@ -1302,6 +1492,14 @@ class App:
             self.cur_sec = target
             self.render_section(target)
         pos = self.para_pos.get(p.uid)
+        lb = getattr(self, "cell_labels", {}).get(p.uid)
+        if lb is not None and pos:
+            self.view.see(f"1.0+{pos[0]}c")
+            old = lb.cget("bg")
+            lb.config(bg="#FBC98E")
+            self.root.after(1500, lambda: lb.winfo_exists() and lb.config(bg=old))
+            self.sel_para = p
+            return
         if pos:
             a, b = f"1.0+{pos[0]}c", f"1.0+{pos[1]}c"
             self.view.see(b)
@@ -1453,8 +1651,13 @@ class App:
                     cells = [c for k, c in sorted(t.cells.items())]
                     first = cells[0]["paras"][0].ref if cells and cells[0]["paras"] else None
         self._after_structure(first if first is not None else tbl,
-                              "표 추가 — 빈 칸(·····)을 더블클릭해서 내용을 입력하세요"
+                              "표 추가 — 표 편집 창에서 칸을 채우세요"
                               + (f" · 뒤 표 번호 {moved}개 밀림" if moved else ""))
+        for d in self.rep.docs:
+            for t in d.tables:
+                if t.ref is tbl:
+                    self.open_table_editor(t)
+                    return
 
     def ui_add_picture(self, p, sec):
         target = p or sec
@@ -1496,50 +1699,48 @@ class App:
             self._after_structure(None, "삭제")
 
     def convert_hwp_to_word(self):
-        hwps = [d for d in self.rep.docs if d.fmt != "docx"]
-        paths = [d.path for d in hwps]
+        """한글 원본을 읽어 깔끔한 Word 를 새로 만든다 (한글 프로그램 필요 없음)"""
+        import hwp_to_word
+        paths = [d.path for d in self.rep.docs if d.fmt == "hwp"]
         if not paths:
-            fs = filedialog.askopenfilenames(title="Word로 바꿀 한글 파일", filetypes=[("한글 문서", "*.hwp *.hwpx")])
-            paths = list(fs)
+            paths = list(filedialog.askopenfilenames(title="Word로 만들 한글 파일 (.hwp)",
+                                                     filetypes=[("한글 문서", "*.hwp")]))
         if not paths:
             return
-        if not rc.HwpApplier.available():
-            messagebox.showinfo(APP_TITLE, "이 PC에서는 한글 자동화를 쓸 수 없습니다 (Windows + 한글 + pywin32 필요).\n\n"
-                                           "한글에서 직접 '파일 → 다른 이름으로 저장 → 파일 형식: Word 문서(*.docx)'로 저장한 뒤\n"
-                                           "'폴더 열기'로 Word 파일을 여세요.")
-            return
-        if not messagebox.askyesno(APP_TITLE, f"한글 파일 {len(paths)}개를 같은 폴더에 Word(.docx)로 저장합니다.\n"
-                                              "(원본 한글 파일은 그대로 둡니다)\n\n진행할까요?"):
+        if not messagebox.askyesno(APP_TITLE, f"한글 파일 {len(paths)}개를 읽어 Word 파일을 새로 만듭니다.\n\n"
+                                              "· 쪽 크기·여백·쪽 나누기, 글꼴·크기, 문단 간격, 표 테두리, 그림, 머리말/꼬리말을 원본대로\n"
+                                              "· 원본 한글 파일은 그대로 둡니다\n"
+                                              "· 한글에서 하던 수정 대기·AI 결과는 가져가지 않습니다 (Word에서 새로 분석)\n\n진행할까요?"):
             return
         done, errs = [], []
-        app = None
         self.root.config(cursor="watch")
-        self.root.update()
         try:
-            app = rc.HwpApplier(visible=self.settings.get("hwp_visible", False))
             for src in paths:
                 dst = os.path.splitext(src)[0] + ".docx"
-                if os.path.exists(dst) and not messagebox.askyesno(APP_TITLE, f"이미 있습니다. 덮어쓸까요?\n{dst}"):
-                    continue
+                if os.path.exists(dst):
+                    a = messagebox.askyesnocancel(APP_TITLE, f"같은 이름의 Word 파일이 이미 있습니다.\n{os.path.basename(dst)}\n\n"
+                                                  "덮어쓸까요?  (아니오 = '_정리.docx'로 따로 저장)")
+                    if a is None:
+                        continue
+                    if not a:
+                        dst = os.path.splitext(src)[0] + "_정리.docx"
                 try:
-                    self.status.set("변환 중: " + os.path.basename(src))
+                    self.status.set("Word 만드는 중: " + os.path.basename(src))
                     self.root.update()
-                    rc.hwp_to_docx(app, src, dst)
-                    done.append((src, dst))
+                    hwp_to_word.build_docx(src, dst)
+                    done.append(dst)
+                except PermissionError:
+                    errs.append(f"{os.path.basename(dst)}: Word에서 열려 있어 저장할 수 없습니다 (닫고 다시)")
                 except Exception as e:
                     errs.append(f"{os.path.basename(src)}: {e}")
-        except Exception as e:
-            errs.append(str(e))
         finally:
-            if app:
-                app.quit()
             self.root.config(cursor="")
         if errs:
-            messagebox.showwarning(APP_TITLE, "일부 변환 실패:\n\n" + "\n".join(errs))
-        if done and messagebox.askyesno(APP_TITLE, f"{len(done)}개를 Word로 저장했습니다.\n\n"
-                                                   "지금 Word 파일로 열까요? (Word 작업으로 바뀝니다)\n"
-                                                   "(변환 후 표·쪽 모양이 조금 달라질 수 있으니 Word에서 한 번 확인하세요)"):
-            self.open_files("word", [dst for _, dst in done])
+            messagebox.showwarning(APP_TITLE, "일부 실패:\n\n" + "\n".join(errs))
+        if done and messagebox.askyesno(APP_TITLE, f"Word 파일 {len(done)}개를 만들었습니다.\n\n"
+                                                   + "\n".join(os.path.basename(x) for x in done)
+                                                   + "\n\n지금 Word 작업으로 열까요?"):
+            self.open_files("word", done)
 
     # ------------------------------------------------------------ 수정 + 동기화
     def edit_para(self, p):

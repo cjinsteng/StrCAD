@@ -210,6 +210,8 @@ def _parse_section(doc, recs):
                 if table is not None and len(bb) >= 16:
                     c, r, cs, rs = struct.unpack_from("<HHHH", bb, 8)
                     cell = table.add_cell(r, c, rs, cs)
+                    if len(bb) >= 20:
+                        cell["w"] = struct.unpack_from("<I", bb, 16)[0]
                     cell_sink = (cell, r, c)
                 else:
                     cell_sink = None

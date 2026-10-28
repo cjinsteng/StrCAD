@@ -763,7 +763,7 @@ def _selftest(out):
         import importlib
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_design"))
         for m in ("accounts", "cad_analysis.app", "cad_analysis.licensing", "cad_analysis.licensing_ui", "design_2d",
-                  "olefile", "docx", "hwp_reader", "docx_doc", "report_core", "report_assistant"):
+                  "olefile", "docx", "hwp_reader", "docx_doc", "hwp_to_word", "report_core", "report_assistant"):
             try: importlib.import_module(m); lines.append("OK " + m)
             except Exception as e: lines.append(f"FAIL {m} {e!r}")
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "autotable"))
