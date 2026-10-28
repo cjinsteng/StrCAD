@@ -494,6 +494,70 @@ def existing_picture(doc):
     return None, None
 
 
+A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+R_EMBED = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
+
+
+def pictures_in(p_el):
+    """문단 안 그림들: [{'inline': wp:inline|wp:anchor, 'rid', 'cx', 'cy'}]"""
+    out = []
+    for d in p_el.iter(W_DRAWING):
+        box = d.find(qn("wp:inline"))
+        if box is None:
+            box = d.find(qn("wp:anchor"))
+        if box is None:
+            continue
+        ext = box.find(qn("wp:extent"))
+        blip = box.find(".//{%s}blip" % A_NS)
+        out.append({"inline": box, "rid": blip.get(R_EMBED) if blip is not None else None,
+                    "cx": int(ext.get("cx")) if ext is not None else 0,
+                    "cy": int(ext.get("cy")) if ext is not None else 0})
+    return out
+
+
+def image_blob(docx_document, rid):
+    try:
+        return docx_document.part.related_parts[rid].blob
+    except Exception:
+        return None
+
+
+def set_picture_size(box, cx, cy):
+    cx, cy = int(cx), int(cy)
+    ext = box.find(qn("wp:extent"))
+    if ext is not None:
+        ext.set("cx", str(cx))
+        ext.set("cy", str(cy))
+    for e in box.iter("{%s}ext" % A_NS):
+        if e.getparent().tag == "{%s}xfrm" % A_NS:
+            e.set("cx", str(cx))
+            e.set("cy", str(cy))
+
+
+def text_area_emu(docx_document):
+    """본문 영역 (폭, 높이) EMU"""
+    s = docx_document.sections[0]
+    return (int(s.page_width - s.left_margin - s.right_margin),
+            int(s.page_height - s.top_margin - s.bottom_margin))
+
+
+def fit_picture_size(image_path, want_cx, area):
+    """원본 비율 유지, 본문 폭·높이(85%) 안에 들어가게"""
+    try:
+        from PIL import Image
+        with Image.open(image_path) as im:
+            w, h = im.size
+    except Exception:
+        w, h = 4, 3
+    tw, th = area
+    cx = min(int(want_cx or tw * 0.8), tw)
+    cy = int(cx * h / max(1, w))
+    if cy > th * 0.85:
+        cy = int(th * 0.85)
+        cx = int(cy * w / max(1, h))
+    return cx, cy
+
+
 def picture_para(doc, image_path, width_cm=None):
     tmpl, cx = existing_picture(doc)
     if tmpl is not None:
@@ -507,12 +571,15 @@ def picture_para(doc, image_path, width_cm=None):
         jc = ppr.makeelement(qn("w:jc"), {qn("w:val"): "center"})
         ppr.append(jc)
         new.append(ppr)
-    if width_cm:
-        r = picture_run(doc.docx, image_path, width_cm=width_cm)
-    elif cx:
-        r = picture_run(doc.docx, image_path, width_emu=cx)
-    else:
-        r = picture_run(doc.docx, image_path, width_cm=12)
+    area = text_area_emu(doc.docx)
+    want = int(width_cm * 360000) if width_cm else cx           # 기존 그림 폭 → 없으면 본문 폭의 80%
+    wcx, wcy = fit_picture_size(image_path, want, area)
+    tmp = doc.docx.add_paragraph()
+    run = tmp.add_run()
+    run.add_picture(image_path, width=Emu(wcx), height=Emu(wcy))
+    r = run._r
+    tmp._p.remove(r)
+    tmp._p.getparent().remove(tmp._p)
     new.append(r)
     return new
 

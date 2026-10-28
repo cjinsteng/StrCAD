@@ -1453,3 +1453,24 @@ def hwp_to_docx(applier, src, dst):
             h.Clear(1)
         except Exception:
             pass
+
+
+
+def resize_picture(rep, doc, para, cx, cy):
+    """그림 크기 바꾸기 (EMU)"""
+    dx = _dx()
+    pics = dx.pictures_in(para.ref)
+    if not pics:
+        raise ValueError("그림이 없는 문단입니다.")
+    dx.set_picture_size(pics[0]["inline"], cx, cy)
+    rep.new_refs.add(id(_top_level(para.ref)))
+    rebuild_docx(rep, doc)
+
+
+def table_op(rep, doc, table, fn):
+    """Word 표 레이아웃 작업: fn(TGrid) 실행 후 다시 분석"""
+    from docx_table import TGrid
+    g = TGrid(table.ref)
+    fn(g)
+    rep.new_refs.add(id(table.ref))
+    rebuild_docx(rep, doc)
