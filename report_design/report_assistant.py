@@ -25,6 +25,87 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import report_core as rc  # noqa: E402
 from hwp_reader import heading_of  # noqa: E402
 
+APP_VERSION = "1.0.0"
+
+
+def _load_theme():
+    """StrCAD 공용 디자인(cad_analysis/theme.py: 남색 + 주황 포인트). 없으면 같은 색의 간이 테마"""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for d in (os.path.join(here, "..", "strcad_cad_analysis"), getattr(sys, "_MEIPASS", "")):
+        if d and os.path.isdir(os.path.join(d, "cad_analysis")) and d not in sys.path:
+            sys.path.append(d)
+    try:
+        from cad_analysis import theme as th
+        return th
+    except Exception:
+        return _MiniTheme
+
+
+class _MiniTheme:
+    """단독 실행(StrCAD 폴더 밖)용 — cad_analysis/theme.py 와 같은 색"""
+    NAVY, NAVY_2, NAVY_3, NAVY_L = "#1E2A44", "#2B3B5C", "#3E5580", "#8C9BB8"
+    ORANGE, ORANGE_D, ORANGE_L = "#F28C28", "#D9741A", "#FDEBD8"
+    SURFACE, PANEL, LINE, INK, MUTED = "#F4F6FA", "#FFFFFF", "#D6DCE6", "#1F2937", "#6B7280"
+    OK, NG, WARN = "#16A34A", "#DC2626", "#B45309"
+    APP_NAME = "StrCAD"
+    FAM = "Malgun Gothic" if sys.platform.startswith("win") else "Noto Sans CJK KR"
+    _done = False
+
+    @classmethod
+    def image(cls, name):
+        return None
+
+    @classmethod
+    def set_icon(cls, win):
+        pass
+
+    @classmethod
+    def ensure(cls, w):
+        if not cls._done:
+            cls.apply(w.winfo_toplevel())
+
+    @classmethod
+    def apply(cls, root):
+        cls._done = True
+        c = cls
+        st = ttk.Style(root)
+        try:
+            st.theme_use("clam")
+        except tk.TclError:
+            pass
+        f, fb = (c.FAM, 9), (c.FAM, 10, "bold")
+        root.option_add("*Background", c.SURFACE)
+        st.configure(".", background=c.SURFACE, foreground=c.INK, font=f, bordercolor=c.LINE,
+                     lightcolor=c.PANEL, darkcolor=c.LINE, troughcolor="#E8ECF2", focuscolor=c.ORANGE)
+        st.configure("TLabelframe", background=c.PANEL, bordercolor=c.LINE, relief="solid", borderwidth=1)
+        st.configure("TLabelframe.Label", background=c.PANEL, foreground=c.NAVY, font=fb)
+        st.configure("TNotebook", background=c.NAVY, borderwidth=0, tabmargins=(8, 6, 8, 0))
+        st.configure("TNotebook.Tab", background=c.NAVY_2, foreground="#C9D3E4", padding=(14, 6), font=fb)
+        st.map("TNotebook.Tab", background=[("selected", c.SURFACE), ("active", c.NAVY_3)],
+               foreground=[("selected", c.NAVY), ("active", "#FFFFFF")])
+        st.configure("TButton", background=c.PANEL, bordercolor=c.LINE, padding=(8, 4), relief="flat")
+        st.map("TButton", background=[("pressed", "#E3E8F0"), ("active", "#EEF2F8")])
+        st.configure("Accent.TButton", background=c.ORANGE, foreground="#FFFFFF", bordercolor=c.ORANGE_D, font=fb)
+        st.map("Accent.TButton", background=[("pressed", c.ORANGE_D), ("active", "#F59C45")])
+        st.configure("Ribbon.TButton", background=c.PANEL, bordercolor=c.PANEL, padding=(6, 3), justify="center")
+        st.map("Ribbon.TButton", background=[("pressed", c.ORANGE_L), ("active", "#EEF2F8")])
+        st.configure("RibbonAccent.TButton", background=c.ORANGE, foreground="#FFFFFF", bordercolor=c.ORANGE,
+                     padding=(6, 3), font=fb, justify="center")
+        st.map("RibbonAccent.TButton", background=[("pressed", c.ORANGE_D), ("active", "#F59C45")])
+        st.configure("TCheckbutton", background=c.SURFACE)
+        st.map("TCheckbutton", indicatorcolor=[("selected", c.ORANGE), ("!selected", c.PANEL)])
+        st.configure("Treeview", background=c.PANEL, fieldbackground=c.PANEL, rowheight=24, bordercolor=c.LINE)
+        st.map("Treeview", background=[("selected", c.ORANGE_L)], foreground=[("selected", c.INK)])
+        st.configure("Treeview.Heading", background=c.NAVY, foreground="#FFFFFF", font=fb, relief="flat",
+                     padding=(4, 4))
+        st.map("Treeview.Heading", background=[("active", c.NAVY_2)])
+        st.configure("TScrollbar", background="#D3DAE5", troughcolor=c.SURFACE, bordercolor=c.SURFACE,
+                     arrowcolor=c.NAVY)
+        st.configure("Status.TLabel", background=c.NAVY, foreground="#E5EAF3", padding=(10, 3))
+
+
+TH = _load_theme()
+
 APP_TITLE = "보고서 작성 도우미"
 SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".report_assistant_settings.json")
 MODELS = ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"]
@@ -90,9 +171,9 @@ def render_diff(txt, old, new):
 
 
 def make_diff_text(parent, font, height=6):
-    t = tk.Text(parent, height=height, wrap="word", font=(font, 10), relief="solid", bd=1,
-                padx=6, pady=4, bg="#fbfbfb")
-    t.tag_configure("del", foreground="#c62828", overstrike=1, background="#fde7e7")
+    t = tk.Text(parent, height=height, wrap="word", font=(font, 10), relief="solid",
+                padx=6, pady=4, bg=TH.PANEL, fg=TH.INK, highlightthickness=0, borderwidth=1)
+    t.tag_configure("del", foreground=TH.NG, overstrike=1, background="#fde7e7")
     t.tag_configure("ins", foreground="#1b5e20", background="#dff5e1")
     t.config(state="disabled")
     return t
@@ -117,7 +198,7 @@ class PropagationDialog(tk.Toplevel):
         f = app.font
         ttk.Label(self, text=note, font=(f, 10, "bold"), wraplength=900).pack(anchor="w", padx=10, pady=(10, 4))
         ttk.Label(self, text="체크 표시를 클릭해 선택/해제 · 아래에서 바뀔 내용을 미리 볼 수 있습니다.",
-                  foreground="#666").pack(anchor="w", padx=10)
+                  style="Hint.TLabel").pack(anchor="w", padx=10)
         frm = ttk.Frame(self)
         frm.pack(fill="both", expand=True, padx=10, pady=6)
         cols = ("chk", "loc", "kind", "why")
@@ -199,14 +280,14 @@ class EditDialog(tk.Toplevel):
         ttk.Label(self, text=loc_of(para) + f"   [{KIND_KO.get(para.kind, '')}]",
                   font=(f, 10, "bold")).pack(anchor="w", padx=10, pady=(10, 2))
         if para.uid in app.rep.edits:
-            ttk.Label(self, text="원문(파일): " + short(para.orig, 120), foreground="#888").pack(anchor="w", padx=10)
+            ttk.Label(self, text="원문(파일): " + short(para.orig, 120), style="Hint.TLabel").pack(anchor="w", padx=10)
         self.txt = tk.Text(self, wrap="word", font=(f, 11), undo=True, padx=6, pady=6)
         self.txt.pack(fill="both", expand=True, padx=10, pady=6)
         self.txt.insert("1.0", app.rep.text(para))
         self.txt.focus_set()
         bf = ttk.Frame(self)
         bf.pack(fill="x", padx=10, pady=(0, 10))
-        ttk.Label(bf, text="Ctrl+Enter: 저장", foreground="#888").pack(side="left")
+        ttk.Label(bf, text="Ctrl+Enter: 저장", style="Hint.TLabel").pack(side="left")
         ttk.Button(bf, text="취소", command=self.destroy).pack(side="right")
         ttk.Button(bf, text="저장", command=self._save).pack(side="right", padx=6)
         if para.uid in app.rep.edits:
@@ -276,7 +357,7 @@ class SettingsDialog(tk.Toplevel):
         ttk.Label(self.box, text=label).grid(row=r, column=0, sticky="w", padx=(0, 8), pady=3)
         widget.grid(row=r, column=1, sticky="w", pady=3)
         if note:
-            ttk.Label(self.box, text=note, foreground="#888", wraplength=480, justify="left").grid(
+            ttk.Label(self.box, text=note, style="Hint.TLabel", wraplength=480, justify="left").grid(
                 row=r + 1, column=1, sticky="w")
 
     def _switch(self):
@@ -418,39 +499,84 @@ class App:
         root.title(APP_TITLE + (f"  ─  {username}" if username else ""))
         root.geometry("1500x900")
         style = ttk.Style()
-        if not embedded:               # 단독 실행일 때만 전체 테마/글꼴 변경 (런처 안에서는 다른 모듈에 영향 X)
-            try:
-                style.theme_use("vista" if sys.platform == "win32" else "clam")
-            except Exception:
-                pass
-            style.configure("TButton", font=(self.font, 10))
-            style.configure("TLabel", font=(self.font, 10))
-            style.configure("TNotebook.Tab", font=(self.font, 10), padding=(10, 4))
-        style.configure("RD.Treeview", font=(self.font, 10), rowheight=24)
-        style.configure("RD.Treeview.Heading", font=(self.font, 10, "bold"))
-        style.configure("Accent.TButton", font=(self.font, 10, "bold"))
+        if embedded:
+            TH.ensure(root)                # 런처 안: CAD Analysis 와 같은 공용 테마 (이미 적용됐으면 그대로)
+        else:
+            TH.apply(root)
+        try:
+            TH.set_icon(root)
+        except Exception:
+            pass
+        try:
+            root.configure(bg=TH.SURFACE)
+        except Exception:
+            pass
+        style.configure("RD.Treeview", font=(self.font, 10), rowheight=25)
+        style.configure("RD.Treeview.Heading", font=(self.font, 9, "bold"))
+        style.configure("Panel.TLabel", background=TH.SURFACE, foreground=TH.NAVY, font=(self.font, 10, "bold"))
+        style.configure("Hint.TLabel", background=TH.SURFACE, foreground=TH.MUTED, font=(self.font, 9))
+        style.configure("Info.TLabel", background=TH.SURFACE, foreground=TH.NAVY_3, font=(self.font, 9, "bold"))
 
+        self._build_header()
         self._build_toolbar()
         self._build_body()
         self.status = tk.StringVar(value="'폴더 열기'로 보고서 장(章) 파일들이 있는 폴더를 선택하세요. (.hwp / .hwpx)")
-        ttk.Label(root, textvariable=self.status, anchor="w", relief="sunken", padding=(8, 2)).pack(fill="x", side="bottom")
+        ttk.Label(root, textvariable=self.status, anchor="w", style="Status.TLabel").pack(fill="x", side="bottom")
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     # ------------------------------------------------------------ 레이아웃
+    def _build_header(self):
+        hd = tk.Frame(self.root, bg=TH.NAVY, height=46)
+        hd.pack(fill="x")
+        hd.pack_propagate(False)
+        logo = TH.image("icon_32.png")
+        if logo is not None:
+            tk.Label(hd, image=logo, bg=TH.NAVY).pack(side="left", padx=(14, 8))
+        else:
+            tk.Frame(hd, bg=TH.NAVY, width=14).pack(side="left")
+        tk.Label(hd, text="StrCAD", bg=TH.NAVY, fg="white", font=(self.font, 15, "bold")).pack(side="left")
+        tk.Label(hd, text="Report Design", bg=TH.NAVY, fg=TH.ORANGE, font=(self.font, 10, "bold")).pack(
+            side="left", padx=(8, 0), pady=(5, 0))
+        tk.Frame(hd, bg=TH.NAVY_3, width=1).pack(side="left", fill="y", padx=16, pady=11)
+        self.hd_doc = tk.Label(hd, text="보고서 폴더를 여세요", bg=TH.NAVY, fg="#C9D3E4", font=(self.font, 10))
+        self.hd_doc.pack(side="left")
+        tk.Label(hd, text=f"v{APP_VERSION}", bg=TH.NAVY, fg=TH.NAVY_L, font=(self.font, 8)).pack(side="right", padx=(6, 14))
+        self.hd_ai = tk.Label(hd, text="", bg=TH.NAVY, fg=TH.NAVY_L, font=(self.font, 9), cursor="hand2")
+        self.hd_ai.pack(side="right", padx=8)
+        self.hd_ai.bind("<Button-1>", lambda e: SettingsDialog(self))
+
+    @staticmethod
+    def _grp(parent, title):
+        g = ttk.LabelFrame(parent, text=title, padding=(6, 2))
+        g.pack(side="left", fill="y", padx=3)
+        return g
+
+    @staticmethod
+    def _big(parent, text, cmd, w=9, accent=False):
+        b = ttk.Button(parent, text=text, command=cmd, width=w,
+                       style="RibbonAccent.TButton" if accent else "Ribbon.TButton")
+        b.pack(side="left", padx=2, pady=2, fill="y")
+        return b
+
     def _build_toolbar(self):
-        tb = ttk.Frame(self.root, padding=(6, 6))
-        tb.pack(fill="x")
-        ttk.Button(tb, text="📂 폴더 열기", command=self.open_folder).pack(side="left")
-        ttk.Button(tb, text="＋ 파일 추가", command=self.add_files).pack(side="left", padx=4)
-        ttk.Button(tb, text="⟳ 다시 읽기", command=self.reload_all).pack(side="left")
-        ttk.Separator(tb, orient="vertical").pack(side="left", fill="y", padx=8)
-        ttk.Button(tb, text="번호 검사", command=self.run_numbering).pack(side="left")
-        ttk.Button(tb, text="반복 문단 불일치 찾기", command=self.run_inconsistency).pack(side="left", padx=4)
-        ttk.Separator(tb, orient="vertical").pack(side="left", fill="y", padx=8)
-        self.btn_changes = ttk.Button(tb, text="변경 목록 (0)", command=lambda: self.nb.select(self.tab_list))
-        self.btn_changes.pack(side="left")
-        ttk.Button(tb, text="✔ 한글 파일에 반영", style="Accent.TButton", command=self.apply_to_hwp).pack(side="left", padx=4)
-        ttk.Button(tb, text="⚙ 설정", command=lambda: SettingsDialog(self)).pack(side="right")
+        """CAD Analysis 와 같은 리본 메뉴"""
+        rb = ttk.Notebook(self.root)
+        rb.pack(fill="x")
+        home = ttk.Frame(rb, padding=(6, 6))
+        rb.add(home, text="  홈  ")
+        g = self._grp(home, "보고서")
+        self._big(g, "📂\n폴더 열기", self.open_folder, accent=True)
+        self._big(g, "＋\n파일 추가", self.add_files)
+        self._big(g, "⟳\n다시 읽기", self.reload_all)
+        g = self._grp(home, "검사")
+        self._big(g, "#\n번호 검사", self.run_numbering)
+        self._big(g, "≒\n반복 문단\n불일치", self.run_inconsistency, 10)
+        g = self._grp(home, "AI 검토")
+        self._big(g, "✦\n선택 절\nAI 검토", lambda: (self.nb.select(self.tab_ai), self.run_ai()))
+        self._big(g, "⚙\n엔진 설정", lambda: SettingsDialog(self))
+        g = self._grp(home, "반영")
+        self.btn_changes = self._big(g, "☰\n변경 목록\n(0)", lambda: self.nb.select(self.tab_list))
+        self._big(g, "✔\n한글 파일에\n반영", self.apply_to_hwp, 10, accent=True)
 
     def _build_body(self):
         pw = ttk.PanedWindow(self.root, orient="horizontal")
@@ -458,14 +584,14 @@ class App:
 
         # 왼쪽: 장/절 트리
         lf = ttk.Frame(pw)
-        ttk.Label(lf, text="장 / 절", font=(self.font, 10, "bold")).pack(anchor="w", padx=4, pady=2)
+        ttk.Label(lf, text="장 / 절", style="Panel.TLabel").pack(anchor="w", padx=6, pady=(6, 3))
         self.tree = ttk.Treeview(lf, show="tree", selectmode="browse", style="RD.Treeview")
         tsb = ttk.Scrollbar(lf, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=tsb.set)
         self.tree.pack(side="left", fill="both", expand=True)
         tsb.pack(side="right", fill="y")
-        self.tree.tag_configure("doc", font=(self.font, 10, "bold"))
-        self.tree.tag_configure("issue", foreground="#c62828")
+        self.tree.tag_configure("doc", font=(self.font, 10, "bold"), foreground=TH.NAVY)
+        self.tree.tag_configure("issue", foreground=TH.NG)
         self.tree.tag_configure("edited", background="#fff6cc")
         self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
         pw.add(lf, weight=1)
@@ -475,29 +601,30 @@ class App:
         hdr = ttk.Frame(cf)
         hdr.pack(fill="x")
         self.sec_title = tk.StringVar(value="")
-        ttk.Label(hdr, textvariable=self.sec_title, font=(self.font, 11, "bold")).pack(side="left", padx=4, pady=2)
-        ttk.Label(hdr, text="더블클릭: 수정 · 우클릭: 메뉴", foreground="#888").pack(side="right", padx=6)
+        ttk.Label(hdr, textvariable=self.sec_title, style="Panel.TLabel").pack(side="left", padx=6, pady=(6, 3))
+        ttk.Label(hdr, text="더블클릭: 수정 · 우클릭: 메뉴", style="Hint.TLabel").pack(side="right", padx=6)
         self.view = tk.Text(cf, wrap="word", font=(self.font, 10), padx=14, pady=10, cursor="arrow",
-                            spacing1=2, spacing3=2, bg="white")
+                            spacing1=2, spacing3=2, bg=TH.PANEL, fg=TH.INK, relief="flat",
+                            highlightthickness=1, highlightbackground=TH.LINE, highlightcolor=TH.LINE)
         vsb = ttk.Scrollbar(cf, orient="vertical", command=self.view.yview)
         self.view.configure(yscrollcommand=vsb.set)
         self.view.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
         f = self.font
-        self.view.tag_configure("h0", font=(f, 15, "bold"), spacing1=12, spacing3=8)
-        self.view.tag_configure("h1", font=(f, 13, "bold"), spacing1=10, spacing3=4)
-        self.view.tag_configure("h2", font=(f, 11, "bold"), spacing1=8, spacing3=2)
-        self.view.tag_configure("h3", font=(f, 10, "bold"), spacing1=6)
-        self.view.tag_configure("tbl", font=(f, 9), background="#f6f8fb", lmargin1=10, lmargin2=10)
-        self.view.tag_configure("tblhdr", font=(f, 9, "bold"), foreground="#5f6b7a")
-        self.view.tag_configure("bar", foreground="#b0bac6")
+        self.view.tag_configure("h0", font=(f, 15, "bold"), foreground=TH.NAVY, spacing1=12, spacing3=8)
+        self.view.tag_configure("h1", font=(f, 13, "bold"), foreground=TH.NAVY, spacing1=10, spacing3=4)
+        self.view.tag_configure("h2", font=(f, 11, "bold"), foreground=TH.NAVY, spacing1=8, spacing3=2)
+        self.view.tag_configure("h3", font=(f, 10, "bold"), foreground=TH.NAVY_2, spacing1=6)
+        self.view.tag_configure("tbl", font=(f, 9), background=TH.SURFACE, lmargin1=10, lmargin2=10)
+        self.view.tag_configure("tblhdr", font=(f, 9, "bold"), foreground=TH.NAVY_3)
+        self.view.tag_configure("bar", foreground=TH.NAVY_L)
         self.view.tag_configure("box", foreground="#455a64", font=(f, 9, "italic"))
         self.view.tag_configure("edited", background="#fff3b0")
         self.view.tag_configure("origline", foreground="#9e9e9e", overstrike=1, font=(f, 9))
-        self.view.tag_configure("issue", underline=1, foreground="#c62828")
+        self.view.tag_configure("issue", underline=1, foreground=TH.NG)
         self.view.tag_configure("aispan", background="#ffd8a8")
-        self.view.tag_configure("sel_para", background="#d6e9ff")
-        self.view.tag_configure("flash", background="#90caf9")
+        self.view.tag_configure("sel_para", background=TH.ORANGE_L)
+        self.view.tag_configure("flash", background="#FBC98E")
         self.view.tag_raise("sel_para")
         self.view.tag_raise("flash")
         self.view.bind("<Button-1>", self.on_view_click)
@@ -526,7 +653,20 @@ class App:
         self._build_common_tab()
         self._build_list_tab()
         pw.add(rf, weight=2)
-        self.root.after(50, lambda: (pw.sashpos(0, 300), pw.sashpos(1, 1000)))
+        self._pw = pw
+        self.root.after(80, self._init_sash)
+
+    def _init_sash(self, tries=0):
+        """창 크기가 정해진 뒤 패널 폭 설정 (트리 300, 오른쪽 탭 약 480)"""
+        w = self._pw.winfo_width()
+        if w < 900 and tries < 30:
+            self.root.after(100, lambda: self._init_sash(tries + 1))
+            return
+        try:
+            self._pw.sashpos(0, 300)
+            self._pw.sashpos(1, max(700, w - 500))
+        except Exception:
+            pass
 
     def _tv(self, parent, cols, height=12):
         frm = ttk.Frame(parent)
@@ -556,23 +696,23 @@ class App:
         eng = ttk.Frame(t)
         eng.pack(fill="x")
         self.engine_lbl = tk.StringVar(value="")
-        ttk.Label(eng, textvariable=self.engine_lbl, foreground="#666").pack(side="left")
+        ttk.Label(eng, textvariable=self.engine_lbl, style="Hint.TLabel").pack(side="left")
         ttk.Button(eng, text="엔진 변경", command=lambda: SettingsDialog(self)).pack(side="right")
         self.update_engine_label()
         self.ai_status = tk.StringVar(value="")
-        ttk.Label(t, textvariable=self.ai_status, foreground="#1565c0").pack(anchor="w")
+        ttk.Label(t, textvariable=self.ai_status, style="Info.TLabel").pack(anchor="w")
         self.ai_summary = tk.StringVar(value="")
         ttk.Label(t, textvariable=self.ai_summary, wraplength=430, foreground="#333").pack(anchor="w", pady=(2, 4))
         frm, self.ai_tv = self._tv(t, [("st", "상태", 50), ("type", "유형", 60), ("orig", "원문", 150),
                                        ("sug", "제안", 150)], height=12)
         frm.pack(fill="both", expand=True)
-        self.ai_tv.tag_configure("적용", foreground="#2e7d32")
+        self.ai_tv.tag_configure("적용", foreground=TH.OK)
         self.ai_tv.tag_configure("무시", foreground="#9e9e9e")
         self.ai_tv.tag_configure("comment", foreground="#6a1b9a")
         self.ai_tv.bind("<<TreeviewSelect>>", self.on_ai_select)
         self.ai_tv.bind("<Double-Button-1>", lambda e: self.ai_apply())
         self.ai_reason = tk.StringVar(value="")
-        ttk.Label(t, textvariable=self.ai_reason, wraplength=430, foreground="#555").pack(anchor="w", pady=(4, 2))
+        ttk.Label(t, textvariable=self.ai_reason, wraplength=430, style="Hint.TLabel").pack(anchor="w", pady=(4, 2))
         self.ai_diff = make_diff_text(t, self.font, 5)
         self.ai_diff.pack(fill="x")
         bf = ttk.Frame(t)
@@ -585,7 +725,7 @@ class App:
     def _build_sim_tab(self):
         t = self.tab_sim
         ttk.Label(t, text="본문에서 문단을 클릭하면, 보고서의 다른 곳에 있는 같은/비슷한 문단을 보여줍니다.",
-                  wraplength=430, foreground="#555").pack(anchor="w")
+                  wraplength=430, style="Hint.TLabel").pack(anchor="w")
         self.sim_lbl = tk.StringVar(value="")
         ttk.Label(t, textvariable=self.sim_lbl, font=(self.font, 10, "bold"), wraplength=430).pack(anchor="w", pady=4)
         frm, self.sim_tv = self._tv(t, [("r", "유사도", 60), ("loc", "위치", 260), ("kind", "구분", 50)], 14)
@@ -593,7 +733,7 @@ class App:
         self.sim_tv.bind("<<TreeviewSelect>>", self.on_sim_select)
         self.sim_tv.bind("<Double-Button-1>", lambda e: self._goto_sel(self.sim_tv, self.sim_items, key=0))
         ttk.Label(t, text="선택한 문단 → 현재 문단과 비교 (빨강=선택 문단에만, 초록=현재 문단에만)",
-                  foreground="#888").pack(anchor="w", pady=(4, 0))
+                  style="Hint.TLabel").pack(anchor="w", pady=(4, 0))
         self.sim_diff = make_diff_text(t, self.font, 6)
         self.sim_diff.pack(fill="x")
         bf = ttk.Frame(t)
@@ -609,10 +749,10 @@ class App:
         ttk.Button(row, text="번호 검사", command=self.run_numbering).pack(side="left")
         ttk.Button(row, text="반복 문단 불일치", command=self.run_inconsistency).pack(side="left", padx=4)
         self.chk_lbl = tk.StringVar(value="")
-        ttk.Label(t, textvariable=self.chk_lbl, foreground="#1565c0").pack(anchor="w", pady=4)
+        ttk.Label(t, textvariable=self.chk_lbl, style="Info.TLabel").pack(anchor="w", pady=4)
         frm, self.chk_tv = self._tv(t, [("kind", "구분", 80), ("loc", "위치", 150), ("msg", "내용", 260)], 14)
         frm.pack(fill="both", expand=True)
-        self.chk_tv.tag_configure("오류", foreground="#c62828")
+        self.chk_tv.tag_configure("오류", foreground=TH.NG)
         self.chk_tv.tag_configure("done", foreground="#9e9e9e")
         self.chk_tv.bind("<<TreeviewSelect>>", self.on_chk_select)
         self.chk_tv.bind("<Double-Button-1>", lambda e: self._goto_sel(self.chk_tv, self.check_items, key="para"))
@@ -632,10 +772,10 @@ class App:
         t = self.tab_common
         ttk.Label(t, text="여러 장에 반복되는 기본 정보(과업명, 위치, 연면적, 준공연도, 재료강도 등)를 관리합니다.\n"
                           "값을 바꾸면 보고서 전체의 사용처를 찾아 함께 바꿀 수 있습니다.",
-                  wraplength=430, foreground="#555").pack(anchor="w")
+                  wraplength=430, style="Hint.TLabel").pack(anchor="w")
         frm, self.cm_tv = self._tv(t, [("k", "항목", 90), ("v", "값", 230), ("n", "사용처", 70)], 9)
         frm.pack(fill="both", expand=True, pady=4)
-        self.cm_tv.tag_configure("warn", foreground="#c62828")
+        self.cm_tv.tag_configure("warn", foreground=TH.NG)
         self.cm_tv.bind("<<TreeviewSelect>>", self.on_common_select)
         self.cm_tv.bind("<Double-Button-1>", lambda e: self.common_change())
         bf = ttk.Frame(t)
@@ -644,17 +784,17 @@ class App:
         ttk.Button(bf, text="추가", command=self.common_add).pack(side="left", padx=2)
         ttk.Button(bf, text="삭제", command=self.common_del).pack(side="left")
         ttk.Button(bf, text="값 변경…", style="Accent.TButton", command=self.common_change).pack(side="right")
-        ttk.Label(t, text="사용처 (빨강 = 값이 조금 다른 곳: 불일치 의심)", foreground="#888").pack(anchor="w", pady=(8, 0))
+        ttk.Label(t, text="사용처 (빨강 = 값이 조금 다른 곳: 불일치 의심)", style="Hint.TLabel").pack(anchor="w", pady=(8, 0))
         frm2, self.occ_tv = self._tv(t, [("loc", "위치", 200), ("txt", "표기", 200)], 9)
         frm2.pack(fill="both", expand=True)
-        self.occ_tv.tag_configure("warn", foreground="#c62828")
+        self.occ_tv.tag_configure("warn", foreground=TH.NG)
         self.occ_tv.bind("<Double-Button-1>", lambda e: self._goto_sel(self.occ_tv, self.occ_items, key=0))
 
     # ---- 변경 목록 탭
     def _build_list_tab(self):
         t = self.tab_list
         ttk.Label(t, text="아직 한글 파일에 반영되지 않은 수정 사항입니다. '한글 파일에 반영'을 누르면 원본을 백업한 뒤 적용합니다.",
-                  wraplength=430, foreground="#555").pack(anchor="w")
+                  wraplength=430, style="Hint.TLabel").pack(anchor="w")
         frm, self.ls_tv = self._tv(t, [("loc", "위치", 170), ("new", "수정문", 200), ("src", "출처", 90)], 16)
         frm.pack(fill="both", expand=True, pady=4)
         self.ls_tv.bind("<<TreeviewSelect>>", self.on_list_select)
@@ -758,7 +898,10 @@ class App:
                 self.view.yview_moveto(y)
         self._fill_list()
         self._fill_common()
-        self.btn_changes.config(text=f"변경 목록 ({len(self.rep.edits)})")
+        self.btn_changes.config(text=f"☰\n변경 목록\n({len(self.rep.edits)})")
+        if self.rep.docs:
+            folder = os.path.basename(os.path.dirname(self.rep.docs[0].path))
+            self.hd_doc.config(text=f"{folder}  ·  {len(self.rep.docs)}개 파일")
         self._save_state_quiet()
 
     def _fill_tree(self):
@@ -1058,7 +1201,11 @@ class App:
     def update_engine_label(self):
         if hasattr(self, "engine_lbl"):
             try:
-                self.engine_lbl.set("AI 엔진: " + make_client(self.settings).describe())
+                d = make_client(self.settings).describe()
+                self.engine_lbl.set("AI 엔진: " + d)
+                if hasattr(self, "hd_ai"):
+                    self.hd_ai.config(text="● AI " + d, fg=TH.ORANGE if self.settings.get("provider", "claude") != "claude"
+                                      else "#9FD7B0")
             except Exception:
                 self.engine_lbl.set("AI 엔진: (설정 필요)")
 
