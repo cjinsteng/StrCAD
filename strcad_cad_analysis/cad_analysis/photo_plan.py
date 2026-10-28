@@ -39,6 +39,15 @@ def ocr_available() -> bool:
         return False
 
 
+def ocr_missing_text():
+    import sys
+    v = sys.version_info
+    if v >= (3, 15):
+        return (f"부재명 글자 인식(RapidOCR)은 Python {v[0]}.{v[1]}에서 아직 설치할 수 없어(onnxruntime 미지원) "
+                "형상만 인식합니다. 부재명까지 읽으려면 설치 파일(StrCAD_Setup)을 쓰거나 Python 3.12로 실행하세요.")
+    return "글자 인식(RapidOCR)이 설치되지 않아 부재명은 읽지 않습니다. (pip install rapidocr_onnxruntime)"
+
+
 def _cv():
     import cv2
     import numpy as np
@@ -175,10 +184,8 @@ def ocr_texts(img, log=print, tile=1600, overlap=250):
     """RapidOCR로 글자 읽기 — 원본 + 도면이 기울어져 있으면 그 방향으로 돌린 사본도 읽음.
     → [(text, cx, cy, angle_deg, height_px, score)]  (angle: 도면 좌표계, 반시계 +)"""
     cv2, np = _cv()
-    try:
-        import rapidocr_onnxruntime  # noqa: F401
-    except ImportError:
-        log("글자 인식(RapidOCR)이 설치되지 않아 부재명은 읽지 않습니다. (pip install rapidocr_onnxruntime)")
+    if not ocr_available():
+        log(ocr_missing_text())
         return []
     h, w = img.shape[:2]
     up = 1.0
@@ -758,7 +765,7 @@ def recognize_photo(path, corners=None, k_mm=None, paper="A3", scale=200, use_oc
     log(f"원근 보정 → {w}×{h}px · 1px = {k_mm:.1f}mm")
     texts = ocr_texts(flat, log=log) if use_ocr and ocr_available() else []
     if use_ocr and not ocr_available():
-        log("글자 인식 모듈이 없어 부재명 없이 형상만 찾습니다.")
+        log(ocr_missing_text())
     lines, col_boxes = _shapes(flat, k_mm, texts, log)
     res = build_result(flat, k_mm, lines, col_boxes, texts, log)
     return flat, res, k_mm, texts

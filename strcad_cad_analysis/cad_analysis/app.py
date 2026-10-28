@@ -10,6 +10,7 @@ import copy
 import math
 import os
 import queue
+import sys
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
@@ -999,8 +1000,8 @@ class CadAnalysisApp:
         ok, why = PP.available()
         if not ok and (o["mode"] == "recognize" or o.get("warp")):
             if o["mode"] == "recognize":
-                messagebox.showerror("도면 사진 인식", why + "\n\npip install opencv-python-headless numpy rapidocr_onnxruntime",
-                                     parent=self.root)
+                messagebox.showerror("도면 사진 인식", why + "\n\n터미널에서:  pip install -r requirements.txt\n"
+                                     f"(지금 파이썬: {sys.executable})", parent=self.root)
                 return
             o["warp"] = False
         corners = None
