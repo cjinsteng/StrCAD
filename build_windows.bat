@@ -12,7 +12,7 @@ if "%VER%"=="" set VER=1.0.0
 
 echo [1/4] pip install
 python -m pip install --upgrade pip >nul
-python -m pip install ezdxf pillow tkinterdnd2 openpyxl numpy pyinstaller || goto :err
+python -m pip install ezdxf pillow tkinterdnd2 openpyxl numpy opencv-python-headless rapidocr_onnxruntime pyinstaller || goto :err
 
 echo [2/4] PyInstaller
 python -m PyInstaller launcher.py --noconfirm --clean --windowed --name StrCAD ^
@@ -23,7 +23,8 @@ python -m PyInstaller launcher.py --noconfirm --clean --windowed --name StrCAD ^
   --add-data "strcad_cad_analysis\samples;samples" ^
   --add-data "autotable\auto_table.py;autotable" ^
   --hidden-import cad_analysis.app --hidden-import cad_analysis.licensing_ui --hidden-import design_2d ^
-  --collect-all tkinterdnd2 --collect-all ezdxf ^
+  --hidden-import cad_analysis.photo_plan --hidden-import cad_analysis.sheets ^
+  --collect-all tkinterdnd2 --collect-all ezdxf --collect-all rapidocr_onnxruntime --collect-all onnxruntime ^
   --exclude-module matplotlib --exclude-module PyQt5 --exclude-module PySide6 || goto :err
 
 echo [3/4] self test

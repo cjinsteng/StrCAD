@@ -740,6 +740,16 @@ def _selftest(out):
         for rel in (("cad_analysis", "assets", "icon.ico"), ("mobile", "index.html"), ("mobile", "sketch.js")):
             p = theme.resource(*rel); lines.append(f"{'OK' if os.path.exists(p) else 'MISSING'} {'/'.join(rel)}")
         lines.append("license " + LC.status().get("state", "?") if LC else "FAIL license")
+        try:                                     # 도면 사진 인식 (OpenCV + 글자 인식 모델)
+            import numpy as np, cv2
+            from cad_analysis import photo_plan as PP
+            from rapidocr_onnxruntime import RapidOCR
+            img = np.full((120, 320, 3), 255, np.uint8)
+            cv2.putText(img, "G12", (20, 85), cv2.FONT_HERSHEY_SIMPLEX, 2.4, (0, 0, 0), 5)
+            got = [t[1] for t in (RapidOCR()(img)[0] or [])]
+            lines.append(("OK" if any("G12" in g for g in got) else "FAIL") + f" photo-ocr {got}")
+        except Exception as e:
+            lines.append(f"FAIL photo-ocr {e!r}")
     except Exception as e:
         import traceback; lines.append("FAIL " + traceback.format_exc())
     Path(out).write_text("\n".join(lines) + "\n", encoding="utf-8")

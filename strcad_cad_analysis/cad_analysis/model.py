@@ -171,7 +171,10 @@ class AnalysisResult:
     surveys: list = field(default_factory=list)          # 현장조사 검측위치/구간 (dict, see survey.py)
     sketches: list = field(default_factory=list)         # 현장 스케치 (보·기둥·자유선·글자, 도면 좌표, see sketch.py)
     schedule: list = field(default_factory=list)         # 부재리스트 (dict, see schedule.py)
-    kind: str = "struct"                                  # "struct" 구조도면 / "arch" 건축도면
+    kind: str = "struct"                                  # "struct" 구조도면 / "arch" 건축도면 / "photo" 사진 / "blank" 빈 도면
+    bg_image: str = ""                                    # 배경 이미지 파일 (사진·스캔 도면, 도면 없이 현장조사)
+    bg_rect: Optional[tuple] = None                       # 배경 이미지가 놓이는 도면 좌표 (x0, y0, x1, y1)
+    sheet_uid: str = ""                                   # 휴대폰에서 만든 도면과 PC 분석을 잇는 고유값
 
     def by_id(self) -> dict:
         return {m.id: m for m in self.members}

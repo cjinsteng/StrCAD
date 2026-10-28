@@ -84,8 +84,9 @@
     <img class="welcome-logo" src="logo.png" alt="StrCAD">
     <h2 class="welcome-title">StrCAD <span>현장조사</span></h2>
     <p class="welcome-sub">구조 부재 검측 · 배근 입력 · 간이 N.G 확인</p>
-    <p>PC의 CAD Analysis에서 <b>현장조사 › 모바일로 내보내기</b>로 만든<br><b>.strsv</b> 파일을 여세요.</p>
+    <p>PC의 CAD Analysis에서 <b>현장조사 › 모바일로 내보내기</b>로 만든<br><b>.strsv</b> 파일을 열거나, 도면 없이 바로 시작하세요.</p>
     <label class="bigbtn">📂 조사 파일 열기<input type="file" id="fileOpen" hidden></label>
+    <button class="bigbtn navy" id="btnNew">＋ 새 조사 (DXF 없이 · 빈 도면/사진)</button>
     <button class="bigbtn ghost hidden" id="btnResume">↺ 이어서 하기</button>
     <button class="bigbtn ghost hidden" id="btnPcGet">🖥 PC에서 받기</button>
     <p class="small" id="welcomeNote"></p>
@@ -98,6 +99,8 @@
     <h3>메뉴</h3>
     <label class="mi">📂 조사 파일 열기<input type="file" id="fileOpen2" hidden></label>
     <button class="mi" id="miSave">💾 저장 / 공유 (.strsv)</button>
+    <button class="mi" id="miNew">＋ 도면 추가 (빈 도면 · 사진)</button>
+    <button class="mi" id="miCalib">📏 축척 맞추기 (빈 도면 · 사진)</button>
     <button class="mi pc hidden" id="miPcGet">🖥 PC에서 받기</button>
     <button class="mi pc hidden" id="miPcPut">🖥 PC로 보내기</button>
     <button class="mi hidden" id="miPcAddr">⚙ PC 주소 설정 (Wi-Fi)</button>
@@ -117,5 +120,6 @@
 <script src="app.js"></script>
 <script src="detail.js"></script>
 <script src="sketch.js"></script>
+<script src="newsheet.js"></script>
 </body>
 </html>

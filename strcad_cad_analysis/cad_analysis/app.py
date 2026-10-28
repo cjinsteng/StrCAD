@@ -36,7 +36,9 @@ from .model import KIND_KO, LAYER_ROLES, LAYER_ROLE_KO, SRC_KO, SRC_LABEL, SRC_U
 from .ollama_client import OllamaClient, OllamaError
 from .region import detect_plans, crop, robust_extents
 from . import theme as TH
+from . import sheets as SH
 
+IMG_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", ".heic")
 COLORS = {"column": "#d62828", "girder": "#1d4ed8", "beam": "#15803d", "wall": "#374151"}
 SEL = TH.ORANGE
 BG = "#ffffff"
@@ -68,7 +70,17 @@ SV_HELP = {
     "delete": "삭제할 검측위치(번호 원)를 클릭 (Ctrl+Z로 되돌리기)",
 }
 
-HELP_USAGE = """[기본 흐름]
+HELP_USAGE = """[DXF가 없을 때]
+· 시작 화면 '📷 도면 없이 조사' 또는 현장조사 › 📷 새 조사 도면
+  - 빈 도면(격자): 가로·세로(m)를 정하면 1 m 격자 위에 검측위치·스케치를 기록
+  - 사진·이미지를 배경으로: 도면 사진/스캔/캡처를 깔고 그 위에 기록 (비스듬히 찍었으면 네 모서리를 맞춰 반듯하게)
+  - 종이 도면 사진 → 부재 인식: 기둥(사각형)·보/벽(평행선)·부재명(G1, B1, C1 …)을 찾아 후보로 만듦.
+    결과는 사진을 배경으로 띄운 채 편집 탭에서 고치세요. (파일 › DXF 열기에서 사진을 골라도 같음)
+· 📏 축척 맞추기: 길이를 아는 두 점(그리드 간격 등)을 클릭하고 실제 길이(m)를 넣으면 전체 축척이 맞춰집니다.
+· 휴대폰에서도 '＋ 새 조사 (DXF 없이)'로 바로 시작할 수 있고, PC로 가져오면 새 도면으로 추가됩니다.
+· Ctrl+S = 저장 (입력 중인 현장조사 항목도 함께 저장)
+
+[기본 흐름]
 1. 파일 › DXF 열기 → 전체 도면이 보이고 평면 후보가 파란 점선 박스로 표시됩니다.
 2. 분석할 평면을 클릭하면 주황색으로 '선택' 표시만 됩니다(바로 분석하지 않음).
    드래그 = 영역 직접 지정, 박스 밖 빈 곳 더블클릭 = 도면 전체 선택. 다른 박스를 누르면 선택이 바뀝니다.
@@ -144,6 +156,8 @@ HELP_KEYS = """마우스
   Shift     선부재 그릴 때 좌표축 방향 고정
   Esc       그리던 선 취소
   Delete    선택 부재 삭제
+  Ctrl+S    저장 (현장조사 입력 중이면 입력 내용도 함께 저장)
+  Ctrl+Shift+S  다른 이름으로 저장
   Ctrl+Z    되돌리기
   Ctrl+Y    다시실행
 """
@@ -203,7 +217,10 @@ class CadAnalysisApp:
             root.protocol("WM_DELETE_WINDOW", self._on_close)
         for seq, fn in (("<Escape>", self._esc), ("<Delete>", lambda e: self.delete_selected()),
                         ("<Control-z>", lambda e: self.undo()), ("<Control-y>", lambda e: self.redo()),
-                        ("<F3>", self._toggle_osnap)):
+                        ("<F3>", self._toggle_osnap),
+                        ("<Control-s>", self._ctrl_s), ("<Control-S>", self._ctrl_s),
+                        ("<Control-Shift-s>", lambda e: self._ctrl_s(e, as_new=True)),
+                        ("<Control-Shift-S>", lambda e: self._ctrl_s(e, as_new=True))):
             root.bind(seq, fn)
 
     # ======================================================================= UI
@@ -216,6 +233,9 @@ class CadAnalysisApp:
         self.show_nodes = tk.BooleanVar(value=False)
         self.show_survey = tk.BooleanVar(value=True)
         self.show_sketch = tk.BooleanVar(value=True)
+        self.show_photo = tk.BooleanVar(value=True)
+        self._bgimg = SH.BgImage()
+        self._calib = None
         self.sv_tool = tk.StringVar(value="point")
         self.P = SV.purposes(self.cfg)
         self.sv_purpose = tk.StringVar(value="부재검측")
@@ -368,7 +388,7 @@ class CadAnalysisApp:
         g = self._grp(p, "표시")
         items = (("원도면선", self.show_bg), ("그리드", self.show_grid), ("기둥외곽", self.show_outline),
                  ("부재명", self.show_names), ("절점", self.show_nodes), ("검측위치", self.show_survey),
-                 ("스케치", self.show_sketch))
+                 ("스케치", self.show_sketch), ("배경 사진", self.show_photo))
         for i, (t, v) in enumerate(items):
             ttk.Checkbutton(g, text=t, variable=v, command=self.redraw).grid(row=i % 2, column=i // 2, sticky="w",
                                                                            padx=4)
@@ -501,6 +521,9 @@ class CadAnalysisApp:
                                           width=14, font=(TH.FAM, 10))
         self.sv_purpose_cb.pack(anchor="w")
         ttk.Button(g, text="＋ 용도 추가", command=self._sv_add_purpose).pack(anchor="w", pady=(4, 0))
+        g = self._grp(p, "도면 없이")
+        self._big(g, "📷\n새 조사\n도면", self.new_field_sheet, 7)
+        self._big(g, "📏\n축척\n맞추기", self.calibrate_scale, 7)
         g = self._grp(p, "기록")
         self._big(g, "📤\n조사표 CSV", self.survey_export, 10)
         self._big(g, "📑\n도면 LIST", self._sv_sheet_list, 9)
@@ -718,11 +741,16 @@ class CadAnalysisApp:
             return
         path = filedialog.askopenfilename(
             parent=self.root, title="구조평면도 열기", initialdir=self.cfg.get("last_dir") or None,
-            filetypes=[("DXF / DWG", "*.dxf *.dwg"), ("DXF", "*.dxf"), ("모든 파일", "*.*")])
+            filetypes=[("DXF / DWG / 도면 사진", "*.dxf *.dwg *.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp"),
+                       ("DXF", "*.dxf"), ("도면 사진·이미지", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp"),
+                       ("모든 파일", "*.*")])
         if not path:
             return
         self.cfg["last_dir"] = os.path.dirname(path)
         self._save_cfg()
+        if os.path.splitext(path)[1].lower() in IMG_EXT:
+            self.new_field_sheet(path=path, mode="recognize", confirmed=True)
+            return
         self.load_path(path)
 
     def load_path(self, path):
@@ -952,7 +980,167 @@ class CadAnalysisApp:
                     pts.append((a.x1 + d1x * t, a.y1 + d1y * t))
         self.grid_pts = pts
 
+    # ======================================================================= 도면 없이 현장조사
+    def new_field_sheet(self, path="", mode="blank", confirmed=False):
+        """빈 도면 / 사진 배경 / 종이 도면 사진 인식으로 조사 도면 만들기."""
+        if self.busy or (not confirmed and not self._confirm_discard()):
+            return
+        if confirmed and not self._confirm_discard():
+            return
+        from .dialogs import NewSheetDialog
+        NewSheetDialog(self.root, self.project, self._ns_go, mode=mode, path=path)
+
+    def _ns_go(self, o):
+        if o["mode"] == "blank":
+            res = SH.new_blank(o["w"], o["h"])
+            self._ns_finish(res, o, f"빈 도면 {o['w']:g}×{o['h']:g} m")
+            return
+        from . import photo_plan as PP
+        ok, why = PP.available()
+        if not ok and (o["mode"] == "recognize" or o.get("warp")):
+            if o["mode"] == "recognize":
+                messagebox.showerror("도면 사진 인식", why + "\n\npip install opencv-python-headless numpy rapidocr_onnxruntime",
+                                     parent=self.root)
+                return
+            o["warp"] = False
+        corners = None
+        if o.get("warp") and ok:
+            try:
+                img = PP.read_image(o["path"])
+                corners = PP.detect_corners(img)
+                from PIL import Image
+                import cv2
+                pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+            except Exception as e:      # noqa: BLE001
+                messagebox.showerror("사진 열기", str(e), parent=self.root)
+                return
+            from .dialogs import CornerDialog
+            CornerDialog(self.root, pil, corners, lambda pts: self._ns_photo(o, pts))
+            return
+        self._ns_photo(o, None)
+
+    def _ns_photo(self, o, corners):
+        from . import photo_plan as PP
+        path = o["path"]
+
+        def work():
+            if o["mode"] == "recognize":
+                flat, res, k, _t = PP.recognize_photo(path, corners=corners, paper=o["paper"], scale=o["scale"],
+                                                      log=self.log)
+                import cv2
+                from PIL import Image
+                pil = Image.fromarray(cv2.cvtColor(flat, cv2.COLOR_BGR2RGB))
+                p, _iw, _ih = SH.store_image(None, img=pil)
+                res.bg_image, res.bg_rect, res.sheet_uid = p, tuple(res.extents), SH.new_uid()   # 펴진 사진 전체 = 도면 범위
+                res.source_file = path
+                return res
+            if corners:
+                import cv2
+                from PIL import Image
+                flat = PP.warp(PP.read_image(path), corners)
+                pil = Image.fromarray(cv2.cvtColor(flat, cv2.COLOR_BGR2RGB))
+                w = pil.size[0]
+            else:
+                from PIL import Image, ImageOps
+                pil = ImageOps.exif_transpose(Image.open(path))
+                w = pil.size[0]
+            k = PP.mm_per_px(w, o["paper"], o["scale"], pil.size[0] >= pil.size[1])
+            return SH.new_image(path, mm_per_px=k, img=pil)
+
+        def done(res):
+            what = "종이 도면 사진 인식" if o["mode"] == "recognize" else "사진 배경"
+            self._ns_finish(res, o, what)
+        self._run_bg(work, done, "도면 사진 처리 중…" if o["mode"] == "recognize" else "사진 준비 중…")
+
+    def _ns_finish(self, res, o, what):
+        self.dd, self.sub, self.plans = None, None, []
+        self.region, self.region_label = None, ""
+        self.cs = CoordSystem()
+        self.analysis_kind = "struct"
+        self._set_result(res)
+        self.db_id, self.db_name, self.project = None, o["name"], o["project"]
+        try:
+            self.db_id = db.save(res, None, o["name"], None, project=o["project"])
+            self._set_dirty(False)
+        except Exception as e:      # noqa: BLE001
+            self._set_dirty(True)
+            self.log(f"DB 저장 실패: {e}")
+        self._sv_refresh_pager()
+        self.rb.select(self.tabs["struct" if o["mode"] == "recognize" else "survey"])
+        self.log(f"새 조사 도면: [{o['project'] or '-'}] '{o['name']}' — {what}"
+                 + ("  · 인식 결과는 후보입니다. 사진을 배경으로 편집 탭에서 고치세요." if o["mode"] == "recognize" else
+                    "  · 현장조사 탭에서 검측위치를 찍으세요."))
+        if o["mode"] != "blank":
+            self.log("축척이 다르면 현장조사 › 📏 축척 맞추기로 아는 길이 두 점을 찍어 맞추세요.")
+
+    def calibrate_scale(self):
+        if not self.res:
+            messagebox.showinfo("축척 맞추기", "먼저 조사 도면을 여세요.", parent=self.root)
+            return
+        if getattr(self.res, "kind", "") not in ("photo", "blank"):
+            if not messagebox.askyesno("축척 맞추기", "DXF에서 분석한 도면은 이미 실제 치수입니다.\n그래도 축척을 바꿀까요?",
+                                       parent=self.root):
+                return
+        self._calib = []
+        self.status.config(text="📏 축척 맞추기: 길이를 아는 두 점(예: 그리드 간격·기둥 중심)을 차례로 클릭하세요. (Esc 취소)")
+        self.log("축척 맞추기: 두 점을 클릭하세요.")
+
+    def _calib_click(self, x, y):
+        self._calib.append((x, y))
+        r = 6
+        sx, sy = self.w2s(x, y)
+        self.cv.create_oval(sx - r, sy - r, sx + r, sy + r, outline=TH.ORANGE, width=3, tags="calib")
+        if len(self._calib) < 2:
+            return
+        (ax, ay), (bx, by) = self._calib
+        self._calib = None
+        self.cv.create_line(*self.w2s(ax, ay), *self.w2s(bx, by), fill=TH.ORANGE, width=3, tags="calib")
+        cur = math.hypot(bx - ax, by - ay)
+        if cur < 1e-6:
+            self.redraw()
+            return
+        v = simpledialog.askfloat("축척 맞추기", f"두 점 사이 실제 길이 (m)\n(지금 도면상 {cur / 1000:.3f} m)",
+                                  parent=self.root, minvalue=0.001)
+        if not v:
+            self.redraw()
+            self.status.config(text="축척 맞추기 취소")
+            return
+        f = v * 1000 / cur
+        SH.rescale(self.res, f, ax, ay)
+        self.osnap = OSnap(self.res.background + self.res.grid)
+        self._grid_intersections()
+        self._set_dirty(True)
+        self.s /= f
+        self.ox, self.oy = ax - (ax - self.ox) * f, ay - (ay - self.oy) * f
+        self.redraw()
+        self.undo_stack.clear(); self.redo_stack.clear()
+        self.log(f"축척 맞춤: ×{f:.4f} (두 점 = {v:g} m). 저장하려면 Ctrl+S · 되돌리려면 다시 축척 맞추기")
+        self.status.config(text=f"축척을 맞췄습니다 (×{f:.3f}).")
+
     # ======================================================================= DB
+    def _ctrl_s(self, event=None, as_new=False):
+        """Ctrl+S — 입력 중인 현장조사 항목을 먼저 확정하고 DB에 저장."""
+        if self.busy:
+            return "break"
+        if getattr(self, "_sv_edit", None) is not None:
+            try:
+                self._sv_save_edit()
+            except Exception as e:      # noqa: BLE001
+                self.log(f"현장조사 입력 저장 실패: {e}")
+        if self.res is None:
+            self.status.config(text="저장할 분석이 없습니다.")
+            return "break"
+        if self.save_db(as_new=as_new):
+            self._flash_saved()
+        return "break"
+
+    def _flash_saved(self):
+        try:
+            self.hd_doc.config(text="✔ 저장했습니다  (Ctrl+S)", fg=TH.ORANGE)
+            self.root.after(1500, lambda: (self.hd_doc.config(fg="#C9D3E4"), self._set_dirty(False)))
+        except (tk.TclError, AttributeError):
+            pass
+
     def save_db(self, as_new=False):
         if not self.res:
             messagebox.showinfo("저장", "저장할 분석이 없습니다.", parent=self.root)
@@ -1106,6 +1294,8 @@ class CadAnalysisApp:
     def _draw_result(self):
         cv = self.cv
         x0, y0, x1, y1 = self._view_box()
+        if getattr(self.res, "bg_image", "") and self.show_photo.get():
+            self._bgimg.draw(cv, self.res, self.w2s, (x0, y0, x1, y1), cv.winfo_width(), cv.winfo_height())
 
         def vis(xa, ya, xb, yb):
             return not (max(xa, xb) < x0 or min(xa, xb) > x1 or max(ya, yb) < y0 or min(ya, yb) > y1)
@@ -1698,6 +1888,9 @@ class CadAnalysisApp:
         if self.mode != "result":
             return
         x, y = self.s2w(sx, sy)
+        if self._calib is not None:
+            self._calib_click(x, y)
+            return
         if self._survey_tab() and not self.pick_origin:
             self._survey_click(x, y)
             return
@@ -1765,6 +1958,10 @@ class CadAnalysisApp:
         self.select(m)
 
     def _esc(self, _e=None):
+        if self._calib is not None:
+            self._calib = None
+            self.cv.delete("calib")
+            self.status.config(text="축척 맞추기 취소")
         if self._sv_start:
             self._sv_start = None
             self._snap = None
@@ -2931,6 +3128,9 @@ class CadAnalysisApp:
                             f"추가 {rep['added']} · 수정 {rep['updated']} · 삭제 {rep['deleted']} · 그대로 {rep['kept']}\n"
                             f"사진 {rep['photos']}장" + (f"\n번호 겹침으로 바뀐 번호 {rep['renumbered']}건 (추가사항에 기록)"
                                                        if rep["renumbered"] else "")
+                            + (f"\n휴대폰에서 새로 만든 도면 {rep['new_sheets']}장 추가 (DB에서 불러오기로 여세요)"
+                               if rep.get("new_sheets") else "")
+                            + (f"\n스케치 {rep['sketches']}건" if rep.get("sketches") else "")
                             + (f"\n\nPC DB에 없는 도면: {', '.join(rep['missing'])}" if rep["missing"] else ""),
                             parent=self.root)
 
@@ -3066,6 +3266,7 @@ class CadAnalysisApp:
         acts.pack(fill="x")
         for i, (t, d, cmd, acc) in enumerate((
                 ("📂  DXF / DWG 열기", "평면도를 열고 분석할 영역을 고릅니다", self.open_file, True),
+                ("📷  도면 없이 조사", "빈 도면·사진 배경·종이 도면 사진 인식", self.new_field_sheet, False),
                 ("📁  DB에서 불러오기", "저장한 분석·현장조사를 이어서 합니다", self.open_db, False),
                 ("📖  사용법", "처음 쓰신다면 흐름을 확인하세요", self.help_usage, False))):
             c = tk.Frame(acts, bg=TH.PANEL)

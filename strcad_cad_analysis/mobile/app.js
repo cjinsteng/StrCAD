@@ -102,6 +102,7 @@ async function openBytes(bytes, name) {
   S.sheets = q("SELECT id, analysis_id, seq, name FROM sheets ORDER BY seq, id");
   run("CREATE TABLE IF NOT EXISTS orig (uid TEXT PRIMARY KEY, path TEXT, dir TEXT, size INTEGER, sent INTEGER DEFAULT 0)");
   run("CREATE TABLE IF NOT EXISTS sketches (uid TEXT PRIMARY KEY, sheet_id INTEGER, updated TEXT, deleted INTEGER DEFAULT 0, data TEXT)");
+  run("CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, kind TEXT, image BLOB, mime TEXT, iw INTEGER, ih INTEGER, rect TEXT)");
   S.photoURL.forEach((u) => URL.revokeObjectURL(u)); S.photoURL.clear();
   $("#proj").textContent = meta.project || "(프로젝트)";
   $("#welcome").classList.remove("show");
@@ -112,6 +113,33 @@ async function openBytes(bytes, name) {
   toast(`${meta.project || ""} — 도면 ${S.sheets.length}장`);
 }
 
+// ---- DXF 없이 만든 도면(빈 도면·사진): 배경 이미지
+function loadSheetImage(sh) {
+  sh.extKind = ""; sh.img = null;
+  let r = null;
+  try { r = q("SELECT suid, kind, image, mime, rect FROM sheet_ext WHERE sheet_id=?", [sh.id])[0]; } catch (e) { r = null; }
+  if (!r) return;
+  sh.extKind = r.kind || "photo"; sh.suid = r.suid;
+  if (!r.image) return;
+  const rect = r.rect ? JSON.parse(r.rect) : [sh.origin.ox, sh.origin.oy, sh.origin.ox + sh.ext.w, sh.origin.oy + sh.ext.h];
+  sh.imgRect = [rect[0] - sh.origin.ox, rect[1] - sh.origin.oy, rect[2] - sh.origin.ox, rect[3] - sh.origin.oy];
+  const url = URL.createObjectURL(new Blob([r.image], { type: r.mime || "image/jpeg" }));
+  const im = new Image();
+  im.onload = () => { if (S.sheet === sh) { sh.img = im; draw(); } };
+  im.src = url;
+}
+function drawSheetImage(sh) {
+  const im = sh.img; if (!im) return;
+  const [x0, y0, x1, y1] = sh.imgRect, iw = im.naturalWidth, ih = im.naturalHeight;
+  const a = w2s(x0, y1), b = w2s(x1, y0);             // 화면에서 이미지 왼쪽위 · 오른쪽아래
+  const kx = iw / (b[0] - a[0]), ky = ih / (b[1] - a[1]);
+  const vx0 = Math.max(0, a[0]), vy0 = Math.max(0, a[1]), vx1 = Math.min(VW, b[0]), vy1 = Math.min(VH, b[1]);
+  if (vx1 <= vx0 || vy1 <= vy0) return;
+  ctx.save(); ctx.globalAlpha = 0.9;
+  ctx.drawImage(im, (vx0 - a[0]) * kx, (vy0 - a[1]) * ky, (vx1 - vx0) * kx, (vy1 - vy0) * ky, vx0, vy0, vx1 - vx0, vy1 - vy0);
+  ctx.restore();
+}
+
 function loadSheet(i) {
   if (!guardEdit()) return;
   S.sheetIdx = Math.max(0, Math.min(S.sheets.length - 1, i));
@@ -120,6 +148,7 @@ function loadSheet(i) {
     members: JSON.parse(row.members), bg: JSON.parse(row.background), grid: JSON.parse(row.grid) };
   sh.byId = new Map(sh.members.map((m) => [m.i, m]));
   S.sheet = sh; S.sel = null; S.edit = null; S.spanStart = null;
+  loadSheetImage(sh);
   loadRecs();
   if (window.SK) SK.load();
   $("#pgLbl").textContent = `${S.sheetIdx + 1}/${S.sheets.length}`;
@@ -369,6 +398,7 @@ function draw() {
   ctx.clearRect(0, 0, r.width, r.height);
   if (!S.sheet) return;
   const sh = S.sheet;
+  drawSheetImage(sh);
   ctx.lineWidth = 1;
   ctx.strokeStyle = "#a5d8e6"; ctx.setLineDash([6, 3]); ctx.beginPath();
   for (let i = 0; i < sh.grid.length; i += 4) line(sh.grid, i);
@@ -410,6 +440,7 @@ function draw() {
   for (const rec of S.recs) drawRec(rec, cur && rec.uid === cur.uid ? (S.edit || rec) : rec, cur && rec.uid === cur.uid);
   if (S.edit && !S.recs.some((r) => r.uid === S.edit.uid)) drawRec(S.edit, S.edit, true);
   if (S.spanStart) { const a = w2s(...S.spanStart.p); ctx.fillStyle = purposeColor(S.purpose); ctx.beginPath(); ctx.arc(a[0], a[1], 7, 0, 7); ctx.fill(); }
+  if (window.NS) NS.drawCalib();
 }
 function drawRec(_r, rec, hl) {
   const col = purposeColor(rec.purpose), g = geom(rec);
@@ -488,6 +519,7 @@ function editTarget(rec) { return S.edit && S.edit.uid === rec.uid ? S.edit : re
 
 function tap(x, y) {
   if (!S.sheet) return;
+  if (window.NS && NS.tapCalib(x, y)) return;
   const hit = bubbleHit(x, y);
   if (hit && !S.spanStart) { selectRec(hit.uid); return; }
   if (S.mode === "view") { if (!guardEdit()) return; S.sel = null; closePanel(); draw(); renderList(); return; }
@@ -516,7 +548,7 @@ function newRec(m, t0, t1, p, dxy) {
   saveRec(rec);
   S.sel = rec; S.edit = JSON.parse(JSON.stringify(rec));
   openPanel(); renderForm(); renderList(); draw();
-  if (!m) toast("부재가 없는 위치 — 좌표만 기록합니다");
+  if (!m && S.sheet.members.length) toast("부재가 없는 위치 — 좌표만 기록합니다");
 }
 
 // ======================================================================= selection / panel

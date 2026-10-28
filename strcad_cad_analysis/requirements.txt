@@ -1,4 +1,7 @@
 ezdxf>=1.1
-# 선택(있으면 기능이 켜짐)
-tkinterdnd2      # 사진 끌어다 놓기
-pillow           # 사진 썸네일
+pillow
+tkinterdnd2
+openpyxl
+numpy
+opencv-python-headless   # 종이 도면 사진 인식 (원근 보정·선/사각형 찾기)
+rapidocr_onnxruntime     # 사진 속 부재명 글자 읽기

@@ -6,6 +6,7 @@ Package layout
   surveys(uid, sheet_id, updated, deleted, rec)  — one row per 검측위치, rec = full record JSON
   photos(uid, survey_uid, name, mime, data, created) — photo files as BLOBs
   sketches(uid, sheet_id, updated, deleted, data) — 현장 스케치 (보·기둥·자유선·글자), data = JSON (도면 절대좌표)
+  sheet_ext(sheet_id, suid, kind, image, mime, iw, ih, rect) — DXF 없이 만든 도면(빈 도면·사진): 배경 이미지와 고유값
 
 The PC exports a project (all saved floors), the phone app edits the same file
 (adds/edits/deletes records, takes photos) and the PC imports it back:
@@ -39,6 +40,8 @@ CREATE TABLE IF NOT EXISTS photos (uid TEXT PRIMARY KEY, survey_uid TEXT, name T
     created TEXT);
 CREATE TABLE IF NOT EXISTS sketches (uid TEXT PRIMARY KEY, sheet_id INTEGER, updated TEXT, deleted INTEGER DEFAULT 0,
     data TEXT);
+CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, kind TEXT, image BLOB, mime TEXT,
+    iw INTEGER, ih INTEGER, rect TEXT);
 """
 KIND_CODE = {"column": "c", "girder": "g", "beam": "b", "wall": "w"}
 
@@ -83,6 +86,80 @@ def _sheet_geometry(res):
     return {"ox": ox, "oy": oy}, {"w": round(x1 - x0), "h": round(y1 - y0)}, mem, bg, gr
 
 
+def _write_sheet_ext(con, k, res):
+    """빈 도면·사진 도면이면 배경 이미지(축소본)와 고유값을 함께 보냄."""
+    kind = getattr(res, "kind", "")
+    if kind not in ("photo", "blank") and not getattr(res, "bg_image", ""):
+        return
+    if not getattr(res, "sheet_uid", ""):
+        from .sheets import new_uid
+        res.sheet_uid = new_uid()
+    blob, iw, ih = None, 0, 0
+    p = getattr(res, "bg_image", "")
+    if p and os.path.exists(p):
+        try:
+            import io
+            from PIL import Image
+            im = Image.open(p).convert("RGB")
+            iw, ih = im.size
+            kk = min(1.0, 2400 / max(iw, ih))
+            if kk < 1:
+                im = im.resize((round(iw * kk), round(ih * kk)), Image.LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, "JPEG", quality=82)
+            blob = buf.getvalue()
+            iw, ih = im.size
+        except Exception:  # noqa: BLE001
+            blob = None
+    con.execute("INSERT OR REPLACE INTO sheet_ext VALUES (?,?,?,?,?,?,?,?)",
+                (k, res.sheet_uid, kind or "photo", blob, "image/jpeg" if blob else None, iw, ih,
+                 json.dumps(list(res.bg_rect)) if getattr(res, "bg_rect", None) else None))
+
+
+def _sheet_from_package(con, sid, row, project, log):
+    """휴대폰에서 만든 도면(빈 도면·사진) → PC 분석으로 새로 만들거나 이미 있는 것(같은 고유값)을 찾음. → aid"""
+    from .model import AnalysisResult, Segment
+    from .sheets import SHEET_DIR
+    try:
+        ext = con.execute("SELECT suid, kind, image, rect FROM sheet_ext WHERE sheet_id=?", (sid,)).fetchone()
+    except sqlite3.OperationalError:
+        ext = None
+    if not ext:
+        return None, False
+    suid, kind, image, rect = ext
+    for r in db.list_analyses():
+        try:
+            _n, res0, _cs = db.load(r[0])
+        except Exception:  # noqa: BLE001
+            continue
+        if getattr(res0, "sheet_uid", "") == suid:
+            return r[0], False
+    name, origin, extents, bg, grid = row
+    o = json.loads(origin or '{"ox":0,"oy":0}')
+    e = json.loads(extents or '{"w":30000,"h":20000}')
+    ox, oy = o.get("ox", 0), o.get("oy", 0)
+    res = AnalysisResult(extents=(ox, oy, ox + e["w"], oy + e["h"]), kind=kind or "photo", source_file="")
+
+    def segs(flat, layer):
+        flat = json.loads(flat or "[]")
+        return [Segment(flat[i] + ox, flat[i + 1] + oy, flat[i + 2] + ox, flat[i + 3] + oy, layer)
+                for i in range(0, len(flat) - 3, 4)]
+    res.background = segs(bg, "blank")
+    res.grid = segs(grid, "grid")
+    res.sheet_uid = suid
+    if image:
+        os.makedirs(SHEET_DIR, exist_ok=True)
+        p = os.path.join(SHEET_DIR, f"{suid}.jpg")
+        with open(p, "wb") as f:
+            f.write(image)
+        res.bg_image = p
+        r = json.loads(rect) if rect else [0, 0, e["w"], e["h"]]
+        res.bg_rect = tuple(r)
+    aid = db.save(res, None, name, None, project=project)
+    log(f"휴대폰에서 만든 도면 '{name}'을(를) 새 분석으로 추가 (id {aid})")
+    return aid, True
+
+
 def export_package(path, project, cfg, sheet_ids=None, log=print):
     """Write all saved floors of `project` (or the given analysis ids) to a .strsv file."""
     if sheet_ids is None:
@@ -106,6 +183,7 @@ def export_package(path, project, cfg, sheet_ids=None, log=print):
                     (k, aid, mt[2] if mt else k, name, json.dumps(origin), json.dumps(ext),
                      json.dumps(mem, ensure_ascii=False, separators=(",", ":")),
                      json.dumps(bg, separators=(",", ":")), json.dumps(gr, separators=(",", ":"))))
+        _write_sheet_ext(con, k, res)
         stamped = False
         for r in res.surveys:
             if "uid" not in r or "updated" not in r:
@@ -254,12 +332,22 @@ def import_package(path, cfg, log=print, originals_dir="auto"):
     report = {"sheets": 0, "added": 0, "updated": 0, "deleted": 0, "kept": 0, "photos": 0, "renumbered": 0,
               "missing": [], "originals": 0, "sketches": 0}
     photos = {u: (n, d) for u, n, d in con.execute("SELECT uid, name, data FROM photos")}
-    for sid, aid, name in con.execute("SELECT id, analysis_id, name FROM sheets ORDER BY seq").fetchall():
-        try:
+    rows = con.execute("SELECT id, analysis_id, name, origin, extents, background, grid FROM sheets ORDER BY seq").fetchall()
+    for sid, aid, name, origin, extents, bgj, gridj in rows:
+        lname = None
+        if aid is not None:
+            try:
+                lname, res, cs = db.load(aid)
+            except KeyError:
+                lname = None
+        if lname is None:
+            aid, created = _sheet_from_package(con, sid, (name, origin, extents, bgj, gridj), project, log)
+            if aid is None:
+                report["missing"].append(name)
+                continue
+            if created:
+                report["new_sheets"] = report.get("new_sheets", 0) + 1
             lname, res, cs = db.load(aid)
-        except KeyError:
-            report["missing"].append(name)
-            continue
         mt = db.meta(aid)
         folder = SV.photo_folder(cfg, mt[1] if mt else project, lname)
         local = {}

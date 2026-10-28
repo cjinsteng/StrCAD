@@ -80,6 +80,9 @@ def result_to_dict(res: AnalysisResult, cs: CoordSystem | None):
         "surveys": res.surveys,
         "sketches": res.sketches,
         "kind": getattr(res, "kind", "struct"),
+        "bg_image": getattr(res, "bg_image", ""),
+        "bg_rect": getattr(res, "bg_rect", None),
+        "sheet_uid": getattr(res, "sheet_uid", ""),
         "schedule": getattr(res, "schedule", []),
     }
 
@@ -105,6 +108,9 @@ def result_from_dict(d):
     res.surveys = list(d.get("surveys", []))
     res.sketches = list(d.get("sketches", []))
     res.schedule = list(d.get("schedule", []))
+    res.bg_image = d.get("bg_image", "") or ""
+    res.bg_rect = _tup(d.get("bg_rect"))
+    res.sheet_uid = d.get("sheet_uid", "") or ""
     c = d.get("cs")
     cs = CoordSystem(c["x0"], c["y0"], c["rot_deg"]) if c else CoordSystem()
     return res, cs

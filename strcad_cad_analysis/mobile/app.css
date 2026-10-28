@@ -239,3 +239,15 @@ body.sketching #cv { cursor: crosshair; }
 .seg { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
 .seg::-webkit-scrollbar { display: none; }
 .seg button { white-space: nowrap; flex: none; }
+
+/* new sheet (no DXF) */
+.bigbtn.navy { background: var(--navy); }
+.ns-in { width: 100%; font-size: 16px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; margin: 4px 0; }
+.ns-in:focus { outline: 2px solid var(--orange); border-color: var(--orange); }
+.ns-row { display: flex; gap: 8px; align-items: center; }
+.ns-row .ns-in { flex: 1; }
+.ns-box { margin-top: 8px; }
+.ns-prev { margin: 8px 0; min-height: 60px; border: 1px dashed var(--line); border-radius: 8px; display: flex; align-items: center;
+  justify-content: center; color: var(--muted); overflow: hidden; }
+.ns-prev img { max-width: 100%; max-height: 180px; display: block; }
+.ns-lab { font-size: 12px; color: var(--navy); font-weight: 700; margin: 8px 0 0; }

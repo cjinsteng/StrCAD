@@ -425,3 +425,185 @@ class AboutDialog(tk.Toplevel):
         tk.Label(bf, text=TH.COPYRIGHT, bg=TH.PANEL, fg=TH.NAVY_L, font=TH.FONT_S).pack(side="left")
         ttk.Button(bf, text="닫기", style="Navy.TButton", command=self.destroy).pack(side="right")
         self.bind("<Escape>", lambda e: self.destroy())
+
+
+# ============================================================================
+class NewSheetDialog(tk.Toplevel):
+    """도면 없이 현장조사 — 빈 도면 / 사진·이미지 배경 / 종이 도면 사진 인식."""
+    PAPERS = ("A0", "A1", "A2", "A3", "A4")
+    SCALES = ("50", "100", "150", "200", "300", "500")
+
+    def __init__(self, master, project, on_ok, mode="blank", path=""):
+        super().__init__(master)
+        self.title("새 조사 도면 (DXF 없이)")
+        self.transient(master)
+        self.resizable(False, False)
+        self.configure(bg=TH.PANEL)
+        self.on_ok = on_ok
+        f = ttk.Frame(self, padding=16, style="Card.TFrame")
+        f.pack(fill="both")
+        r = 0
+        ttk.Label(f, text="프로젝트(건물·과업)", style="Card.TLabel").grid(row=r, column=0, sticky="w", pady=3)
+        self.p = tk.StringVar(value=project)
+        ttk.Combobox(f, textvariable=self.p, values=db.projects(), width=30).grid(row=r, column=1, sticky="w")
+        r += 1
+        ttk.Label(f, text="도면(층) 이름", style="Card.TLabel").grid(row=r, column=0, sticky="w", pady=3)
+        self.n = tk.StringVar(value="1F")
+        ttk.Entry(f, textvariable=self.n, width=32).grid(row=r, column=1, sticky="w")
+        r += 1
+        ttk.Separator(f).grid(row=r, column=0, columnspan=2, sticky="ew", pady=10)
+        r += 1
+        self.mode = tk.StringVar(value=mode)
+        modes = (("blank", "빈 도면 (격자)", "도면이 전혀 없을 때 — 격자 위에 검측위치·스케치를 기록"),
+                 ("photo", "사진·이미지를 배경으로", "도면 사진/스캔/캡처를 깔고 그 위에 검측위치 기록"),
+                 ("recognize", "종이 도면 사진 → 부재 인식", "사진에서 기둥·보·벽과 부재명(G1, C1 …)을 찾아 후보로 만듦"))
+        for k, t, d in modes:
+            ttk.Radiobutton(f, text=t, value=k, variable=self.mode, command=self._mode).grid(
+                row=r, column=0, columnspan=2, sticky="w")
+            ttk.Label(f, text="     " + d, foreground=TH.MUTED, font=TH.FONT_S, style="Card.TLabel").grid(
+                row=r + 1, column=0, columnspan=2, sticky="w")
+            r += 2
+        ttk.Separator(f).grid(row=r, column=0, columnspan=2, sticky="ew", pady=10)
+        r += 1
+        # blank size
+        self.fb = ttk.Frame(f, style="Card.TFrame")
+        self.fb.grid(row=r, column=0, columnspan=2, sticky="w")
+        ttk.Label(self.fb, text="크기  가로", style="Card.TLabel").pack(side="left")
+        self.bw = tk.StringVar(value="30")
+        ttk.Entry(self.fb, textvariable=self.bw, width=6).pack(side="left", padx=4)
+        ttk.Label(self.fb, text="m   세로", style="Card.TLabel").pack(side="left")
+        self.bh = tk.StringVar(value="20")
+        ttk.Entry(self.fb, textvariable=self.bh, width=6).pack(side="left", padx=4)
+        ttk.Label(self.fb, text="m", style="Card.TLabel").pack(side="left")
+        # photo
+        self.fp = ttk.Frame(f, style="Card.TFrame")
+        self.fp.grid(row=r + 1, column=0, columnspan=2, sticky="w")
+        pr = ttk.Frame(self.fp, style="Card.TFrame")
+        pr.pack(fill="x")
+        self.path = tk.StringVar(value=path)
+        ttk.Entry(pr, textvariable=self.path, width=36).pack(side="left")
+        ttk.Button(pr, text="사진 선택…", command=self._pick).pack(side="left", padx=6)
+        sr = ttk.Frame(self.fp, style="Card.TFrame")
+        sr.pack(fill="x", pady=(8, 0))
+        ttk.Label(sr, text="용지", style="Card.TLabel").pack(side="left")
+        self.paper = tk.StringVar(value="A3")
+        ttk.Combobox(sr, textvariable=self.paper, values=self.PAPERS, width=5, state="readonly").pack(side="left", padx=4)
+        ttk.Label(sr, text="  축척 1 /", style="Card.TLabel").pack(side="left")
+        self.scale = tk.StringVar(value="200")
+        ttk.Combobox(sr, textvariable=self.scale, values=self.SCALES, width=6).pack(side="left", padx=4)
+        self.warp = tk.BooleanVar(value=True)
+        ttk.Checkbutton(self.fp, text="용지 모서리 맞춰 반듯하게 펴기 (비스듬히 찍은 사진)", variable=self.warp).pack(
+            anchor="w", pady=(6, 0))
+        ttk.Label(self.fp, text="축척을 모르면 그대로 두고, 나중에 현장조사 › 📏 축척 맞추기로 아는 길이 두 점을 찍어 맞추세요.",
+                  foreground=TH.MUTED, font=TH.FONT_S, style="Card.TLabel", wraplength=420).pack(anchor="w", pady=(4, 0))
+        b = ttk.Frame(f, style="Card.TFrame")
+        b.grid(row=r + 2, column=0, columnspan=2, sticky="e", pady=(14, 0))
+        ttk.Button(b, text="취소", command=self.destroy).pack(side="left", padx=4)
+        ttk.Button(b, text="만들기", style="Accent.TButton", command=self._ok).pack(side="left")
+        self._mode()
+        self.bind("<Return>", lambda e: self._ok())
+        self.grab_set()
+
+    def _mode(self):
+        if self.mode.get() == "blank":
+            self.fp.grid_remove(); self.fb.grid()
+        else:
+            self.fb.grid_remove(); self.fp.grid()
+
+    def _pick(self):
+        from tkinter import filedialog
+        p = filedialog.askopenfilename(parent=self, title="도면 사진·이미지",
+                                       filetypes=[("이미지", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp *.heic"),
+                                                  ("모든 파일", "*.*")])
+        if p:
+            self.path.set(p)
+            if not self.n.get().strip() or self.n.get() == "1F":
+                self.n.set(os.path.splitext(os.path.basename(p))[0][:30])
+
+    def _ok(self):
+        name = self.n.get().strip()
+        if not name:
+            messagebox.showwarning("새 조사 도면", "도면(층) 이름을 입력하세요.", parent=self)
+            return
+        out = {"project": self.p.get().strip(), "name": name, "mode": self.mode.get()}
+        try:
+            if out["mode"] == "blank":
+                out["w"], out["h"] = float(self.bw.get()), float(self.bh.get())
+                if not (1 <= out["w"] <= 2000 and 1 <= out["h"] <= 2000):
+                    raise ValueError
+            else:
+                if not os.path.exists(self.path.get()):
+                    messagebox.showwarning("새 조사 도면", "사진 파일을 선택하세요.", parent=self)
+                    return
+                out["path"] = self.path.get()
+                out["paper"] = self.paper.get()
+                out["scale"] = float(self.scale.get())
+                out["warp"] = self.warp.get()
+        except ValueError:
+            messagebox.showwarning("새 조사 도면", "크기·축척은 숫자로 입력하세요.", parent=self)
+            return
+        self.destroy()
+        self.on_ok(out)
+
+
+# ============================================================================
+class CornerDialog(tk.Toplevel):
+    """사진에서 용지 네 모서리 맞추기 (자동으로 찾은 점을 끌어서 조정)."""
+
+    def __init__(self, master, pil_img, corners, on_ok):
+        super().__init__(master)
+        self.title("용지 모서리 맞추기 — 네 점을 용지(도면) 모서리로 끌어 놓으세요")
+        self.transient(master)
+        self.configure(bg=TH.SURFACE)
+        self.on_ok = on_ok
+        from PIL import ImageTk
+        W0, H0 = pil_img.size
+        sw, sh = self.winfo_screenwidth() - 160, self.winfo_screenheight() - 220
+        self.k = min(sw / W0, sh / H0, 1.0)
+        im = pil_img.resize((max(1, int(W0 * self.k)), max(1, int(H0 * self.k))))
+        self.photo = ImageTk.PhotoImage(im)
+        self.cv = tk.Canvas(self, width=im.size[0], height=im.size[1], highlightthickness=0, bg="#333")
+        self.cv.pack(padx=8, pady=8)
+        self.cv.create_image(0, 0, image=self.photo, anchor="nw")
+        self.pts = [[x * self.k, y * self.k] for x, y in corners]
+        self.drag = None
+        self.cv.bind("<Button-1>", self._down)
+        self.cv.bind("<B1-Motion>", self._move)
+        self.cv.bind("<ButtonRelease-1>", lambda e: setattr(self, "drag", None))
+        b = ttk.Frame(self)
+        b.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Label(b, text="주황 점 = 용지 모서리 (왼쪽 위부터). 사진 전체를 쓰려면 [사진 전체].").pack(side="left")
+        ttk.Button(b, text="확인", style="Accent.TButton", command=self._ok).pack(side="right")
+        ttk.Button(b, text="사진 전체", command=self._full).pack(side="right", padx=6)
+        ttk.Button(b, text="취소", command=self.destroy).pack(side="right")
+        self._W, self._H = im.size
+        self._draw()
+        self.grab_set()
+
+    def _draw(self):
+        self.cv.delete("ov")
+        flat = [c for p in self.pts for c in p]
+        self.cv.create_polygon(*flat, outline=TH.ORANGE, fill="", width=3, tags="ov")
+        for i, (x, y) in enumerate(self.pts):
+            self.cv.create_oval(x - 9, y - 9, x + 9, y + 9, fill=TH.ORANGE, outline="white", width=2, tags="ov")
+            self.cv.create_text(x + 14, y - 12, text="①②③④"[i], fill=TH.ORANGE, font=TH.FONT_L, tags="ov")
+
+    def _down(self, e):
+        d = [(abs(e.x - x) + abs(e.y - y), i) for i, (x, y) in enumerate(self.pts)]
+        dist, i = min(d)
+        self.drag = i if dist < 40 else None
+
+    def _move(self, e):
+        if self.drag is None:
+            return
+        self.pts[self.drag] = [min(max(e.x, 0), self._W), min(max(e.y, 0), self._H)]
+        self._draw()
+
+    def _full(self):
+        self.pts = [[0, 0], [self._W, 0], [self._W, self._H], [0, self._H]]
+        self._draw()
+
+    def _ok(self):
+        pts = [(x / self.k, y / self.k) for x, y in self.pts]
+        self.destroy()
+        self.on_ok(pts)
