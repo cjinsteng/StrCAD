@@ -260,20 +260,50 @@ def _replace_head_number(text, old, new):
     return text[:i] + new + text[i + len(old):]
 
 
+def chapter_of(sec):
+    """절이 속한 장(Section, level 0). 없으면 None"""
+    while sec is not None and sec.level > 0:
+        sec = sec.parent
+    return sec if sec is not None and sec.level == 0 and sec.number else None
+
+
+RE_CH_NUM = re.compile(r"(제\s*)(\d+)(\s*장)")
+
+
 def check_numbering(rep, doc):
     issues = []
     roots = rep.roots.get(doc.key, [])
-    chap = next((s for s in roots if s.level == 0 and s.number), None)
-    N = chap.number if chap else None
 
-    # 1) 절 번호
+    # 1) 장 번호 순서 (같은 편 안에서 1,2,3… — 첫 장 번호부터 이어지는지)
+    chap_exp = {}                     # 장 → 올바른 장 번호 (하위 절은 이 번호 기준으로 검사)
+
+    def check_chapters(siblings):
+        chaps = [c for c in siblings if c.level == 0 and c.number.isdigit()]
+        if len(chaps) < 2:
+            return
+        start = int(chaps[0].number)
+        for i, c in enumerate(chaps):
+            exp = str(start + i)
+            chap_exp[id(c)] = exp
+            if c.number != exp:
+                text = rep.text(c.para) if c.para else ""
+                m = RE_CH_NUM.search(text)
+                fix = text[:m.start(2)] + exp + text[m.end(2):] if m else None
+                why = "번호 중복" if sum(1 for k in chaps if k.number == c.number) > 1 else "번호 순서"
+                issues.append(Issue("장 번호", c.para, f"'{c.label}' — 순서상 제{exp}장 이어야 합니다 ({why})", fix, "오류"))
+    check_chapters(roots)
+    for r in roots:
+        if r.level == -1:
+            check_chapters(r.children)
+
+    # 2) 절 번호 — 각 절이 속한 장 번호 기준
     def walk(sec):
-        kids = sec.children
+        kids = [c for c in sec.children if c.level > 0]
         for i, c in enumerate(kids):
-            if sec.number:
-                expected = f"{sec.number}.{i + 1}"
-            else:
-                expected = None
+            ch = chapter_of(c)
+            N = chap_exp.get(id(ch), ch.number) if ch else None
+            base = N if sec.level == 0 else sec.number
+            expected = f"{base}.{i + 1}" if (base and sec.level >= 0) else None
             cur = c.number
             text = rep.text(c.para) if c.para else ""
             if N and cur.split(".")[0] != N:
@@ -287,6 +317,7 @@ def check_numbering(rep, doc):
                 issues.append(Issue(why, c.para,
                                     f"'{cur} {c.title}' — 순서상 {expected} 이어야 합니다 ({why})",
                                     _replace_head_number(text, cur, expected), "오류"))
+        for c in sec.children:
             walk(c)
     for r in roots:
         walk(r)
@@ -326,16 +357,21 @@ def check_numbering(rep, doc):
                 else:
                     seq_circ = n
 
-    # 3) <그림 N.M>, <표 N.M>
+    # 3) <그림 N.M>, <표 N.M> — 문단이 속한 장 기준, 장이 바뀌면 번호 다시 시작
     last = {}
+    cur_ch = None
     for p in doc.paras:
+        ch = chapter_of(p.section)
+        if ch is not cur_ch:
+            cur_ch, last = ch, {}
+        N = ch.number if ch else None
         t = rep.text(p)
         for m in RE_CAPTION.finditer(t):
-            kind, ch, sep, no = m.group(1), m.group(2), m.group(3), int(m.group(4))
+            kind, chn, sep, no = m.group(1), m.group(2), m.group(3), int(m.group(4))
             label = m.group(0) + ">"
-            if N and ch != N:
+            if N and chn != N:
                 fix = t[:m.start(2)] + N + t[m.end(2):]
-                issues.append(Issue("캡션 번호", p, f"{label} — 제{N}장의 {kind}인데 장 번호가 {ch}입니다", fix, "오류"))
+                issues.append(Issue("캡션 번호", p, f"{label} — 제{N}장의 {kind}인데 장 번호가 {chn}입니다", fix, "오류"))
             prev = last.get(kind, 0)
             if no != prev + 1:
                 why = "중복" if no <= prev else "건너뜀"

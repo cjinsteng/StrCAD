@@ -335,6 +335,7 @@ def read_document(path, key=None):
 
 # ---------------------------------------------------------------- 제목(장/절) 인식
 
+RE_PART = re.compile(r"^\s*제\s*([ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+|[IVX]+|\d+)\s*편\s*(.*?)\s*$")
 RE_CHAPTER = re.compile(r"^\s*제\s*(\d+)\s*장\s*(.*?)\s*$")
 RE_NUMHEAD = re.compile(r"^\s*(\d{1,2}(?:\.\d{1,2}){1,3})\.?\s+([^\d\s].{0,60}?)\s*$")
 RE_TOC_TAIL = re.compile(r"[\t·….\s]*\d*\s*$")
@@ -358,6 +359,8 @@ class Section:
     def label(self):
         if not self.number:
             return self.title
+        if self.level == -1:
+            return f"제{self.number}편 {self.title}".strip()
         if self.level == 0:
             return f"제{self.number}장 {self.title}".strip()
         return f"{self.number} {self.title}".strip()
@@ -375,9 +378,12 @@ def heading_of(p):
     t = p.text.strip()
     if not t or len(t) > 70 or "\n" in t:
         return None
+    m = RE_PART.match(t)
+    if m:
+        return m.group(1), RE_TOC_TAIL.sub("", m.group(2).split("\t")[0]).strip(), -1
     m = RE_CHAPTER.match(t)
     if m:
-        return m.group(1), RE_TOC_TAIL.sub("", m.group(2)).strip(), 0
+        return m.group(1), RE_TOC_TAIL.sub("", m.group(2).split("\t")[0]).strip(), 0
     m = RE_NUMHEAD.match(t)
     if m:
         num = m.group(1)
@@ -397,9 +403,16 @@ def build_sections(doc):
             if h:
                 heads.append((bi, h))
 
-    # 목차(TOC) 제거: 같은 제목이 뒤에 다시 나오고, 다음 제목까지 내용이 없으면 목차로 본다
-    def norm(h):
-        return (h[0], re.sub(r"\s+", "", h[1]))
+    # 목차(TOC) 제거: 같은 편·장 안의 같은 제목이 뒤에 다시 나오고, 다음 제목까지 내용이 없으면 목차로 본다
+    # (편이 여러 개면 'Ⅰ편 4.1 개 요' 와 'Ⅱ편 4.1 개 요' 는 서로 다른 제목)
+    ctx_keys = []
+    part = chap = ""
+    for bi, h in heads:
+        if h[2] == -1:
+            part, chap = h[0], ""
+        elif h[2] == 0:
+            chap = h[0]
+        ctx_keys.append((part, chap if h[2] > 0 else "", h[0], re.sub(r"\s+", "", h[1])))
 
     def has_content(b0, b1):
         for k, obj in doc.blocks[b0 + 1:b1]:
@@ -412,7 +425,7 @@ def build_sections(doc):
     keep = []
     for idx, (bi, h) in enumerate(heads):
         nxt = heads[idx + 1][0] if idx + 1 < len(heads) else len(doc.blocks)
-        later = any(norm(h2) == norm(h) for _, h2 in heads[idx + 1:])
+        later = ctx_keys[idx] in ctx_keys[idx + 1:]
         if later and not has_content(bi, nxt):
             continue
         keep.append((bi, h))
