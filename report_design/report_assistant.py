@@ -573,6 +573,7 @@ class App:
         self.list_items = []
         self.sim_items = []
         self._quiet = False
+        self.mode = None
 
         root.title(APP_TITLE + (f"  ─  {username}" if username else ""))
         root.geometry("1500x900")
@@ -598,7 +599,7 @@ class App:
         self._build_header()
         self._build_toolbar()
         self._build_body()
-        self.status = tk.StringVar(value="'폴더 열기'로 보고서 장(章) 파일들이 있는 폴더를 선택하세요. (.hwp / .hwpx)")
+        self.status = tk.StringVar(value="'한글 열기'(분석·검토) 또는 'Word 열기'(작성·추가)로 보고서 장(章) 파일 폴더를 여세요.")
         ttk.Label(root, textvariable=self.status, anchor="w", style="Status.TLabel").pack(fill="x", side="bottom")
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -616,7 +617,9 @@ class App:
         tk.Label(hd, text="Report Design", bg=TH.NAVY, fg=TH.ORANGE, font=(self.font, 10, "bold")).pack(
             side="left", padx=(8, 0), pady=(5, 0))
         tk.Frame(hd, bg=TH.NAVY_3, width=1).pack(side="left", fill="y", padx=16, pady=11)
-        self.hd_doc = tk.Label(hd, text="보고서 폴더를 여세요", bg=TH.NAVY, fg="#C9D3E4", font=(self.font, 10))
+        self.hd_mode = tk.Label(hd, text="", bg=TH.NAVY_3, fg="white", font=(self.font, 9, "bold"), padx=6)
+        self.hd_doc = tk.Label(hd, text="'한글 열기' 또는 'Word 열기'로 보고서 폴더를 여세요", bg=TH.NAVY,
+                               fg="#C9D3E4", font=(self.font, 10))
         self.hd_doc.pack(side="left")
         tk.Label(hd, text=f"v{APP_VERSION}", bg=TH.NAVY, fg=TH.NAVY_L, font=(self.font, 8)).pack(side="right", padx=(6, 14))
         self.hd_ai = tk.Label(hd, text="", bg=TH.NAVY, fg=TH.NAVY_L, font=(self.font, 9), cursor="hand2")
@@ -642,16 +645,18 @@ class App:
         rb.pack(fill="x")
         home = ttk.Frame(rb, padding=(6, 6))
         rb.add(home, text="  홈  ")
-        g = self._grp(home, "보고서")
-        self._big(g, "📂\n폴더 열기", self.open_folder, accent=True)
+        g = self._grp(home, "보고서 열기")
+        self.btn_open_hwp = self._big(g, "📂\n한글 열기", lambda: self.open_folder("hwp"))
+        self.btn_open_word = self._big(g, "📂\nWord 열기", lambda: self.open_folder("word"))
         self._big(g, "＋\n파일 추가", self.add_files)
         self._big(g, "⟳\n다시 읽기", self.reload_all)
-        self._big(g, "⇄\n한글→\nWord 변환", self.convert_hwp_to_word)
+        self.btn_convert = self._big(g, "⇄\n한글→\nWord 변환", self.convert_hwp_to_word)
         g = self._grp(home, "추가 (Word)")
-        self._big(g, "§\n새 절", lambda: self.ui_add_section(self._target_sec(), "after"))
-        self._big(g, "§›\n하위 절", lambda: self.ui_add_section(self._target_sec(), "child"))
-        self._big(g, "▦\n표", lambda: self.ui_add_table(self._target_para(), self._target_sec()))
-        self._big(g, "🖼\n사진", lambda: self.ui_add_picture(self._target_para(), self._target_sec()))
+        self.word_btns = [
+            self._big(g, "§\n새 절", lambda: self.ui_add_section(self._target_sec(), "after")),
+            self._big(g, "§›\n하위 절", lambda: self.ui_add_section(self._target_sec(), "child")),
+            self._big(g, "▦\n표", lambda: self.ui_add_table(self._target_para(), self._target_sec())),
+            self._big(g, "🖼\n사진", lambda: self.ui_add_picture(self._target_para(), self._target_sec()))]
         g = self._grp(home, "검사")
         self._big(g, "#\n번호 검사", self.run_numbering)
         self._big(g, "≒\n반복 문단\n불일치", self.run_inconsistency, 10)
@@ -896,30 +901,79 @@ class App:
         ttk.Button(bf, text="✔ 한글 파일에 반영", style="Accent.TButton", command=self.apply_to_hwp).pack(side="right")
 
     # ------------------------------------------------------------ 파일
-    def open_folder(self):
-        d = filedialog.askdirectory(title="보고서 장 파일들이 있는 폴더")
+    MODE_EXT = {"hwp": (".hwp", ".hwpx"), "word": (".docx",)}
+    MODE_NAME = {"hwp": "한글", "word": "Word"}
+
+    def open_folder(self, mode="word"):
+        """한글 열기 / Word 열기 — 작업을 형식별로 나눔 (한 번에 한 형식만)"""
+        name = self.MODE_NAME[mode]
+        d = filedialog.askdirectory(title=f"{name} 보고서 장 파일들이 있는 폴더")
         if not d:
             return
-        files = []
-        for nm in sorted(os.listdir(d)):
-            if nm.startswith(("~", ".")) or not nm.lower().endswith((".hwp", ".hwpx", ".docx")):
-                continue
-            files.append(os.path.join(d, nm))
+        files = [os.path.join(d, nm) for nm in sorted(os.listdir(d))
+                 if not nm.startswith(("~", ".")) and nm.lower().endswith(self.MODE_EXT[mode])]
         if not files:
-            messagebox.showinfo(APP_TITLE, "폴더에 Word(.docx) / 한글(.hwp, .hwpx) 파일이 없습니다.")
+            other = "hwp" if mode == "word" else "word"
+            n_other = sum(1 for nm in os.listdir(d) if nm.lower().endswith(self.MODE_EXT[other]))
+            messagebox.showinfo(APP_TITLE, f"이 폴더에 {name} 파일이 없습니다."
+                                + (f"\n({self.MODE_NAME[other]} 파일 {n_other}개는 '{self.MODE_NAME[other]} 열기'로 여세요)"
+                                   if n_other else ""))
+            return
+        self.open_files(mode, files)
+
+    def open_files(self, mode, files):
+        if not self._confirm_leave():
             return
         self._save_state_quiet()
         self.rep = rc.Report()
         self.ai_results.clear()
+        self.issues, self.issue_paras, self.check_items = [], set(), []
+        self.cur_sec = self.sel_para = None
+        self.set_mode(mode)
         self._load(files)
 
+    def _confirm_leave(self):
+        dirty = self._dirty_word()
+        if dirty:
+            a = messagebox.askyesnocancel(APP_TITLE, "지금 Word 파일에 저장하지 않은 추가 내용(절·표·사진)이 있습니다.\n"
+                                          "저장하고 넘어갈까요? (아니오 = 버리기)")
+            if a is None:
+                return False
+            if a:
+                self.apply_to_hwp(only_word=True)
+                if self._dirty_word():
+                    return False
+        return True
+
+    def set_mode(self, mode):
+        self.mode = mode
+        word = mode == "word"
+        for b in getattr(self, "word_btns", []):
+            b.state(["!disabled"] if word else ["disabled"])
+        self.btn_open_word.configure(style="RibbonAccent.TButton" if word else "Ribbon.TButton")
+        self.btn_open_hwp.configure(style="RibbonAccent.TButton" if mode == "hwp" else "Ribbon.TButton")
+        self.hd_mode.config(text=f" {self.MODE_NAME[mode]} 작업 ", bg=TH.ORANGE if word else TH.NAVY_3)
+        self.hd_mode.pack(side="left", padx=(0, 10), before=self.hd_doc)
+
     def add_files(self):
-        fs = filedialog.askopenfilenames(title="장 파일 추가", filetypes=[
-            ("보고서 (Word·한글)", "*.docx *.hwp *.hwpx"), ("Word 문서", "*.docx"), ("한글 문서", "*.hwp *.hwpx")])
+        mode = getattr(self, "mode", None) or "word"
+        ext = self.MODE_EXT[mode]
+        fs = filedialog.askopenfilenames(title=f"{self.MODE_NAME[mode]} 장 파일 추가", filetypes=[
+            (f"{self.MODE_NAME[mode]} 문서", " ".join("*" + e for e in ext))])
+        fs = [f for f in fs if f.lower().endswith(ext)]
         if fs:
+            if not self.rep.docs:
+                self.set_mode(mode)
             self._load(list(fs))
 
     def _load(self, files):
+        if files and self.mode is None:
+            self.set_mode("word" if files[0].lower().endswith(".docx") else "hwp")
+        skipped = [f for f in files if not f.lower().endswith(self.MODE_EXT[self.mode])]
+        files = [f for f in files if f.lower().endswith(self.MODE_EXT[self.mode])]
+        if skipped:
+            messagebox.showinfo(APP_TITLE, f"지금은 {self.MODE_NAME[self.mode]} 작업이라 다른 형식 파일 {len(skipped)}개는 열지 않았습니다.\n"
+                                           "다른 형식은 '한글 열기' / 'Word 열기'로 따로 여세요.")
         errs = []
         self.root.config(cursor="watch")
         self.root.update()
@@ -945,7 +999,9 @@ class App:
             messagebox.showwarning(APP_TITLE, "일부 파일을 읽지 못했습니다:\n\n" + "\n".join(errs))
         first = self.tree.get_children()
         if first:
-            kids = self.tree.get_children(first[0])
+            kids = [k for k in self.tree.get_children(first[0])
+                    if k in self.sec_by_iid and self.sec_by_iid[k].title != "(표지·목차)"] or \
+                list(self.tree.get_children(first[0]))
             self.tree.selection_set(kids[0] if kids else first[0])
 
     def reload_all(self):
@@ -1481,14 +1537,9 @@ class App:
         if errs:
             messagebox.showwarning(APP_TITLE, "일부 변환 실패:\n\n" + "\n".join(errs))
         if done and messagebox.askyesno(APP_TITLE, f"{len(done)}개를 Word로 저장했습니다.\n\n"
-                                                   "프로그램에서 한글 파일 대신 Word 파일로 바꿔 열까요?\n"
+                                                   "지금 Word 파일로 열까요? (Word 작업으로 바뀝니다)\n"
                                                    "(변환 후 표·쪽 모양이 조금 달라질 수 있으니 Word에서 한 번 확인하세요)"):
-            for src, dst in done:
-                for d in list(self.rep.docs):
-                    if os.path.abspath(d.path) == os.path.abspath(src):
-                        self.rep.remove_doc(d)
-            self.ai_results.clear()
-            self._load([dst for _, dst in done])
+            self.open_files("word", [dst for _, dst in done])
 
     # ------------------------------------------------------------ 수정 + 동기화
     def edit_para(self, p):
@@ -2018,9 +2069,10 @@ def main():
         pass
     root = tk.Tk()
     app = App(root)
-    files = [f for f in sys.argv[1:] if f.lower().endswith((".hwp", ".hwpx"))]
+    files = [f for f in sys.argv[1:] if f.lower().endswith((".hwp", ".hwpx", ".docx"))]
     if files:
-        root.after(100, lambda: app._load(files))
+        mode = "word" if files[0].lower().endswith(".docx") else "hwp"
+        root.after(100, lambda: app.open_files(mode, files))
     root.mainloop()
 
 
