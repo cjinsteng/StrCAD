@@ -17,7 +17,41 @@ const DEFAULT_PURPOSES = {
     ["shape", "균열형태", "", ["수직", "수평", "경사", "망상", "기타"]],
     ["face", "위치(면)", "", ["상면", "하면", "측면", "단부", "중앙"]],
     ["progress", "진행성", "", ["없음", "있음", "관찰필요"]]] },
+  "하중조사": { color: "#0f766e", area: true, size: false, length: false, rebar: false, exist: false, fields: [
+    ["use", "실 용도", "", null], ["fin", "바닥 마감", "", null], ["fin_t", "마감 두께", "mm", null],
+    ["ceil", "천장", "", null], ["ceil_h", "천장고", "m", null], ["part", "칸막이", "", ["없음", "가동 경량칸막이", "조적·고정벽"]],
+    ["equip", "설비·장비", "", ["없음", "있음(경량)", "있음(중량)"]]] },
 };
+// ---- 하중조사 참고값: 활하중 = KDS 41 12 00 표 3.2-1 기본등분포활하중 (kN/m²)
+const LL_KDS = {
+  "주거(거실)": 2.0, "공동주택 공용실": 5.0, "병실": 2.0, "병원 수술실·실험실": 3.0, "호텔 객실": 2.0, "숙박 공용실": 5.0,
+  "일반 사무실": 2.5, "특수용도 사무실": 5.0, "문서보관실": 5.0, "교실": 3.0, "학교 실험실": 3.0, "중량물 실험실": 5.0,
+  "상점·백화점(1층)": 5.0, "상점·백화점(2층 이상)": 4.0, "창고형 매장": 6.0, "식당": 5.0, "주방": 7.0, "무대": 7.0,
+  "집회장(고정 좌석)": 4.0, "집회장(이동 좌석)": 5.0, "연회장·무도장": 5.0, "체육관": 5.0, "도서관 열람실": 3.0, "서고": 7.5,
+  "주차장(30kN 이하·옥내)": 3.0, "주차장(30kN 이하·옥외)": 5.0, "주차장(30~90kN)": 6.0, "경량품 창고": 6.0, "중량품 창고": 12.0,
+  "경공업 공장": 6.0, "중공업 공장": 12.0, "기계실·전기실·공조실": 5.0, "로비·1층 복도": 5.0, "복도(1층 외)": 4.0,
+  "계단": 5.0, "계단(단독주택)": 2.0, "옥외광장": 12.0, "지붕(점유 안 함)": 1.0, "지붕(산책로)": 3.0, "지붕(정원·집회)": 5.0,
+};
+// 마감 단위중량 (kN/m³) · 천장 (kN/m²) — 일반 설계 참고값, 현장 확인 후 조정
+const FIN_GAMMA = { "시멘트 모르타르": 20.0, "타일+모르타르": 21.0, "석재(화강석)": 26.0, "무근콘크리트(누름)": 23.0,
+  "경량기포콘크리트(온돌층)": 5.0, "온돌(기포+모르타르)": 13.0, "목재 마루": 8.0, "아스팔트 방수+보호콘크리트": 22.0,
+  "에폭시·도장": 0, "비닐타일·장판": 0, "카펫": 0, "노출(마감 없음)": 0 };
+const CEIL_KN = { "석고보드(경량철골)": 0.2, "텍스(T-bar)": 0.15, "금속 천장": 0.15, "목재 천장": 0.2, "노출(천장 없음)": 0, "기타": 0 };
+function loadCalc(fl) {
+  fl = fl || {};
+  const g = FIN_GAMMA[fl.fin], t = parseFloat(fl.fin_t) || 0;
+  const fin = g != null ? (g ? g * t / 1000 : (fl.fin ? 0.1 : 0)) : 0;
+  const ceil = CEIL_KN[fl.ceil] || 0;
+  let ll = LL_KDS[fl.use];
+  const partAdd = fl.part === "가동 경량칸막이" && ll != null && ll < 4.0 ? 1.0 : 0;
+  return { fin, ceil, dl: fin + ceil, ll: ll != null ? ll + partAdd : null, partAdd };
+}
+function loadText(fl) {
+  const c = loadCalc(fl), parts = [];
+  if (c.dl) parts.push(`마감·천장 DL ${c.dl.toFixed(2)}`);
+  if (c.ll != null) parts.push(`LL ${c.ll.toFixed(1)}${c.partAdd ? "(칸막이+1.0)" : ""}`);
+  return parts.length ? parts.join(" · ") + " kN/m²" : "";
+}
 const EXTRA_COLORS = ["#2563eb", "#7c3aed", "#0f766e", "#ca8a04", "#db2777", "#0891b2", "#4d7c0f", "#6b7280"];
 const NAME_KINDS = ["보", "거더", "기둥", "벽체", "슬래브", "계단", "기초", "기타"];
 const PICK_DEFAULT = {
@@ -98,6 +132,7 @@ async function openBytes(bytes, name) {
   if (S.db) S.db.close();
   S.db = db; S.meta = meta; S.fileName = name || meta.project + ".strsv";
   S.purposes = Object.assign({}, DEFAULT_PURPOSES, JSON.parse(meta.purposes || "{}"));
+  for (const k of Object.keys(DEFAULT_PURPOSES)) if (DEFAULT_PURPOSES[k].area) S.purposes[k] = Object.assign({}, S.purposes[k], { area: true });
   S.picklists = JSON.parse(meta.picklists || "{}");
   S.sheets = q("SELECT id, analysis_id, seq, name FROM sheets ORDER BY seq, id");
   run("CREATE TABLE IF NOT EXISTS orig (uid TEXT PRIMARY KEY, path TEXT, dir TEXT, size INTEGER, sent INTEGER DEFAULT 0)");
@@ -307,7 +342,13 @@ async function saveFile() {
 function P(x, y) { return [x - S.sheet.origin.ox, y - S.sheet.origin.oy]; }      // absolute → sheet-relative
 function A(x, y) { return [x + S.sheet.origin.ox, y + S.sheet.origin.oy]; }      // sheet-relative → absolute
 function memEnds(m) { const l = m.l; return [[l[0], l[1]], [l[l.length - 2], l[l.length - 1]]]; }
+const FIELD_CHOICES = { use: Object.keys(LL_KDS), fin: Object.keys(FIN_GAMMA), ceil: Object.keys(CEIL_KN) };
+function areaRect(rec) { if (!rec.area) return null; const [x0, y0] = P(rec.area[0], rec.area[1]), [x1, y1] = P(rec.area[2], rec.area[3]);
+  return [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)]; }
+function areaOf(rec) { const r = areaRect(rec); return r ? (r[2] - r[0]) * (r[3] - r[1]) / 1e6 : 0; }
 function geom(rec) {             // → {type:'point', p} | {type:'span', a, b} in sheet-relative coords
+  const ar = areaRect(rec);
+  if (ar) return { type: "area", r: ar, p: [(ar[0] + ar[2]) / 2, (ar[1] + ar[3]) / 2] };
   const m = S.sheet.byId.get(rec.member);
   if (m && m.k !== "c" && !m.cv && rec.t0 != null) {
     const [p1, p2] = memEnds(m);
@@ -318,7 +359,7 @@ function geom(rec) {             // → {type:'point', p} | {type:'span', a, b} 
   if (m && m.k === "c" && rec.dx != null) return { type: "point", p: [m.c[0] + rec.dx, m.c[1] + rec.dy] };
   return { type: "point", p: P(rec.x, rec.y) };
 }
-function anchor(rec) { const g = geom(rec); return g.type === "span" ? [(g.a[0] + g.b[0]) / 2, (g.a[1] + g.b[1]) / 2] : g.p; }
+function anchor(rec) { const g = geom(rec); return g.type === "span" ? [(g.a[0] + g.b[0]) / 2, (g.a[1] + g.b[1]) / 2] : g.type === "area" ? [g.r[0], g.r[3]] : g.p; }
 function bubble(rec) { const a = anchor(rec); return [a[0] + (rec.bx || 0), a[1] + (rec.by || 0)]; }
 function distSeg(px, py, x1, y1, x2, y2) {
   const dx = x2 - x1, dy = y2 - y1, L2 = dx * dx + dy * dy;
@@ -437,7 +478,11 @@ function draw() {
     for (let i = 0; i + 3 < m.l.length; i += 2) line(m.l, i); ctx.stroke(); } }
   if (window.SK) SK.draw();
   // survey bubbles
-  for (const rec of S.recs) drawRec(rec, cur && rec.uid === cur.uid ? (S.edit || rec) : rec, cur && rec.uid === cur.uid);
+  for (const rec of S.recs) if (purposeVisible(rec.purpose)) drawRec(rec, cur && rec.uid === cur.uid ? (S.edit || rec) : rec, cur && rec.uid === cur.uid);
+  if (S.areaDraft) { const [x0, y0, x1, y1] = S.areaDraft, a = w2s(Math.min(x0, x1), Math.max(y0, y1)), b = w2s(Math.max(x0, x1), Math.min(y0, y1));
+    ctx.save(); ctx.strokeStyle = purposeColor(S.purpose); ctx.lineWidth = 2; ctx.setLineDash([6, 4]); ctx.strokeRect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
+    const A = Math.abs((x1 - x0) * (y1 - y0)) / 1e6; ctx.setLineDash([]); ctx.font = "bold 12px sans-serif"; ctx.fillStyle = purposeColor(S.purpose);
+    ctx.fillText(`${(Math.abs(x1 - x0) / 1000).toFixed(2)} × ${(Math.abs(y1 - y0) / 1000).toFixed(2)} m · ${A.toFixed(1)} m²`, a[0] + 4, a[1] - 6); ctx.restore(); }
   if (S.edit && !S.recs.some((r) => r.uid === S.edit.uid)) drawRec(S.edit, S.edit, true);
   if (S.spanStart) { const a = w2s(...S.spanStart.p); ctx.fillStyle = purposeColor(S.purpose); ctx.beginPath(); ctx.arc(a[0], a[1], 7, 0, 7); ctx.fill(); }
   if (window.NS) NS.drawCalib();
@@ -447,7 +492,17 @@ function drawRec(_r, rec, hl) {
   let px, py;
   ctx.strokeStyle = col; ctx.fillStyle = col;
   const [bx, by] = w2s(...bubble(rec)), R = hl ? 15 : 13;
-  if (g.type === "span") { const a = w2s(...g.a), b = w2s(...g.b); ctx.lineWidth = hl ? 11 : 7; ctx.lineCap = "round";
+  if (g.type === "area") {
+    const a = w2s(g.r[0], g.r[3]), b = w2s(g.r[2], g.r[1]);
+    ctx.save(); ctx.globalAlpha = hl ? 0.22 : 0.12; ctx.fillRect(a[0], a[1], b[0] - a[0], b[1] - a[1]); ctx.globalAlpha = 1;
+    ctx.lineWidth = hl ? 3 : 2; ctx.setLineDash([10, 5]); ctx.strokeRect(a[0], a[1], b[0] - a[0], b[1] - a[1]); ctx.setLineDash([]);
+    const fl = rec.fields || {}, w = b[0] - a[0];
+    if (w > 70) { const lines = [fl.use, [fl.fin, fl.fin_t ? fl.fin_t + "mm" : ""].filter(Boolean).join(" "), fl.ceil, loadText(fl)].filter(Boolean);
+      ctx.font = "bold 12px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      const cx = (a[0] + b[0]) / 2, cy = (a[1] + b[1]) / 2 - (lines.length - 1) * 8;
+      lines.slice(0, Math.max(1, Math.floor((b[1] - a[1]) / 16))).forEach((t, i) => { ctx.lineWidth = 3; ctx.strokeStyle = "#fff"; ctx.strokeText(t, cx, cy + i * 16, w - 8); ctx.fillStyle = col; ctx.fillText(t, cx, cy + i * 16, w - 8); }); }
+    ctx.restore(); ctx.strokeStyle = col; ctx.fillStyle = col; [px, py] = a;
+  } else if (g.type === "span") { const a = w2s(...g.a), b = w2s(...g.b); ctx.lineWidth = hl ? 11 : 7; ctx.lineCap = "round";
     ctx.beginPath(); segTo(a, b); ctx.stroke(); ctx.lineCap = "butt"; px = (a[0] + b[0]) / 2; py = (a[1] + b[1]) / 2; }
   else { [px, py] = w2s(...g.p); if (onScreen(px, py)) { ctx.beginPath(); ctx.arc(px, py, 3.5, 0, 7); ctx.fill(); } }
   if (!onScreen(bx, by) && !onScreen(px, py)) return;
@@ -465,6 +520,12 @@ cv.addEventListener("pointerdown", (e) => {
   cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, [e.offsetX, e.offsetY]);
   if (ptrs.size === 1 && S.mode === "sketch" && window.SK) { gesture = { type: "sketch", view: { ...S.view } }; SK.down(e.offsetX, e.offsetY); return; }
   if (ptrs.size === 2 && gesture && gesture.type === "sketch") SK.cancel();
+  if (ptrs.size === 2 && gesture && gesture.type === "area") { S.areaDraft = null; }
+  if (ptrs.size === 1 && (S.mode === "point" || S.mode === "span") && (S.purposes[S.purpose] || {}).area) {
+    const [x, y] = s2w(e.offsetX, e.offsetY);
+    const hit = bubbleHit(x, y);
+    if (!hit) { gesture = { type: "area", x0: e.offsetX, y0: e.offsetY, w0: [x, y], moved: false }; return; }
+  }
   if (ptrs.size === 1) {
     const [x, y] = s2w(e.offsetX, e.offsetY);
     const hit = bubbleHit(x, y);
@@ -484,6 +545,10 @@ cv.addEventListener("pointermove", (e) => {
     setView(s, wx - c[0] / s, wy + c[1] / s); draw(); return;
   }
   if (gesture.type === "sketch") { SK.move(e.offsetX, e.offsetY); return; }
+  if (gesture.type === "area") {
+    if (!gesture.moved && Math.hypot(e.offsetX - gesture.x0, e.offsetY - gesture.y0) < 8) return;
+    gesture.moved = true; const [x, y] = s2w(e.offsetX, e.offsetY); S.areaDraft = [...gesture.w0, x, y]; draw(); return;
+  }
   const dx = e.offsetX - gesture.x0, dy = e.offsetY - gesture.y0;
   if (!gesture.moved && Math.hypot(dx, dy) < 8) return;
   gesture.moved = true;
@@ -499,6 +564,12 @@ function endPtr(e) {
   if (!gesture) return;
   if (gesture.type === "pinch") { if (ptrs.size === 0) gesture = null; return; }
   if (gesture.type === "sketch") { gesture = null; SK.up(e.offsetX, e.offsetY, e.type === "pointercancel"); return; }
+  if (gesture.type === "area") {
+    const g = gesture; gesture = null; const d = S.areaDraft; S.areaDraft = null;
+    if (!g.moved || !d || e.type === "pointercancel") { draw(); hint("하중조사: 끌어서 영역(사각형)을 그리세요"); setTimeout(() => hint(""), 1800); return; }
+    if (Math.abs(d[2] - d[0]) * S.view.s < 12 || Math.abs(d[3] - d[1]) * S.view.s < 12) { draw(); return; }
+    newAreaRec(d); return;
+  }
   const g = gesture; gesture = null;
   if (g.bubble && g.moved) { const rec = g.bubbleRec; if (rec && !S.edit) saveRec(rec); selectRec(rec.uid, true); return; }
   if (!g.moved) tap(...s2w(e.offsetX, e.offsetY));
@@ -510,6 +581,7 @@ cv.addEventListener("wheel", (e) => { e.preventDefault(); const k = e.deltaY < 0
 function bubbleHit(x, y) {
   for (let i = S.recs.length - 1; i >= 0; i--) {
     const r = S.edit && S.edit.uid === S.recs[i].uid ? S.edit : S.recs[i];
+    if (!purposeVisible(r.purpose)) continue;
     const [bx, by] = bubble(r);
     if (Math.hypot(x - bx, y - by) * S.view.s <= 18) return S.recs[i];
   }
@@ -534,6 +606,43 @@ function tap(x, y) {
   if (Math.abs(L.t - st.t) * st.m.L < 50) { toast("구간이 너무 짧습니다"); draw(); return; }
   const [a, b] = [Math.min(st.t, L.t), Math.max(st.t, L.t)];
   newRec(st.m, a, b, [(st.p[0] + L.p[0]) / 2, (st.p[1] + L.p[1]) / 2]);
+}
+
+function newAreaRec(d) {
+  if (!guardEdit()) return;
+  if (!inspector() && !S.askedInsp) { S.askedInsp = true; askInspector(); }
+  const [x0, y0] = A(Math.min(d[0], d[2]), Math.min(d[1], d[3])), [x1, y1] = A(Math.max(d[0], d[2]), Math.max(d[1], d[3]));
+  const rec = { id: S.recs.reduce((a, r) => Math.max(a, r.id || 0), 0) + 1, uid: uid(), updated: nowIso(), no: nextNo(),
+    purpose: S.purpose, member: null, t0: null, t1: null, x: (x0 + x1) / 2, y: (y0 + y1) / 2, area: [x0, y0, x1, y1],
+    bx: -14 / S.view.s, by: 14 / S.view.s, name: "", size_b: "", size_h: "", length: "", rebar: {}, exist: "", fields: {},
+    photos: [], memo: "", date: today(), mobile: true, inspector: inspector() };
+  saveRec(rec);
+  S.sel = rec; S.edit = JSON.parse(JSON.stringify(rec));
+  openPanel(); renderForm(); renderList(); draw();
+}
+
+// ---- 용도별 도면 표시 (부재검측 / 균열검토 / 하중조사 … 따로 또는 같이)
+function hiddenPurposes() { try { return new Set(JSON.parse(localStorage.getItem("hidePurposes") || "[]")); } catch (e) { return new Set(); } }
+function purposeVisible(p) { return !hiddenPurposes().has(p); }
+function showLayers() {
+  sheet((b) => {
+    const hid = hiddenPurposes();
+    const render = () => {
+      box.innerHTML = "";
+      for (const p of Object.keys(S.purposes)) {
+        const on = !hid.has(p), n = S.recs.filter((r) => r.purpose === p).length;
+        box.append(el("button", { class: "lay" + (on ? " on" : ""), style: `--c:${purposeColor(p)}`, onclick: () => {
+          on ? hid.add(p) : hid.delete(p); try { localStorage.setItem("hidePurposes", JSON.stringify([...hid])); } catch (e) { /* ignore */ }
+          render(); draw(); } }, el("i"), `${p}`, el("small", {}, `${n}건`)));
+      }
+    };
+    const box = el("div", { class: "lay-box" });
+    b.append(el("h3", {}, "도면에 표시할 조사"), box,
+      el("div", { class: "btns" },
+        el("button", { class: "b gray", onclick: () => { hid.clear(); try { localStorage.setItem("hidePurposes", "[]"); } catch (e) { /* ignore */ } render(); draw(); } }, "모두 보기"),
+        el("span", { class: "sp" }), el("button", { class: "b ok", onclick: () => $("#modal").classList.remove("show") }, "닫기")));
+    render();
+  });
 }
 
 function newRec(m, t0, t1, p, dxy) {
@@ -597,13 +706,15 @@ function summary(r) {
   if (p.length && r.length) parts.push(`L=${r.length}m`);
   if (p.rebar && Object.values(r.rebar || {}).some(Boolean)) parts.push("철근 입력");
   if (p.exist && r.exist && r.exist !== "존재") parts.push(r.exist);
-  for (const [k, lab, unit] of p.fields || []) { const v = (r.fields || {})[k]; if (v) parts.push(`${lab} ${v}${unit}`); }
+  for (const [k, lab, unit] of p.fields || []) { const v = (r.fields || {})[k]; if (v) parts.push(p.area && k !== "fin_t" ? `${v}` : `${lab} ${v}${unit}`); }
+  if (p.area) { const t = loadText(r.fields), A = areaOf(r); if (A) parts.unshift(`${A.toFixed(1)}m²`); if (t) parts.push(t); }
   const cr = (r.calc || {}).result;
   if (cr && cr.summary && !cr.error) parts.push((cr.ok ? "✔ " : "✘ ") + cr.summary);
   return parts.join(" · ");
 }
 function positionText(r) {
   const m = S.sheet.byId.get(r.member);
+  if (r.area) { const [a, b, c, d] = r.area; return `영역 ${((c - a) / 1000).toFixed(2)} × ${((d - b) / 1000).toFixed(2)} m · ${areaOf(r).toFixed(1)} m²`; }
   if (!m) return r.member == null ? "부재 미지정" : "(부재 없음)";
   let s = `${KIND_KO[m.k]} ${m.n || "(미표기)"} #${m.i}`;
   if (m.k !== "c" && r.t0 != null) {
@@ -627,17 +738,22 @@ function renderForm() {
   const vbtn = (key, opts = {}) => el("button", { class: "val" + (editing ? "" : " dim"), onclick: () => pick(key, opts) },
     valTxt(opts.field ? (rec.fields || {})[key] : rec[key], opts.unit ?? FIELD_UNIT[key]));
   row("번호", vbtn("no"));
-  row("부재명", vbtn("name"));
+  row(P.area ? "구역명" : "부재명", vbtn("name", P.area ? { choices: ["사무실", "회의실", "복도", "화장실", "계단실", "기계실", "창고", "주거", "옥상"] } : {}));
   row("용도", vbtn("purpose", { choices: Object.keys(S.purposes) }));
   row("검토자", vbtn("inspector", { choices: inspector() ? [inspector()] : [] }));
   const cres = (rec.calc || {}).result;
-  f.append(el("button", { class: "val wide input-btn" + (cres ? (cres.ok ? " ok" : " ng") : ""), onclick: () => openDetail() },
+  if (!P.area) f.append(el("button", { class: "val wide input-btn" + (cres ? (cres.ok ? " ok" : " ng") : ""), onclick: () => openDetail() },
     el("b", {}, "INPUT"), el("small", {}, cres ? `${cres.ok ? "✔" : "✘"} ${cres.summary}` : "상세 입력 · 휨/전단 검토")));
   if (P.size) row("치수", vbtn("size_b"), el("div", { class: "x" }, "X"), vbtn("size_h"));
   if (P.length) row("길이", vbtn("length"));
   if (P.rebar) row("철근", el("button", { class: "val" + (editing ? "" : " dim"), onclick: rebarGrid }, Object.values(rec.rebar || {}).some(Boolean) ? "입력됨." : "선택"));
   if (P.exist) row("부재<br>유무".replace("<br>", "\n"), vbtn("exist"));
-  for (const [k, lab, unit, ch] of P.fields || []) row(lab, vbtn(k, { field: true, unit, choices: ch }));
+  for (const [k, lab, unit, ch] of P.fields || []) row(lab, vbtn(k, { field: true, unit, choices: ch || FIELD_CHOICES[k] }));
+  if (P.area) {
+    const t = loadText(rec.fields), A = areaOf(rec);
+    f.append(el("div", { class: "load-box" }, el("b", {}, "하중 참고"), el("span", {}, (A ? `면적 ${A.toFixed(1)} m² · ` : "") + (t || "실 용도·마감·천장을 고르면 계산됩니다")),
+      el("small", {}, "활하중 = KDS 41 12 00 표 3.2-1 · 마감·천장 = 일반 단위중량 참고값")));
+  }
   // photos
   const ph = el("div", { class: "photos" });
   for (const id of rec.photos || []) {
@@ -826,9 +942,11 @@ function listColumns() {
   if (!$("#list").classList.contains("dock-bottom")) return [["no", "번호"], ["name", "부재명"], ["summary", "내용"]];
   const P = S.purposes[S.filter];
   if (!P) return [["no", "번호"], ["purpose", "용도"], ["name", "부재명"], ["summary", "내용"], ["inspector", "검토자"], ["ph", "사진"]];
-  const c = [["no", "번호"], ["name", "부재명"]];
+  const c = [["no", "번호"], ["name", P.area ? "구역" : "부재명"]];
+  if (P.area) c.push(["areaM2", "면적(m²)"]);
   if (P.size) c.push(["size", "치수"]); if (P.length) c.push(["length", "길이(m)"]); if (P.rebar) c.push(["rebar", "철근"]); if (P.exist) c.push(["exist", "부재유무"]);
   for (const [k, lab, unit] of P.fields || []) c.push(["f:" + k, lab + (unit ? `(${unit})` : "")]);
+  if (P.area) c.push(["dl", "마감+천장 DL(kN/m²)"], ["ll", "활하중 LL(kN/m²)"]);
   c.push(["inspector", "검토자"], ["ph", "사진"]); return c;
 }
 function rebarText(r) { const rb = r.rebar || {}; const cols = ["I단", "단부", "중앙", "J단", "수직근", "수평근"].filter((c) => Object.keys(rb).some((k) => k.endsWith("|" + c)));
@@ -836,6 +954,8 @@ function rebarText(r) { const rb = r.rebar || {}; const cols = ["I단", "단부"
 function listValue(r, k) {
   if (k === "summary") return summary(r); if (k === "ph") return (r.photos || []).length || "";
   if (k === "size") return r.size_b || r.size_h ? `${r.size_b || "?"}×${r.size_h || "?"}` : ""; if (k === "rebar") return rebarText(r);
+  if (k === "areaM2") return r.area ? areaOf(r).toFixed(1) : "";
+  if (k === "dl" || k === "ll") { if (!r.area) return ""; const L = loadCalc(r.fields || {}); const v = k === "dl" ? L.dl : L.ll; return v == null ? "" : (+v).toFixed(2); }
   if (k.startsWith("f:")) return (r.fields || {})[k.slice(2)] || ""; return r[k] ?? "";
 }
 function renderList() {
@@ -925,6 +1045,7 @@ $("#menu").addEventListener("click", (e) => { if (e.target.id === "menu" || e.ta
 $("#miSave").onclick = () => { $("#menu").classList.remove("show"); saveFile(); };
 $("#miPurpose").onclick = () => { $("#menu").classList.remove("show"); if (S.db) addPurpose(); };
 $("#miCsv").onclick = () => { $("#menu").classList.remove("show"); if (S.db) exportCsv(); };
+$("#btnLayers").onclick = () => showLayers();
 $("#miSketch").onclick = () => { $("#menu").classList.remove("show"); if (window.SK) SK.toggleHidden(); };
 for (const id of ["#fileOpen", "#fileOpen2"]) $(id).onchange = async (e) => {
   const f = e.target.files[0]; e.target.value = ""; $("#menu").classList.remove("show"); if (!f) return;

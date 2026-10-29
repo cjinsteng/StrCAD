@@ -66,12 +66,19 @@ SV_BLUE_D = TH.NAVY
 SV_HELP = {
     "select": "번호 원을 클릭 = 선택(오른쪽에 조사 내용) · 번호 원을 끌면 표시 위치 이동 · 다른 곳 클릭 = 부재 선택",
     "point": "검측위치를 클릭하면 번호가 붙고 오른쪽 입력란에 조사 내용을 적습니다.\n"
-             "보·벽은 축선 위로, 기둥은 단면 안 위치로 붙습니다. 번호 원은 끌어서 옮길 수 있습니다.",
+             "보·벽은 축선 위로, 기둥은 단면 안 위치로 붙습니다. 번호 원은 끌어서 옮길 수 있습니다.\n"
+             "용도가 '하중조사'면 두 모서리를 클릭해 영역(사각형)을 그립니다.",
     "span": "보·거더·벽 위에서 구간 시작점 클릭 → 끝점 클릭 (같은 부재 위로 고정, Esc 취소)",
     "delete": "삭제할 검측위치(번호 원)를 클릭 (Ctrl+Z로 되돌리기)",
 }
 
-HELP_USAGE = """[DXF가 없을 때]
+HELP_USAGE = """[하중조사 · 용도별 표시]
+· 현장조사 › 새 검측 용도 '하중조사' → 검측점 도구로 영역의 두 모서리를 클릭 (휴대폰은 손가락으로 끌기)
+  - 실 용도 · 바닥 마감 · 마감 두께 · 천장 · 천장고 · 칸막이 · 설비를 고르면
+    면적과 하중 참고값(마감+천장 DL, KDS 41 12 00 표 3.2-1 활하중 LL, 경량칸막이 +1.0)이 나옵니다
+· 👁 표시할 조사 ▾: 부재검측 / 균열검토 / 하중조사를 따로 또는 같이 보기 (휴대폰은 👁 버튼)
+
+[DXF가 없을 때]
 · 시작 화면 '📷 도면 없이 조사' 또는 현장조사 › 📷 새 조사 도면
   - 빈 도면(격자): 가로·세로(m)를 정하면 1 m 격자 위에 검측위치·스케치를 기록
   - 사진·이미지를 배경으로: 도면 사진/스캔/캡처를 깔고 그 위에 기록 (비스듬히 찍었으면 네 모서리를 맞춰 반듯하게)
@@ -202,6 +209,7 @@ class CadAnalysisApp:
         self.project = ""         # 프로젝트(건물) — groups drawings for the ‹ n/N › pager
         self._sv_drag = None
         self._sv_start = None     # (member, t0, (x, y)) while placing a section
+        self._sv_area0 = None     # (x, y) — 하중조사 영역 첫 모서리
 
         root.title(f"{TH.APP_NAME} {TH.APP_SUB}")
         try:
@@ -240,6 +248,7 @@ class CadAnalysisApp:
         self.sv_tool = tk.StringVar(value="point")
         self.P = SV.purposes(self.cfg)
         self.sv_purpose = tk.StringVar(value="부재검측")
+        self.sv_hidden = set(self.cfg.get("survey_hidden") or [])      # 도면에 안 그릴 용도
         self.infer = tk.BooleanVar(value=self.cfg["infer_names"])
         self.wg_var = tk.BooleanVar(value=self.cfg.get("wall_girder", True))
         self.use_ai = tk.BooleanVar(value=self.cfg["use_ollama"])
@@ -529,6 +538,10 @@ class CadAnalysisApp:
         self._big(g, "📤\n조사표 CSV", self.survey_export, 10)
         self._big(g, "📑\n도면 LIST", self._sv_sheet_list, 9)
         ttk.Checkbutton(g, text="검측위치\n표시", variable=self.show_survey, command=self.redraw).pack(side="left", padx=4)
+        self.sv_vis_mb = ttk.Menubutton(g, text="👁 표시할\n조사 ▾", direction="below")
+        self.sv_vis_menu = tk.Menu(self.sv_vis_mb, tearoff=0, postcommand=self._sv_vis_build)
+        self.sv_vis_mb["menu"] = self.sv_vis_menu
+        self.sv_vis_mb.pack(side="left", padx=4)
         ttk.Checkbutton(g, text="현장\n스케치", variable=self.show_sketch, command=self.redraw).pack(side="left", padx=4)
         g = self._grp(p, "부재")
         self.sched_btn = self._big(g, "📋\n부재\n리스트", lambda: self.toggle_schedule(), 8)
@@ -1383,7 +1396,8 @@ class CadAnalysisApp:
         if self.show_survey.get() and self.res.surveys:
             byid = self.res.by_id()
             for rec in self.res.surveys:
-                self._draw_survey(rec, byid)
+                if rec.get("purpose") not in self.sv_hidden:
+                    self._draw_survey(rec, byid)
         # origin marker
         if not self.cs.is_identity():
             sx, sy = self.w2s(self.cs.x0, self.cs.y0)
@@ -1447,7 +1461,24 @@ class CadAnalysisApp:
         col = self.P.get(rec.get("purpose"), {}).get("color", "#d62828")
         g = SV.geometry(rec, byid)
         tag = ("survey", f"sv{rec['id']}") + (("sel",) if hl else ())
-        if g[0] == "span":
+        if g[0] == "area":
+            x0, y0, x1, y1 = g[1]
+            a, b = self.w2s(x0, y1), self.w2s(x1, y0)
+            cv.create_rectangle(*a, *b, fill=col, stipple="gray25" if hl else "gray12", outline="", tags=tag)
+            cv.create_rectangle(*a, *b, outline=col, width=3 if hl else 2, dash=(10, 5), tags=tag)
+            fl = rec.get("fields") or {}
+            w, h = b[0] - a[0], b[1] - a[1]
+            if w > 80 and h > 24:
+                lines = [x for x in (rec.get("name") or "", fl.get("use"),
+                                     " ".join(x for x in (fl.get("fin"), f"{fl['fin_t']}mm" if fl.get("fin_t") else "") if x),
+                                     fl.get("ceil"), SV.load_text(fl)) if x]
+                lines = lines[:max(1, int(h // 16))]
+                cy = (a[1] + b[1]) / 2 - (len(lines) - 1) * 8
+                for i, t in enumerate(lines):
+                    cv.create_text((a[0] + b[0]) / 2, cy + i * 16, text=t, fill=col, width=w - 8,
+                                   font=(TH.FAM, 9, "bold"), tags=tag)
+            px, py = a
+        elif g[0] == "span":
             a, b = self.w2s(*g[1]), self.w2s(*g[2])
             cv.create_line(*a, *b, fill=col, width=7 if not hl else 11, capstyle="butt", tags=tag)
             for q in (a, b):
@@ -1564,6 +1595,7 @@ class CadAnalysisApp:
         self._snap = None
         self._tool_changed()
         self._sv_start = None
+        self._sv_area0 = None
         if self._survey_tab():
             self.status.config(text=SV_HELP[self.sv_tool.get()].split("\n")[0])
             if not (self.sv_box.winfo_ismapped() or self.sched_box.winfo_ismapped()):
@@ -1777,6 +1809,18 @@ class CadAnalysisApp:
             txt += f"    (국부) x={lx:,.1f}  y={ly:,.1f}"
         self.coord_lbl.config(text=txt)
         t = self._active_tool()
+        if self.mode == "result" and self._survey_tab() and self.sv_tool.get() in ("point", "span") and \
+                self.P.get(self.sv_purpose.get(), {}).get("area"):
+            self._snap = None
+            self._draw_snap()
+            if self._sv_area0:
+                a, b = self.w2s(*self._sv_area0), self.w2s(x, y)
+                col = self.P[self.sv_purpose.get()].get("color", "#0f766e")
+                self.cv.create_rectangle(*a, *b, outline=col, width=2, dash=(6, 4), tags="snap")
+                w, h = abs(x - self._sv_area0[0]) / 1000, abs(y - self._sv_area0[1]) / 1000
+                self.cv.create_text(min(a[0], b[0]) + 4, min(a[1], b[1]) - 8, anchor="w", fill=col,
+                                    font=(TH.FAM, 9, "bold"), text=f"{w:.2f} × {h:.2f} m · {w * h:.1f} m²", tags="snap")
+            return
         if self.mode == "result" and self._survey_tab() and self.sv_tool.get() in ("point", "span"):
             p = self._sv_locate(x, y, self._sv_start[0] if self._sv_start else None)
             self._snap = ("member", None, p[3]) if p[0] is not None else None
@@ -1973,8 +2017,9 @@ class CadAnalysisApp:
             self._calib = None
             self.cv.delete("calib")
             self.status.config(text="축척 맞추기 취소")
-        if self._sv_start:
+        if self._sv_start or self._sv_area0:
             self._sv_start = None
+            self._sv_area0 = None
             self._snap = None
             self._draw_snap()
         if self._line_start or self._snap:
@@ -2393,6 +2438,7 @@ class CadAnalysisApp:
     # ======================================================================= 현장조사
     def _sv_tool_changed(self):
         self._sv_start = None
+        self._sv_area0 = None
         self._snap = None
         self.sv_help.config(text=SV_HELP[self.sv_tool.get()])
         self.status.config(text=SV_HELP[self.sv_tool.get()].split("\n")[0])
@@ -2410,10 +2456,16 @@ class CadAnalysisApp:
         byid = self.res.by_id()
         best = None
         for rec in self.res.surveys:
+            if rec.get("purpose") in self.sv_hidden:
+                continue
             bx, by = SV.bubble(rec, byid)
             d = math.hypot(x - bx, y - by) * self.s - 12          # px outside the bubble
             g = SV.geometry(rec, byid)
-            if g[0] == "span":
+            if g[0] == "area":                                     # 테두리 근처만 (안쪽은 다른 검측점 찍기)
+                x0, y0, x1, y1 = g[1]
+                d2 = min(dist_point_seg(x, y, *q)[0] for q in ((x0, y0, x1, y0), (x1, y0, x1, y1),
+                                                               (x1, y1, x0, y1), (x0, y1, x0, y0))) * self.s - 5
+            elif g[0] == "span":
                 d2 = dist_point_seg(x, y, *g[1], *g[2])[0] * self.s - 5
             else:
                 d2 = math.hypot(x - g[1][0], y - g[1][1]) * self.s - 5
@@ -2427,6 +2479,8 @@ class CadAnalysisApp:
             return None
         byid = self.res.by_id()
         for rec in reversed(self.res.surveys):
+            if rec.get("purpose") in self.sv_hidden:
+                continue
             bx, by = SV.bubble(rec, byid)
             if math.hypot(x - bx, y - by) * self.s <= 13:
                 return rec
@@ -2482,6 +2536,53 @@ class CadAnalysisApp:
         self._sv_select(rec["id"])
         self._sv_begin_edit()             # new location → straight into editing
 
+    def _sv_new_area(self, r):
+        if not self._sv_guard():
+            return
+        purpose = self.sv_purpose.get()
+        rec = SV.new_record(self.res.surveys, purpose, None, None, None, (r[0] + r[2]) / 2, (r[1] + r[3]) / 2,
+                            bubble=(-14 / self.s, 14 / self.s))
+        rec["area"] = [round(v, 1) for v in r]
+        rec["inspector"] = self.cfg.get("inspector", "")
+        self._push_undo()
+        self.res.surveys.append(rec)
+        self.log(f"하중조사 영역 #{rec['no']} 추가 — {SV.position_text(rec, {})}")
+        self._set_dirty(True)
+        self._sv_select(rec["id"])
+        self._sv_begin_edit()
+
+    def _sv_vis_build(self):
+        """리본 › 👁 표시할 조사 — 용도별로 도면에 보이기/숨기기 (따로 또는 같이)."""
+        mn = self.sv_vis_menu
+        mn.delete(0, "end")
+        cnt = {}
+        for r in (self.res.surveys if self.res else []):
+            cnt[r.get("purpose")] = cnt.get(r.get("purpose"), 0) + 1
+        for name in self.P:
+            v = tk.BooleanVar(value=name not in self.sv_hidden)
+            mn.add_checkbutton(label=f"{name}  ({cnt.get(name, 0)}건)", variable=v, onvalue=True, offvalue=False,
+                               command=lambda n=name, v=v: self._sv_set_visible(n, v.get()))
+            mn._vars = getattr(mn, "_vars", []) + [v]
+        mn.add_separator()
+        mn.add_command(label="모두 보기", command=lambda: self._sv_set_visible(None, True))
+        for name in self.P:
+            mn.add_command(label=f"{name}만 보기", command=lambda n=name: self._sv_only(n))
+
+    def _sv_set_visible(self, name, on):
+        if name is None:
+            self.sv_hidden.clear()
+        elif on:
+            self.sv_hidden.discard(name)
+        else:
+            self.sv_hidden.add(name)
+        self.cfg["survey_hidden"] = sorted(self.sv_hidden)
+        S.save(self.cfg)
+        self.redraw()
+
+    def _sv_only(self, name):
+        self.sv_hidden = {n for n in self.P if n != name}
+        self._sv_set_visible(name, True)
+
     def _survey_click(self, x, y):
         tool = self.sv_tool.get()
         hit = self._sv_hit(x, y)
@@ -2489,7 +2590,7 @@ class CadAnalysisApp:
             if hit:
                 self._sv_delete(hit)
             return
-        if hit and not self._sv_start:
+        if hit and not self._sv_start and not self._sv_area0:
             self._sv_select(hit["id"])
             return
         if tool == "select":
@@ -2497,6 +2598,19 @@ class CadAnalysisApp:
             self.select(self._hit(x, y))
             self._sv_fill_form()
             self._sv_refresh_list()
+            return
+        if tool in ("point", "span") and self.P.get(self.sv_purpose.get(), {}).get("area"):
+            if self._sv_area0 is None:
+                self._sv_area0 = (x, y)
+                self.status.config(text="영역의 반대쪽 모서리를 클릭하세요 (Esc 취소)")
+                return
+            (x0, y0), self._sv_area0 = self._sv_area0, None
+            self._snap = None
+            self._draw_snap()
+            if abs(x - x0) * self.s < 8 or abs(y - y0) * self.s < 8:
+                self.status.config(text="영역이 너무 작습니다.")
+                return
+            self._sv_new_area((min(x0, x), min(y0, y), max(x0, x), max(y0, y)))
             return
         if tool == "point":
             m, t, dxy, p = self._sv_locate(x, y)
@@ -2697,8 +2811,10 @@ class CadAnalysisApp:
         self._pill(f, "번호", r, lambda: self._sv_pick("no"))
         val_btn("no", r)
         r += 1
-        self._pill(f, "부재명", r, lambda: self._sv_pick("name"))
-        val_btn("name", r)
+        area = bool(P.get("area"))
+        nch = SV.AREA_NAMES if area else None
+        self._pill(f, "구역명" if area else "부재명", r, lambda: self._sv_pick("name", choices=nch))
+        val_btn("name", r, choices=nch)
         r += 1
         self._pill(f, "용도", r, lambda: self._sv_pick("purpose", choices=list(self.P)))
         val_btn("purpose", r, choices=list(self.P))
@@ -2714,8 +2830,9 @@ class CadAnalysisApp:
                                                   "#dc2626" if calc else "#111"),
                        font=(TH.FAM, 13 if not calc else 11, "bold"), relief="flat", height=2,
                        cursor="hand2", command=self._sv_detail)
-        ib.grid(row=r, column=0, columnspan=4, sticky="nsew", pady=4)
-        r += 1
+        if not area:
+            ib.grid(row=r, column=0, columnspan=4, sticky="nsew", pady=4)
+            r += 1
         if P.get("size"):
             self._pill(f, "치수", r, lambda: self._sv_pick("size_b"))
             val_btn("size_b", r, 1, 1)
@@ -2741,6 +2858,13 @@ class CadAnalysisApp:
             b = self._sv_button(f, f"{v}{unit if v and unit else ''}" if v else "선택",
                                 lambda k=key, c=choices: self._sv_pick(k, True, c), dim=not editing)
             b.grid(row=r, column=1, columnspan=3, sticky="nsew", pady=3)
+            r += 1
+        if area:
+            lt = SV.load_text(rec.get("fields")) or "용도·마감·천장을 고르면 하중 참고값이 나옵니다"
+            tk.Label(f, text=f"하중 참고  ·  면적 {SV.area_m2(rec):.1f} m²\n{lt}\n"
+                             "활하중 = KDS 41 12 00 표 3.2-1 · 마감·천장 = 일반 단위중량 참고값",
+                     bg="#ecfdf5", fg="#0f766e", font=(TH.FAM, 9, "bold"), justify="left", anchor="w",
+                     padx=8, pady=6, wraplength=360).grid(row=r, column=0, columnspan=4, sticky="ew", pady=(6, 2))
             r += 1
         n_ph = len(rec.get("photos", []))
         pb = self._sv_button(f, (f"사진등록 ({n_ph})" if n_ph else "사진등록") + "   ⇩ 끌어다 놓기", self._sv_photos)
