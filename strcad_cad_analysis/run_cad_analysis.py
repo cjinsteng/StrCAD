@@ -22,7 +22,8 @@ def _selftest(out):
         lines.append(f"ezdxf {ezdxf.__version__}")
         lines.append("license " + licensing.status().get("state", "?") + " · code " + licensing.machine_code())
         for rel in (("cad_analysis", "assets", "icon.ico"), ("mobile", "index.html"), ("mobile", "app.js"),
-                    ("mobile", "vendor", "sql-wasm.wasm"), ("mobile", "sketch.js"), ("samples",)):
+                    ("mobile", "vendor", "sql-wasm.wasm"), ("mobile", "sketch.js"), ("mobile", "vendor", "pdfjs", "pdf.min.js"),
+                    ("samples",)):
             p = theme.resource(*rel)
             lines.append(f"{'OK' if os.path.exists(p) else 'MISSING'} {'/'.join(rel)}")
         try:
@@ -30,6 +31,15 @@ def _selftest(out):
             lines.append("OK tkinterdnd2")
         except Exception as e:  # noqa: BLE001
             lines.append(f"MISSING tkinterdnd2 {e}")
+        try:
+            import pypdfium2 as pdfium
+            import pdfminer  # noqa: F401
+            d = pdfium.PdfDocument.new()
+            d.new_page(200, 100)
+            im = d[0].render(scale=1).to_pil()
+            lines.append(f"OK pdf {im.size}")
+        except Exception as e:  # noqa: BLE001
+            lines.append(f"MISSING pdf {e}")
         r = check.rc_column_check(500, 500, 2000, 280, 60, "8-HD22", "HD10@300")
         lines.append("check " + str(check.summarize(r[0])))
     except Exception as e:  # noqa: BLE001

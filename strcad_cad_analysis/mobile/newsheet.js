@@ -137,6 +137,41 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
     }).then((v) => v);
   }
 
+  // ---------------------------------------------------------------- PDF 도면 (pdf.js, 처음 쓸 때만 불러옴)
+  let pdfjsP = null;
+  function pdfjs() {
+    if (!pdfjsP) pdfjsP = new Promise((res, rej) => {
+      if (window.pdfjsLib) { res(window.pdfjsLib); return; }
+      const sc = document.createElement("script"); sc.src = "vendor/pdfjs/pdf.min.js";
+      sc.onload = () => { window.pdfjsLib.GlobalWorkerOptions.workerSrc = "vendor/pdfjs/pdf.worker.min.js"; res(window.pdfjsLib); };
+      sc.onerror = () => { pdfjsP = null; rej(new Error("PDF 모듈을 불러오지 못했습니다")); };
+      document.head.append(sc);
+    });
+    return pdfjsP;
+  }
+  const PT_MM = 25.4 / 72;
+  async function pdfOpen(file) {
+    const lib = await pdfjs();
+    const doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()), cMapUrl: "vendor/pdfjs/cmaps/", cMapPacked: true,
+      standardFontDataUrl: "vendor/pdfjs/standard_fonts/" }).promise;
+    return doc;
+  }
+  function paperName(w, h) {
+    const [a, b] = [Math.min(w, h), Math.max(w, h)];
+    for (const [n, x, y] of [["A0", 841, 1189], ["A1", 594, 841], ["A2", 420, 594], ["A3", 297, 420], ["A4", 210, 297]])
+      if (Math.abs(a - x) < 8 && Math.abs(b - y) < 8) return n;
+    return `${Math.round(w)}×${Math.round(h)}mm`;
+  }
+  async function pdfPageInfo(doc, n) { const pg = await doc.getPage(n); const v = pg.getViewport({ scale: 1 }); return { pg, wmm: v.width * PT_MM, hmm: v.height * PT_MM, v }; }
+  async function pdfRender(doc, n, longPx = 4000) {      // → JPEG blob (휴대폰 메모리 고려해 긴 변 4000px)
+    const { pg, v } = await pdfPageInfo(doc, n);
+    const k = longPx / Math.max(v.width, v.height), vp = pg.getViewport({ scale: k });
+    const c = document.createElement("canvas"); c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+    const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height);
+    await pg.render({ canvasContext: g, viewport: vp }).promise;
+    return new Promise((res) => c.toBlob((b) => res(b), "image/jpeg", 0.9));
+  }
+
   // ---------------------------------------------------------------- dialog
   function dialog(newProject) {
     const lab = (t) => el("div", { class: "ns-lab" }, t);
@@ -148,9 +183,34 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
     const pw = inp("사진 가로 실제 길이 (m) — 모르면 그대로", "40", "number");
     const prev = el("div", { class: "ns-prev" }, "사진 없음");
     const fileIn = el("input", { type: "file", accept: "image/*", hidden: "" });
+    const pdfIn = el("input", { type: "file", accept: "application/pdf,.pdf", hidden: "" });
+    let pdf = null;                    // { doc, n, wmm, hmm }
+    const pgIn = inp("쪽", "1", "number"), scIn = el("select", { class: "ns-in" }, ["50", "100", "150", "200", "300", "500"].map((v) => el("option", { value: v }, "1/" + v)));
+    scIn.value = "100";
+    const pdfInfo = el("p", { class: "small" }, "");
+    const pdfBox = el("div", { class: "ns-box hidden" }, el("div", { class: "ns-row" }, lab("PDF 쪽"), pgIn, lab("축척"), scIn), pdfInfo);
+    const pdfWidth = () => { if (!pdf) return; pw.value = (pdf.wmm * (+scIn.value || 100) / 1000).toFixed(2);
+      pdfInfo.textContent = `${pdf.n}쪽 중 ${pgIn.value}쪽 · 용지 ${paperName(pdf.wmm, pdf.hmm)} (PDF에서 자동) → 가로 ${pw.value} m`; };
+    const pdfShow = async () => {
+      const n = Math.min(Math.max(parseInt(pgIn.value) || 1, 1), pdf.n); pgIn.value = n;
+      prev.textContent = "PDF 그리는 중…";
+      const inf = await pdfPageInfo(pdf.doc, n); pdf.wmm = inf.wmm; pdf.hmm = inf.hmm; pdfWidth();
+      file = await pdfRender(pdf.doc, n); showPrev(file); warpBtn.classList.add("hidden");
+    };
+    pgIn.onchange = () => pdf && pdfShow().catch((e) => toast("PDF: " + (e.message || e)));
+    scIn.onchange = pdfWidth;
+    pdfIn.onchange = async (e) => {
+      const f = e.target.files[0]; if (!f) return;
+      try {
+        prev.textContent = "PDF 여는 중…";
+        const doc = await pdfOpen(f); pdf = { doc, n: doc.numPages }; pgIn.value = 1; pdfBox.classList.remove("hidden");
+        if (name.value === "1F" || !name.value.trim()) name.value = f.name.replace(/\.pdf$/i, "").slice(0, 30);
+        await pdfShow();
+      } catch (er) { pdf = null; pdfBox.classList.add("hidden"); prev.textContent = "PDF를 열 수 없습니다"; toast("PDF: " + (er.message || er), 4000); }
+    };
     const camIn = el("input", { type: "file", accept: "image/*", capture: "environment", hidden: "" });
     const showPrev = (blob) => { prev.innerHTML = ""; prev.append(el("img", { src: URL.createObjectURL(blob) })); };
-    const onFile = (e) => { const f = e.target.files[0]; if (!f) return; file = f; showPrev(f); warpBtn.classList.remove("hidden"); };
+    const onFile = (e) => { const f = e.target.files[0]; if (!f) return; file = f; pdf = null; pdfBox.classList.add("hidden"); showPrev(f); warpBtn.classList.remove("hidden"); };
     const warpBtn = el("button", { class: "b gray hidden", onclick: async () => {
       const out = await cornerEditor(file); if (out) { file = out; showPrev(out); toast("반듯하게 폈습니다"); } } }, "📐 모서리 맞춰 펴기");
     fileIn.onchange = onFile; camIn.onchange = onFile;
@@ -158,12 +218,13 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
       el("p", { class: "small" }, "격자(1 m) 위에 검측위치·스케치를 기록합니다."));
     const photoBox = el("div", { class: "ns-box hidden" },
       el("div", { class: "ns-row" }, el("button", { class: "b edit", onclick: () => camIn.click() }, "📷 촬영"),
-        el("button", { class: "b gray", onclick: () => fileIn.click() }, "🖼 사진 선택")), prev, warpBtn, lab("사진 가로 실제 길이 (m)"), pw,
-      el("p", { class: "small" }, "도면 사진·스캔·캡처를 배경으로 깝니다. 축척은 나중에 메뉴 › 📏 축척 맞추기로 아는 길이 두 점을 찍어 맞출 수 있습니다."),
-      fileIn, camIn);
+        el("button", { class: "b gray", onclick: () => fileIn.click() }, "🖼 사진 선택"),
+        el("button", { class: "b gray", onclick: () => pdfIn.click() }, "📄 PDF")), prev, warpBtn, pdfBox, lab("도면 가로 실제 길이 (m)"), pw,
+      el("p", { class: "small" }, "도면 사진·스캔·캡처·PDF를 배경으로 깝니다. PDF는 축척만 고르면 실제 치수가 맞습니다. 사진은 나중에 메뉴 › 📏 축척 맞추기로 아는 길이 두 점을 찍어 맞출 수 있습니다."),
+      fileIn, camIn, pdfIn);
     const seg = el("div", { class: "dt-seg" },
       el("button", { class: "on", onclick: (e) => pick(e, "blank") }, "빈 도면 (격자)"),
-      el("button", { onclick: (e) => pick(e, "photo") }, "사진·이미지 배경"));
+      el("button", { onclick: (e) => pick(e, "photo") }, "사진·PDF 배경"));
     function pick(e, k) { kind = k; for (const b of seg.children) b.classList.toggle("on", b === e.target);
       blankBox.classList.toggle("hidden", k !== "blank"); photoBox.classList.toggle("hidden", k !== "photo"); }
     sheet((b) => b.append(el("h3", {}, newProject ? "새 조사 (DXF 없이)" : "도면 추가"),
@@ -177,7 +238,7 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
           if (newProject && !pj) { toast("프로젝트 이름을 입력하세요"); return; }
           const o = { name: nm, kind };
           if (kind === "blank") { o.w = +bw.value || 30; o.h = +bh.value || 20; }
-          else { if (!file) { toast("사진을 촬영하거나 고르세요"); return; } o.file = file; o.widthM = +pw.value || 40; }
+          else { if (!file) { toast("사진·PDF를 고르세요"); return; } o.file = file; o.widthM = +pw.value || 40; if (pdf) o.pdf = true; }
           $("#modal").classList.remove("show");
           try {
             if (newProject) await createProject(pj, o);
@@ -229,6 +290,7 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
     for (const r of q("SELECT uid, rec, deleted FROM surveys WHERE sheet_id=?", [sh.id])) {
       const rec = JSON.parse(r.rec);
       if (rec.x != null) { const [x, y] = RA(rec.x, rec.y); rec.x = x - nx0; rec.y = y - ny0; }
+      if (rec.area && rec.area.length === 4) { const [a0, a1] = RA(rec.area[0], rec.area[1]), [a2, a3] = RA(rec.area[2], rec.area[3]); rec.area = [a0 - nx0, a1 - ny0, a2 - nx0, a3 - ny0]; }
       for (const k of ["bx", "by", "dx", "dy"]) if (typeof rec[k] === "number") rec[k] *= f;
       rec.updated = nowIso();
       run("UPDATE surveys SET rec=?, updated=? WHERE uid=?", [JSON.stringify(rec), rec.updated, r.uid]);

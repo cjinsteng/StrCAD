@@ -1,7 +1,7 @@
 /* offline cache for the app shell (works when served over https, e.g. GitHub Pages) */
-const CACHE = "strcad-survey-v7";
+const CACHE = "strcad-survey-v8";
 const FILES = ["./", "index.html", "app.js", "check.js", "detail.js", "sketch.js", "newsheet.js", "app.css", "manifest.webmanifest", "icon-192.png", "icon-512.png", "logo.png",
-  "vendor/sql-wasm.js", "vendor/sql-wasm.wasm"];
+  "vendor/sql-wasm.js", "vendor/sql-wasm.wasm", "vendor/pdfjs/pdf.min.js", "vendor/pdfjs/pdf.worker.min.js"];
 self.addEventListener("install", (e) => e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting())));
 self.addEventListener("activate", (e) => e.waitUntil(caches.keys().then((ks) =>
   Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())));

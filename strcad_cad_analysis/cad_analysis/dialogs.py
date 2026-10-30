@@ -455,8 +455,9 @@ class NewSheetDialog(tk.Toplevel):
         r += 1
         self.mode = tk.StringVar(value=mode)
         modes = (("blank", "빈 도면 (격자)", "도면이 전혀 없을 때 — 격자 위에 검측위치·스케치를 기록"),
-                 ("photo", "사진·이미지를 배경으로", "도면 사진/스캔/캡처를 깔고 그 위에 검측위치 기록"),
-                 ("recognize", "종이 도면 사진 → 부재 인식", "사진에서 기둥·보·벽과 부재명(G1, C1 …)을 찾아 후보로 만듦"))
+                 ("photo", "사진·이미지·PDF를 배경으로", "도면 사진/스캔/캡처/PDF를 깔고 그 위에 검측위치 기록"),
+                 ("recognize", "도면 사진·PDF → 부재 인식", "기둥·보·벽과 부재명(G1, C1 …)을 찾아 후보로 만듦 "
+                                                          "(CAD에서 만든 PDF는 글자를 그대로 읽음)"))
         for k, t, d in modes:
             ttk.Radiobutton(f, text=t, value=k, variable=self.mode, command=self._mode).grid(
                 row=r, column=0, columnspan=2, sticky="w")
@@ -482,18 +483,29 @@ class NewSheetDialog(tk.Toplevel):
         pr.pack(fill="x")
         self.path = tk.StringVar(value=path)
         ttk.Entry(pr, textvariable=self.path, width=36).pack(side="left")
-        ttk.Button(pr, text="사진 선택…", command=self._pick).pack(side="left", padx=6)
+        ttk.Button(pr, text="사진·PDF 선택…", command=self._pick).pack(side="left", padx=6)
+        self.pdf_row = ttk.Frame(self.fp, style="Card.TFrame")
+        ttk.Label(self.pdf_row, text="PDF 쪽", style="Card.TLabel").pack(side="left")
+        self.page = tk.StringVar(value="1")
+        self.page_sp = ttk.Spinbox(self.pdf_row, from_=1, to=1, textvariable=self.page, width=5, command=self._pdf_page)
+        self.page_sp.pack(side="left", padx=4)
+        self.page_sp.bind("<FocusOut>", lambda e: self._pdf_page())
+        self.pdf_info = ttk.Label(self.pdf_row, text="", foreground=TH.NAVY_L, style="Card.TLabel")
+        self.pdf_info.pack(side="left", padx=6)
+        self._pdf_sizes = []
         sr = ttk.Frame(self.fp, style="Card.TFrame")
         sr.pack(fill="x", pady=(8, 0))
+        self.sr = sr
         ttk.Label(sr, text="용지", style="Card.TLabel").pack(side="left")
         self.paper = tk.StringVar(value="A3")
-        ttk.Combobox(sr, textvariable=self.paper, values=self.PAPERS, width=5, state="readonly").pack(side="left", padx=4)
+        self.paper_cb = ttk.Combobox(sr, textvariable=self.paper, values=self.PAPERS, width=5, state="readonly")
+        self.paper_cb.pack(side="left", padx=4)
         ttk.Label(sr, text="  축척 1 /", style="Card.TLabel").pack(side="left")
         self.scale = tk.StringVar(value="200")
         ttk.Combobox(sr, textvariable=self.scale, values=self.SCALES, width=6).pack(side="left", padx=4)
         self.warp = tk.BooleanVar(value=True)
-        ttk.Checkbutton(self.fp, text="용지 모서리 맞춰 반듯하게 펴기 (비스듬히 찍은 사진)", variable=self.warp).pack(
-            anchor="w", pady=(6, 0))
+        self.warp_cb = ttk.Checkbutton(self.fp, text="용지 모서리 맞춰 반듯하게 펴기 (비스듬히 찍은 사진)", variable=self.warp)
+        self.warp_cb.pack(anchor="w", pady=(6, 0))
         ttk.Label(self.fp, text="축척을 모르면 그대로 두고, 나중에 현장조사 › 📏 축척 맞추기로 아는 길이 두 점을 찍어 맞추세요.",
                   foreground=TH.MUTED, font=TH.FONT_S, style="Card.TLabel", wraplength=420).pack(anchor="w", pady=(4, 0))
         b = ttk.Frame(f, style="Card.TFrame")
@@ -501,6 +513,8 @@ class NewSheetDialog(tk.Toplevel):
         ttk.Button(b, text="취소", command=self.destroy).pack(side="left", padx=4)
         ttk.Button(b, text="만들기", style="Accent.TButton", command=self._ok).pack(side="left")
         self._mode()
+        if path:
+            self._is_pdf()
         self.bind("<Return>", lambda e: self._ok())
         self.grab_set()
 
@@ -512,13 +526,57 @@ class NewSheetDialog(tk.Toplevel):
 
     def _pick(self):
         from tkinter import filedialog
-        p = filedialog.askopenfilename(parent=self, title="도면 사진·이미지",
-                                       filetypes=[("이미지", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp *.heic"),
+        p = filedialog.askopenfilename(parent=self, title="도면 사진·이미지·PDF",
+                                       filetypes=[("사진·PDF", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp *.heic *.pdf"),
+                                                  ("PDF", "*.pdf"), ("이미지", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp *.heic"),
                                                   ("모든 파일", "*.*")])
         if p:
             self.path.set(p)
+            self._is_pdf()
             if not self.n.get().strip() or self.n.get() == "1F":
                 self.n.set(os.path.splitext(os.path.basename(p))[0][:30])
+
+    def _is_pdf(self):
+        """PDF 를 고르면 쪽 선택 · 용지 크기 자동 · 영역 지정은 선택 사항."""
+        pdf = self.path.get().lower().endswith(".pdf")
+        if pdf:
+            from . import pdf_plan as PD
+            ok, why = PD.available()
+            if not ok:
+                messagebox.showerror("PDF 도면", why, parent=self)
+                self.path.set("")
+                pdf = False
+            else:
+                try:
+                    self._pdf_sizes = PD.page_sizes(self.path.get())
+                except Exception as e:      # noqa: BLE001
+                    messagebox.showerror("PDF 도면", f"PDF를 열 수 없습니다.\n{e}", parent=self)
+                    self.path.set("")
+                    pdf = False
+        if pdf:
+            self.page_sp.config(to=max(1, len(self._pdf_sizes)))
+            self.page.set("1")
+            self.pdf_row.pack(fill="x", pady=(6, 0), after=self.fp.winfo_children()[0])
+            self.paper_cb.config(state="disabled")
+            self.warp.set(False)
+            self.warp_cb.config(text="영역 지정 (부재 인식할 골조 범위만 고르기 — 스캔 PDF 권장)")
+            self._pdf_page()
+        else:
+            self._pdf_sizes = []
+            self.pdf_row.pack_forget()
+            self.paper_cb.config(state="readonly")
+            self.warp_cb.config(text="용지 모서리 맞춰 반듯하게 펴기 (비스듬히 찍은 사진)")
+
+    def _pdf_page(self):
+        if not self._pdf_sizes:
+            return
+        try:
+            i = min(max(int(self.page.get()), 1), len(self._pdf_sizes)) - 1
+        except ValueError:
+            i = 0
+        from . import pdf_plan as PD
+        w, h = self._pdf_sizes[i]
+        self.pdf_info.config(text=f"/ {len(self._pdf_sizes)}쪽 · 용지 {PD.paper_name(w, h)} (PDF에서 자동)")
 
     def _ok(self):
         name = self.n.get().strip()
@@ -539,6 +597,9 @@ class NewSheetDialog(tk.Toplevel):
                 out["paper"] = self.paper.get()
                 out["scale"] = float(self.scale.get())
                 out["warp"] = self.warp.get()
+                if self._pdf_sizes:
+                    out["pdf"] = True
+                    out["page"] = min(max(int(self.page.get() or 1), 1), len(self._pdf_sizes)) - 1
         except ValueError:
             messagebox.showwarning("새 조사 도면", "크기·축척은 숫자로 입력하세요.", parent=self)
             return

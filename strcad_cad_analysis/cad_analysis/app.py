@@ -39,7 +39,7 @@ from .region import detect_plans, crop, robust_extents
 from . import theme as TH
 from . import sheets as SH
 
-IMG_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", ".heic")
+IMG_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", ".heic", ".pdf")
 COLORS = {"column": "#d62828", "girder": "#1d4ed8", "beam": "#15803d", "wall": "#374151"}
 SEL = TH.ORANGE
 BG = "#ffffff"
@@ -72,7 +72,12 @@ SV_HELP = {
     "delete": "삭제할 검측위치(번호 원)를 클릭 (Ctrl+Z로 되돌리기)",
 }
 
-HELP_USAGE = """[하중조사 · 용도별 표시]
+HELP_USAGE = """[PDF 도면]
+· 파일 › 열기 또는 현장조사 › 📷 새 조사 도면 › '사진·PDF 선택'에서 PDF를 고름 → 쪽 번호 · 축척(1/N) 선택
+  - 용지 크기를 PDF에서 읽어 실제 치수가 자동으로 맞음 (축척 맞추기 불필요)
+  - '배경으로' 또는 '부재 인식' (CAD PDF는 부재명 글자를 그대로 읽음, 스캔 PDF는 '영역 지정' 권장)
+
+[하중조사 · 용도별 표시]
 · 현장조사 › 새 검측 용도 '하중조사' → 검측점 도구로 영역의 두 모서리를 클릭 (휴대폰은 손가락으로 끌기)
   - 실 용도 · 바닥 마감 · 마감 두께 · 천장 · 천장고 · 칸막이 · 설비를 고르면
     면적과 하중 참고값(마감+천장 DL, KDS 41 12 00 표 3.2-1 활하중 LL, 경량칸막이 +1.0)이 나옵니다
@@ -755,8 +760,8 @@ class CadAnalysisApp:
             return
         path = filedialog.askopenfilename(
             parent=self.root, title="구조평면도 열기", initialdir=self.cfg.get("last_dir") or None,
-            filetypes=[("DXF / DWG / 도면 사진", "*.dxf *.dwg *.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp"),
-                       ("DXF", "*.dxf"), ("도면 사진·이미지", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp"),
+            filetypes=[("DXF / DWG / PDF / 도면 사진", "*.dxf *.dwg *.pdf *.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp"),
+                       ("DXF", "*.dxf"), ("PDF 도면", "*.pdf"), ("도면 사진·이미지", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp"),
                        ("모든 파일", "*.*")])
         if not path:
             return
@@ -1009,6 +1014,9 @@ class CadAnalysisApp:
             res = SH.new_blank(o["w"], o["h"])
             self._ns_finish(res, o, f"빈 도면 {o['w']:g}×{o['h']:g} m")
             return
+        if o.get("pdf"):
+            self._ns_pdf(o)
+            return
         from . import photo_plan as PP
         ok, why = PP.available()
         if not ok and (o["mode"] == "recognize" or o.get("warp")):
@@ -1034,6 +1042,58 @@ class CadAnalysisApp:
             return
         self._ns_photo(o, None)
 
+    def _ns_pdf(self, o):
+        """PDF 도면 — 용지 크기를 PDF에서 읽으므로 축척(1/N)만으로 실제 치수가 정해짐."""
+        from . import pdf_plan as PD
+        from . import photo_plan as PP
+        ok, why = PD.available()
+        if not ok:
+            messagebox.showerror("PDF 도면", why, parent=self.root)
+            return
+        src, page, scale = o["path"], o.get("page", 0), float(o["scale"])
+        if o["mode"] == "recognize":
+            ok2, why2 = PP.available()
+            if not ok2:
+                messagebox.showerror("PDF 부재 인식", why2 + "\n\n터미널에서:  pip install -r requirements.txt", parent=self.root)
+                return
+        if o["mode"] == "recognize" and o.get("warp"):
+            # 영역 지정: 그림으로 바꿔 사진과 같은 순서로 (축척은 PDF 용지 기준으로 고정)
+            def prep():
+                pil, mm_px = PD.render(src, page, 5000)
+                import os as _os
+                _os.makedirs(SH.SHEET_DIR, exist_ok=True)
+                png = _os.path.join(SH.SHEET_DIR, f"pdf_{SH.new_uid()}.png")
+                pil.save(png)
+                return pil, png, mm_px
+
+            def ready(r):
+                pil, png, mm_px = r
+                o2 = dict(o, path=png, k_mm=mm_px * scale, pdf_src=src)
+                W, H = pil.size
+                from .dialogs import CornerDialog
+                CornerDialog(self.root, pil, [(0, 0), (W, 0), (W, H), (0, H)], lambda pts: self._ns_photo(o2, pts))
+            self._run_bg(prep, ready, "PDF 그리는 중…")
+            return
+
+        def work():
+            if o["mode"] == "recognize":
+                flat, res, _k, _t = PD.recognize_pdf(src, page, scale, log=self.log)
+                import cv2
+                from PIL import Image
+                pil = Image.fromarray(cv2.cvtColor(flat, cv2.COLOR_BGR2RGB))
+                p, _iw, _ih = SH.store_image(None, img=pil)
+                res.bg_image, res.bg_rect, res.sheet_uid = p, tuple(res.extents), SH.new_uid()
+                res.source_file = src
+                return res
+            pil, mm_px = PD.render(src, page, SH.MAX_SIDE)
+            res = SH.new_image(src, mm_per_px=mm_px * scale, img=pil)
+            return res
+
+        def done(res):
+            self._ns_finish(res, o, f"PDF {page + 1}쪽 " + ("부재 인식" if o["mode"] == "recognize" else "배경")
+                            + f" (1/{scale:g})")
+        self._run_bg(work, done, "PDF 도면 인식 중…" if o["mode"] == "recognize" else "PDF 그리는 중…")
+
     def _ns_photo(self, o, corners):
         from . import photo_plan as PP
         path = o["path"]
@@ -1047,7 +1107,7 @@ class CadAnalysisApp:
                 pil = Image.fromarray(cv2.cvtColor(flat, cv2.COLOR_BGR2RGB))
                 p, _iw, _ih = SH.store_image(None, img=pil)
                 res.bg_image, res.bg_rect, res.sheet_uid = p, tuple(res.extents), SH.new_uid()   # 펴진 사진 전체 = 도면 범위
-                res.source_file = path
+                res.source_file = o.get("pdf_src") or path
                 return res
             if corners:
                 import cv2

@@ -104,6 +104,9 @@ def rescale(res, f: float, ox=0.0, oy=0.0):
         for k in ("bx", "by", "dx", "dy"):
             if isinstance(r.get(k), (int, float)):
                 r[k] = r[k] * f
+        if r.get("area") and len(r["area"]) == 4:
+            a = r["area"]
+            r["area"] = [*P(a[0], a[1]), *P(a[2], a[3])]
     for sk in getattr(res, "sketches", []):
         p = sk.get("pts") or []
         q = []

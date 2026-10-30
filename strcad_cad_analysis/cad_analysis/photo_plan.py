@@ -981,6 +981,13 @@ def recognize_photo(path, corners=None, k_mm=None, paper="A3", scale=200, use_oc
     texts = ocr_texts(flat, log=log) if use_ocr and ocr_available() else []
     if use_ocr and not ocr_available():
         log(ocr_missing_text())
+    res = recognize_image(flat, k_mm, texts, log=log, auto_region=auto_region)
+    return flat, res, k_mm, texts
+
+
+def recognize_image(flat, k_mm, texts, log=print, auto_region=False):
+    """반듯한 도면 그림(BGR) + 글자 → AnalysisResult (사진·PDF 공통)."""
+    h, w = flat.shape[:2]
     _lines_h, rect_boxes = _shapes(flat, k_mm, texts, log)         # 외곽선 사각형(기둥) 후보
     pieces, _mask, ink = morph_lines(flat, (), log)                # 방향 열림이 글자를 걸러내므로 글자 지우기 안 함
     merged = _merge_lines([p[:4] for p in pieces], ang_tol=2.0, off_tol=2.5, gap=10.0)
@@ -993,5 +1000,4 @@ def recognize_photo(path, corners=None, k_mm=None, paper="A3", scale=200, use_oc
         texts = [t for t in texts if box[0] <= t[1] <= box[2] and box[1] <= t[2] <= box[3]]
         log(f"  골조 영역만 사용 ({box[0]:.0f},{box[1]:.0f})-({box[2]:.0f},{box[3]:.0f}): 선 {n0} → {len(merged)}개")
     col_boxes = columns_at_nodes(ink, merged, rect_boxes, log, k_mm=k_mm)
-    res = build_result(flat, k_mm, merged, col_boxes, texts, log)
-    return flat, res, k_mm, texts
+    return build_result(flat, k_mm, merged, col_boxes, texts, log)
