@@ -599,6 +599,41 @@ def remove_pick(cfg, key, val):
         lst.remove(val)
 
 
+# 사진 파일 이름: 프로젝트_도면_찍은날짜_검측번호_용도코드_순번  (예: 현장A_2F_20261030_003_sec_01.jpg)
+PURPOSE_CODE = {"부재검측": "sec", "균열검토": "cra", "하중조사": "load"}
+
+
+def purpose_code(purpose, P=None):
+    p = (P or {}).get(purpose) or {}
+    return p.get("code") or PURPOSE_CODE.get(purpose) or safe_part(purpose or "etc")
+
+
+def safe_part(t):
+    t = "".join("_" if c in '\\/:*?"<>|\r\n\t' else c for c in str(t or "")).strip()
+    return "-".join(t.split()) or "미지정"
+
+
+def photo_date(path):
+    """찍은 날짜 YYYYMMDD — 사진 EXIF(DateTimeOriginal) → 없으면 파일 수정일."""
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            ex = im.getexif()
+            v = (ex.get_ifd(0x8769) or {}).get(36867) or ex.get(306)
+            if v and len(str(v)) >= 10:
+                return str(v)[:10].replace(":", "").replace("-", "")
+    except Exception:          # noqa: BLE001
+        pass
+    try:
+        return datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y%m%d")
+    except OSError:
+        return date.today().strftime("%Y%m%d")
+
+
+def photo_base(project, sheet, ymd, no, code):
+    return f"{safe_part(project)}_{safe_part(sheet)}_{ymd}_{int(no or 0):03d}_{code}"
+
+
 def photo_folder(cfg, project, floor):
     base = cfg.get("photo_dir") or os.path.join(os.path.expanduser("~"), ".strcad", "photos")
     safe = lambda t: "".join(c if c not in '\\/:*?"<>|' else "_" for c in (t or "미지정")).strip() or "미지정"

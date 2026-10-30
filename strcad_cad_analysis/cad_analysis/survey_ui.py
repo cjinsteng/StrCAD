@@ -56,12 +56,29 @@ def add_drop(widget, on_files) -> bool:
         return False
 
 
-def copy_photos(files, folder, prefix=""):
-    """Copy image files into the project photo folder (keeps originals). Returns new paths."""
+def copy_photos(files, folder, prefix="", namer=None):
+    """Copy image files into the project photo folder (keeps originals). Returns new paths.
+    namer(src) → 이름 앞부분(확장자 없이) — 뒤에 _01, _02 … 순번을 붙임. 같은 사진을 두 번 넣으면 기존 파일 사용."""
     out = []
     os.makedirs(folder, exist_ok=True)
     for f in files:
         if not os.path.isfile(f) or not f.lower().endswith(IMG_EXT):
+            continue
+        ext = os.path.splitext(f)[1].lower()
+        if namer:
+            stem = namer(f)
+            same = [os.path.join(folder, n) for n in os.listdir(folder) if n.startswith(stem + "_")]
+            dup = next((d for d in same if _same_file(f, d)), None)
+            if dup:
+                out.append(dup)
+                continue
+            k = 1
+            while os.path.exists(os.path.join(folder, f"{stem}_{k:02d}{ext}")) or \
+                    any(n.startswith(f"{stem}_{k:02d}.") for n in os.listdir(folder)):
+                k += 1
+            dst = os.path.join(folder, f"{stem}_{k:02d}{ext}")
+            shutil.copy2(f, dst)
+            out.append(dst)
             continue
         base = prefix + os.path.basename(f)
         dst = os.path.join(folder, base)

@@ -244,20 +244,23 @@ def originals_index(base, depth=4):
         if root.count(os.sep) - base_depth >= depth:
             dirs[:] = []
         for fn in files:
+            if not fn.lower().endswith((".jpg", ".jpeg", ".png", ".heic", ".webp")):
+                continue
             m = PH_RE.search(fn)
-            if m and fn.lower().endswith((".jpg", ".jpeg", ".png", ".heic", ".webp")):
-                p = os.path.join(root, fn)
-                if m.group(0) not in out or os.path.getsize(p) > os.path.getsize(out[m.group(0)]):
-                    out[m.group(0)] = p
+            key = m.group(0) if m else "name:" + os.path.splitext(fn)[0]      # 새 이름 규칙은 파일 이름으로 찾음
+            p = os.path.join(root, fn)
+            if key not in out or os.path.getsize(p) > os.path.getsize(out[key]):
+                out[key] = p
     return out
 
 
-def find_photo_file(cfg, project, uid):
-    """프로젝트 사진 폴더에서 이름에 uid가 들어간 파일"""
+def find_photo_file(cfg, project, uid, name=None):
+    """프로젝트 사진 폴더에서 이름에 uid가 들어간 파일 — 새 이름 규칙(프로젝트_도면_날짜_번호_용도_순번)은 이름으로."""
     base = os.path.dirname(SV.photo_folder(cfg, project, "x"))
+    stem = os.path.splitext(os.path.basename(name))[0] if name else None
     for root, _d, files in os.walk(base):
         for fn in files:
-            if uid in fn:
+            if uid in fn or (stem and os.path.splitext(fn)[0] == stem):
                 return os.path.join(root, fn)
     return None
 
@@ -387,11 +390,13 @@ def import_package(path, cfg, log=print, originals_dir="auto"):
                     # 휴대폰 사진: 파일 이름에 uid → 같은 사진은 한 파일, 원본이 있으면 원본으로
                     pname, data = photos[u]
                     pre = f"{int(rec.get('no') or 0):03d}_"
-                    orig = originals.get(u)
+                    if not pname.startswith("ph_"):
+                        pre = ""                          # 새 이름 규칙(프로젝트_도면_날짜_번호_용도_순번)은 그대로
+                    orig = originals.get(u) or originals.get("name:" + os.path.splitext(pname)[0])
                     if orig:
                         pname = os.path.splitext(pname)[0] + os.path.splitext(orig)[1].lower()
                     os.makedirs(folder, exist_ok=True)
-                    dst = find_photo_file(cfg, mt[1] if mt else project, u) or \
+                    dst = find_photo_file(cfg, mt[1] if mt else project, u, None if PH_RE.search(pname) else pname) or \
                         os.path.join(folder, pname if pname.startswith(pre) else pre + pname)
                     if orig and os.path.splitext(dst)[1].lower() != os.path.splitext(orig)[1].lower():
                         dst = os.path.splitext(dst)[0] + os.path.splitext(orig)[1].lower()
@@ -515,7 +520,7 @@ class LinkServer:
                 if not PH_RE.fullmatch(uid) or not data:
                     return self._json(400, {"error": "bad photo"})
                 with outer.lock:
-                    cur = find_photo_file(outer.cfg, project, uid)
+                    cur = find_photo_file(outer.cfg, project, uid, name if not PH_RE.search(name) else None)
                     ext = os.path.splitext(name)[1].lower() or ".jpg"
                     if cur is None:
                         folder = os.path.join(os.path.dirname(SV.photo_folder(outer.cfg, project, "x")), "_원본(미연결)")

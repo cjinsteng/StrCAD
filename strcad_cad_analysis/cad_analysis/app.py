@@ -3078,7 +3078,11 @@ class CadAnalysisApp:
     def _sv_photo_add(self, files):
         e = self._sv_rec()
         folder = SV.photo_folder(self.cfg, self.project, self.db_name or "미저장")
-        return SU.copy_photos(files, folder, prefix=f"{e['no']:03d}_" if e else "")
+        if not e:
+            return SU.copy_photos(files, folder)
+        code = SV.purpose_code(e.get("purpose"), self.P)
+        return SU.copy_photos(files, folder, namer=lambda f: SV.photo_base(
+            self.project or "프로젝트", self.db_name or "도면", SV.photo_date(f), e.get("no"), code))
 
     def _sv_drop_photos(self, files):
         if not self._sv_begin_edit():

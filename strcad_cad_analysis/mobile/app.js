@@ -221,6 +221,22 @@ function photoURL(id) {
   S.photoURL.set(id, u); return u;
 }
 
+// ---- 사진 파일 이름: 프로젝트_도면_찍은날짜_검측번호_용도코드_순번 (예: 현장A_2F_20261030_003_sec_01.jpg)
+const PURPOSE_CODE = { "부재검측": "sec", "균열검토": "cra", "하중조사": "load" };
+function purposeCode(p) { const P = S.purposes[p] || {}; return P.code || PURPOSE_CODE[p] || namePart(p || "etc"); }
+function namePart(t) { return String(t || "").replace(/[\\/:*?"<>|\r\n\t]/g, "_").trim().split(/\s+/).join("-") || "미지정"; }
+function ymd(d) { return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`; }
+function photoBase(rec, f) {
+  const taken = new Date(f && f.lastModified ? f.lastModified : Date.now());
+  return [namePart(S.meta.project || "프로젝트"), namePart(S.sheet ? S.sheet.name : "도면"), ymd(taken),
+    String(rec.no).padStart(3, "0"), purposeCode(rec.purpose)].join("_");
+}
+function nextPhotoName(base) {
+  const used = new Set(q("SELECT name FROM photos WHERE name LIKE ?", [base + "_%"]).map((r) => r.name.replace(/\.[^.]+$/, "")));
+  let k = 1; while (used.has(`${base}_${String(k).padStart(2, "0")}`)) k++;
+  return `${base}_${String(k).padStart(2, "0")}`;
+}
+
 // ---- 진행 표시 (사진·PDF 올리기, 파일 열기·저장, PC 전송 …) — 화면을 덮고 "올리는 중…" + 진행
 let busyN = 0;
 function busy(text, sub = "") {
@@ -248,11 +264,12 @@ async function addPhotoFiles(files, rec) {
     const id = "ph_" + uid().slice(0, 16);
     const no3 = String(rec.no).padStart(3, "0");
     const ext = ((f.name || "").match(/\.([A-Za-z0-9]{2,5})$/) || [, f.type === "image/png" ? "png" : "jpg"])[1].toLowerCase();
+    const base = photoBase(rec, f), nm = nextPhotoName(base);          // 프로젝트_도면_날짜_번호_용도_순번
     // 원본은 휴대폰 저장소에 그대로, DB에는 화면 표시용 축소본 (원본은 PC로 보낼 때 따로 전송)
     let origOk = false;
     if (NATIVE) {
       try {
-        const rel = `StrCAD/사진/${safeName(S.meta.project)}/${no3}_${id}.${ext}`;
+        const rel = `StrCAD/사진/${safeName(S.meta.project)}/${nm}.${ext}`;
         const r = await saveToDevice(rel, new Uint8Array(await f.arrayBuffer()));
         run("INSERT OR REPLACE INTO orig (uid, path, dir, size, sent) VALUES (?,?,?,?,0)", [id, rel, r.dir, f.size]);
         origOk = true;
@@ -260,7 +277,7 @@ async function addPhotoFiles(files, rec) {
     }
     const blob = await shrinkImage(f, 1600, 0.82);
     const data = new Uint8Array(await blob.arrayBuffer());
-    run("INSERT INTO photos (uid, survey_uid, name, mime, data, created) VALUES (?,?,?,?,?,?)", [id, rec.uid, `${no3}_${id}.jpg`, "image/jpeg", data, nowIso()]);
+    run("INSERT INTO photos (uid, survey_uid, name, mime, data, created) VALUES (?,?,?,?,?,?)", [id, rec.uid, `${nm}.jpg`, "image/jpeg", data, nowIso()]);
     if (origOk) S.origSaved = (S.origSaved || 0) + 1;
     ids.push(id);
   }
