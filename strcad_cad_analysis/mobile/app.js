@@ -221,10 +221,30 @@ function photoURL(id) {
   S.photoURL.set(id, u); return u;
 }
 
+// ---- 진행 표시 (사진·PDF 올리기, 파일 열기·저장, PC 전송 …) — 화면을 덮고 "올리는 중…" + 진행
+let busyN = 0;
+function busy(text, sub = "") {
+  let ov = $("#busy");
+  if (!ov) { ov = el("div", { id: "busy" }, el("div", { class: "bz-card" }, el("div", { class: "bz-spin" }), el("b", { class: "bz-t" }), el("small", { class: "bz-s" }),
+    el("div", { class: "bz-bar" }, el("i")))); document.body.append(ov); }
+  busyN++; ov.classList.add("show");
+  const set = (t, sb = "", frac = null) => { ov.querySelector(".bz-t").textContent = t; ov.querySelector(".bz-s").textContent = sb;
+    const bar = ov.querySelector(".bz-bar"); bar.classList.toggle("on", frac != null); if (frac != null) bar.firstChild.style.width = Math.round(Math.max(0, Math.min(1, frac)) * 100) + "%"; };
+  set(text, sub);
+  let closed = false;
+  return { set, close() { if (closed) return; closed = true; busyN = Math.max(0, busyN - 1); if (!busyN) ov.classList.remove("show"); } };
+}
+const paint = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));     // 표시가 먼저 그려지게
+async function withBusy(text, fn, sub = "") { const b = busy(text, sub); await paint(); try { return await fn(b); } finally { b.close(); } }
+window.withBusy = withBusy; window.busy = busy; window.paint = paint;
+
 async function addPhotoFiles(files, rec) {
+  const imgs = [...files].filter((f) => f.type.startsWith("image/"));
+  if (!imgs.length) return [];
+  return withBusy("사진 올리는 중…", async (b) => {
   const ids = [];
-  for (const f of files) {
-    if (!f.type.startsWith("image/")) continue;
+  for (const [i, f] of imgs.entries()) {
+    b.set("사진 올리는 중…", `${i + 1} / ${imgs.length}장`, i / imgs.length); await paint();
     const id = "ph_" + uid().slice(0, 16);
     const no3 = String(rec.no).padStart(3, "0");
     const ext = ((f.name || "").match(/\.([A-Za-z0-9]{2,5})$/) || [, f.type === "image/png" ? "png" : "jpg"])[1].toLowerCase();
@@ -244,8 +264,10 @@ async function addPhotoFiles(files, rec) {
     if (origOk) S.origSaved = (S.origSaved || 0) + 1;
     ids.push(id);
   }
+  b.set("사진 올리는 중…", `${imgs.length} / ${imgs.length}장`, 1);
   persistSoon();
   return ids;
+  });
 }
 
 function shrinkImage(file, maxSide, quality) {
@@ -322,7 +344,7 @@ async function saveFile() {
   const fname = `${(S.meta.project || "현장조사").replace(/[\\/:*?"<>|]/g, "_")}_현장조사_${today()}.strsv`;
   if (NATIVE) {
     try {
-      const r = await saveToDevice(`StrCAD/${fname}`, bytes);
+      const r = await withBusy("저장하는 중…", () => saveToDevice(`StrCAD/${fname}`, bytes), fname);
       const no = q("SELECT COUNT(*) AS n FROM orig")[0].n;
       savedSheet(r, fname, no ? `원본 사진 ${no}장: ${r.where.split(" › StrCAD")[0]} › StrCAD › 사진 › ${safeName(S.meta.project)} — PC로 옮길 때 이 '사진' 폴더도 함께 옮기면 PC가 원본으로 바꿉니다. (Wi-Fi 'PC로 보내기'는 원본을 자동 전송)` : "");
     } catch (e) { alert("저장 실패: " + (e.message || e)); }
@@ -1050,9 +1072,9 @@ $("#miSketch").onclick = () => { $("#menu").classList.remove("show"); if (window
 for (const id of ["#fileOpen", "#fileOpen2"]) $(id).onchange = async (e) => {
   const f = e.target.files[0]; e.target.value = ""; $("#menu").classList.remove("show"); if (!f) return;
   if (S.db && !confirm("지금 열린 조사를 닫고 새 파일을 열까요?\n(저장 안 한 내용은 '저장/공유'로 먼저 내보내세요)")) return;
-  try { await openBytes(await f.arrayBuffer(), f.name); } catch (err) { alert(err.message); }
+  try { await withBusy("파일 여는 중…", async () => openBytes(await f.arrayBuffer(), f.name), f.name); } catch (err) { alert(err.message); }
 };
-$("#btnResume").onclick = async () => { const c = await IDB.get("current"); if (c) { await openBytes(c.bytes, c.name); toast(`이어서 하기 (${c.saved})`); } };
+$("#btnResume").onclick = async () => { const c = await IDB.get("current"); if (c) { await withBusy("불러오는 중…", () => openBytes(c.bytes, c.name), c.name); toast(`이어서 하기 (${c.saved})`); } };
 
 function pcBase() { return NATIVE ? (localStorage.getItem("pcBase") || "") : ""; }
 async function askPcAddress() {
@@ -1071,9 +1093,12 @@ async function pcGet() {
     const pj = await (await fetch(pcBase() + "api/projects")).json();
     const project = pj.length === 1 ? pj[0] : prompt("PC의 프로젝트 이름:\n" + pj.join("\n"), pj[0] || "");
     if (project == null) return;
-    const r = await fetch(pcBase() + "api/package?project=" + encodeURIComponent(project));
-    if (!r.ok) throw new Error(await r.text());
-    await openBytes(await r.arrayBuffer(), project + ".strsv");
+    await withBusy("PC에서 받는 중…", async (b) => {
+      const r = await fetch(pcBase() + "api/package?project=" + encodeURIComponent(project));
+      if (!r.ok) throw new Error(await r.text());
+      b.set("PC에서 받는 중…", "도면·조사 내용 여는 중");
+      await openBytes(await r.arrayBuffer(), project + ".strsv");
+    }, project);
   } catch (e) { alert("PC에서 받기 실패: " + e.message); }
 }
 async function pcPut() {
@@ -1082,8 +1107,9 @@ async function pcPut() {
   if (NATIVE && !pcBase() && !(await askPcAddress())) return;
   try {
     saveMeta("mobile_saved", nowIso());
-    const r = await fetch(pcBase() + "api/upload", { method: "POST", body: S.db.export(), headers: { "Content-Type": "application/octet-stream" } });
-    const j = await r.json(); if (!r.ok) throw new Error(j.error || r.status);
+    const j = await withBusy("PC로 올리는 중…", async () => {
+      const r = await fetch(pcBase() + "api/upload", { method: "POST", body: S.db.export(), headers: { "Content-Type": "application/octet-stream" } });
+      const jj = await r.json(); if (!r.ok) throw new Error(jj.error || r.status); return jj; }, "조사 내용 · 사진 축소본");
     toast(`PC 반영: 추가 ${j.added}, 수정 ${j.updated}, 삭제 ${j.deleted}, 사진 ${j.photos}`, 4000);
     if (NATIVE) await sendOriginals();
   } catch (e) { alert("PC로 보내기 실패: " + e.message); }
@@ -1092,8 +1118,9 @@ async function sendOriginals() {
   const rows = q("SELECT uid, path, dir FROM orig WHERE sent=0");
   if (!rows.length) return;
   let ok = 0, fail = 0;
+  const bz = busy("원본 사진 PC로 올리는 중…");
   for (const [i, r] of rows.entries()) {
-    hint(`원본 사진 보내는 중 ${i + 1}/${rows.length}`);
+    bz.set("원본 사진 PC로 올리는 중…", `${i + 1} / ${rows.length}장`, i / rows.length);
     try {
       const f = await FSP().readFile({ path: r.path, directory: r.dir });
       const bin = atob(f.data), bytes = new Uint8Array(bin.length);
@@ -1104,7 +1131,7 @@ async function sendOriginals() {
       run("UPDATE orig SET sent=1 WHERE uid=?", [r.uid]); ok++;
     } catch (e) { fail++; }
   }
-  hint(""); persistSoon();
+  bz.close(); persistSoon();
   toast(`원본 사진 ${ok}장 PC 전송` + (fail ? ` · 실패 ${fail}장 (다음에 다시 보냄)` : ""), 4000);
 }
 $("#btnInsp").onclick = askInspector;

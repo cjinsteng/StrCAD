@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
       const bar = el("div", { class: "ce-bar" },
         el("span", {}, "주황 점 네 개를 용지(도면) 모서리로 끌어 놓으세요"),
         el("button", { class: "b gray", onclick: () => done(null) }, "취소"),
-        el("button", { class: "b ok", onclick: () => done(warp()) }, "펴기"));
+        el("button", { class: "b ok", onclick: async () => { const v = await withBusy("사진 펴는 중…", () => warp(), "잠시만 기다려 주세요"); done(v); } }, "펴기"));
       ov.append(cv2, bar); document.body.append(ov);
       const g = cv2.getContext("2d");
       let k = 1, ox = 0, oy = 0;
@@ -193,24 +193,26 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
       pdfInfo.textContent = `${pdf.n}쪽 중 ${pgIn.value}쪽 · 용지 ${paperName(pdf.wmm, pdf.hmm)} (PDF에서 자동) → 가로 ${pw.value} m`; };
     const pdfShow = async () => {
       const n = Math.min(Math.max(parseInt(pgIn.value) || 1, 1), pdf.n); pgIn.value = n;
-      prev.textContent = "PDF 그리는 중…";
-      const inf = await pdfPageInfo(pdf.doc, n); pdf.wmm = inf.wmm; pdf.hmm = inf.hmm; pdfWidth();
-      file = await pdfRender(pdf.doc, n); showPrev(file); warpBtn.classList.add("hidden");
+      await withBusy("PDF 올리는 중…", async () => {
+        const inf = await pdfPageInfo(pdf.doc, n); pdf.wmm = inf.wmm; pdf.hmm = inf.hmm; pdfWidth();
+        file = await pdfRender(pdf.doc, n); showPrev(file); warpBtn.classList.add("hidden");
+      }, `${n}쪽 그리는 중`);
     };
     pgIn.onchange = () => pdf && pdfShow().catch((e) => toast("PDF: " + (e.message || e)));
     scIn.onchange = pdfWidth;
     pdfIn.onchange = async (e) => {
       const f = e.target.files[0]; if (!f) return;
       try {
-        prev.textContent = "PDF 여는 중…";
-        const doc = await pdfOpen(f); pdf = { doc, n: doc.numPages }; pgIn.value = 1; pdfBox.classList.remove("hidden");
+        const doc = await withBusy("PDF 올리는 중…", () => pdfOpen(f), f.name); pdf = { doc, n: doc.numPages }; pgIn.value = 1; pdfBox.classList.remove("hidden");
         if (name.value === "1F" || !name.value.trim()) name.value = f.name.replace(/\.pdf$/i, "").slice(0, 30);
         await pdfShow();
       } catch (er) { pdf = null; pdfBox.classList.add("hidden"); prev.textContent = "PDF를 열 수 없습니다"; toast("PDF: " + (er.message || er), 4000); }
     };
     const camIn = el("input", { type: "file", accept: "image/*", capture: "environment", hidden: "" });
     const showPrev = (blob) => { prev.innerHTML = ""; prev.append(el("img", { src: URL.createObjectURL(blob) })); };
-    const onFile = (e) => { const f = e.target.files[0]; if (!f) return; file = f; pdf = null; pdfBox.classList.add("hidden"); showPrev(f); warpBtn.classList.remove("hidden"); };
+    const onFile = async (e) => { const f = e.target.files[0]; if (!f) return; file = f; pdf = null; pdfBox.classList.add("hidden");
+      await withBusy("사진 올리는 중…", async () => { showPrev(f); const im = prev.querySelector("img"); if (im) await new Promise((r) => { im.onload = im.onerror = r; }); }, f.name || "");
+      warpBtn.classList.remove("hidden"); };
     const warpBtn = el("button", { class: "b gray hidden", onclick: async () => {
       const out = await cornerEditor(file); if (out) { file = out; showPrev(out); toast("반듯하게 폈습니다"); } } }, "📐 모서리 맞춰 펴기");
     fileIn.onchange = onFile; camIn.onchange = onFile;
@@ -241,8 +243,10 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
           else { if (!file) { toast("사진·PDF를 고르세요"); return; } o.file = file; o.widthM = +pw.value || 40; if (pdf) o.pdf = true; }
           $("#modal").classList.remove("show");
           try {
-            if (newProject) await createProject(pj, o);
-            else { await addSheet(S.db, o); S.sheets = q("SELECT id, analysis_id, seq, name FROM sheets ORDER BY seq, id"); loadSheet(S.sheets.length - 1); persistSoon(); }
+            await withBusy(kind === "blank" ? "도면 만드는 중…" : "도면 올리는 중…", async () => {
+              if (newProject) await createProject(pj, o);
+              else { await addSheet(S.db, o); S.sheets = q("SELECT id, analysis_id, seq, name FROM sheets ORDER BY seq, id"); loadSheet(S.sheets.length - 1); persistSoon(); }
+            }, nm);
             toast(`'${nm}' 도면을 만들었습니다 — 검측점을 찍으세요`);
           } catch (e) { toast("만들지 못했습니다: " + (e.message || e), 4000); }
         } }, "만들기"))));
