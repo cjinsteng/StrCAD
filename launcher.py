@@ -3,6 +3,7 @@ STR Design & Check  —  런처 메인 화면
 · 헤더: 타이틀 / 로그인 상태 / [로그인] 버튼
 · 2×3 모듈 카드 그리드 (로그인 전 잠금)
 · CAD Analysis → DXF 분석기 창 실행
+· Basic Design → 재료·부재 선택 후 부재별 기본 설계 (basic_design/)
 · Report Design → 진단·검토 보고서 작성 도우미 (report_design/)
 · 하단 ver. 1.0.0
 기본 계정: 1234 / 1234   |   user1 / pass1234   ·   회원가입한 계정 (accounts.py, ~/.strcad/users.json)
@@ -248,7 +249,7 @@ class ModCard(tk.Frame):
 # ── 메인 런처 ─────────────────────────────────────────────
 class Launcher(tk.Tk):
     _MODS = [
-        ("basic_design","Basic Design", "구조 기본 설계",     "📐",None,  0,0),
+        ("basic_design","Basic Design", "RC·Steel 부재별\n기본 설계", "📐","NEW", 0,0),
         ("2d_design",   "2D Design",    "2D 도면 작업",       "✏️","NEW", 0,1),
         ("3d_design",   "3D Design",    "3D 구조 모델링",     "🧱","NEW", 0,2),
         ("cad_analysis","CAD Analysis", "DXF 구조도면 분석",  "🔍",None,  1,0),
@@ -390,7 +391,7 @@ class Launcher(tk.Tk):
             if not self._user: return
             if not self._module_ok(mid): return
             if   mid == "cad_analysis":  self._open_cad()
-            elif mid == "basic_design":  messagebox.showinfo("준비 중","Basic Design\n모듈 준비 중입니다.", parent=self)
+            elif mid == "basic_design":  self._open_basic()
             elif mid == "2d_design":     self._open_2d()
             elif mid == "3d_design":     self._open_3d()
             elif mid == "auto_table":    self._open_auto_table()
@@ -494,6 +495,18 @@ class Launcher(tk.Tk):
         except Exception as e:
             import traceback
             messagebox.showerror("Report Design 오류", f"{e}\n\n{traceback.format_exc()}", parent=self)
+
+    def _open_basic(self):
+        """Basic Design (basic_design/) — 재료 → 부재 → 설계 방식 선택 후 부재별 설계 창"""
+        try:
+            from basic_design import open_basic_design
+            nm = (getattr(self, "_uinfo", None) or {}).get("name") or self._user
+            open_basic_design(self, username=nm)
+        except ImportError as e:
+            messagebox.showerror("모듈 오류", f"basic_design 폴더를 찾을 수 없습니다.\n{e}", parent=self)
+        except Exception as e:
+            import traceback
+            messagebox.showerror("Basic Design 오류", f"{e}\n\n{traceback.format_exc()}", parent=self)
 
     def _open_3d(self):
         try:
@@ -762,7 +775,7 @@ def _selftest(out):
     try:
         import importlib
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_design"))
-        for m in ("accounts", "cad_analysis.app", "cad_analysis.licensing", "cad_analysis.licensing_ui", "design_2d",
+        for m in ("accounts", "cad_analysis.app", "cad_analysis.licensing", "cad_analysis.licensing_ui", "design_2d", "basic_design", "basic_design.rc.slab_lite",
                   "olefile", "docx", "hwp_reader", "docx_doc", "docx_table", "docx_pages", "hwp_to_word", "report_core", "report_assistant"):
             try: importlib.import_module(m); lines.append("OK " + m)
             except Exception as e: lines.append(f"FAIL {m} {e!r}")
