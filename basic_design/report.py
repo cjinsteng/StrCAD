@@ -36,6 +36,10 @@ class Report:
         rows 의 원소가 None 이면 구분선."""
         self.items.append(("table", head, rows, widths, aligns or ["c"] * len(widths)))
 
+    def fig(self, height, draw, title=""):
+        """그림: draw(cv, x, y, w, h) 로 그린다 (화면·PDF 공용)"""
+        self.items.append(("fig", height, draw, title))
+
     # ── 텍스트 내보내기 ──────────────────────────────────────
     def to_text(self):
         out = []
@@ -49,6 +53,8 @@ class Report:
             elif it[0] == "gap":
                 if it[1] >= 8:
                     out.append("")
+            elif it[0] == "fig":
+                out.append(f"  [그림] {it[3]}")
             elif it[0] == "table":
                 _, head, rows, widths, aligns = it
                 cw = [max(6, w // 8) for w in widths]
@@ -132,6 +138,11 @@ def render(cv, rep, sketch=None, sketch_box=(590, 18, 290, 330), breaks=None):
                 breaks.append(y)
         elif kind == "gap":
             y += it[1]
+        elif kind == "fig":
+            breaks.append(y)
+            it[2](cv, MARGIN, y, PAGE_W - 2 * MARGIN, it[1])
+            y += it[1] + 8
+            breaks.append(y)
         elif kind == "table":
             if sketch and y < sy + sh + 8:
                 y = sy + sh + 14                        # 표는 그림 아래에서 시작

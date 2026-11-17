@@ -88,6 +88,10 @@ class MemberWindow:
     def compute(self, vals):
         raise NotImplementedError
 
+    def compute_print(self, vals):
+        """출력용 계산 (기본: 화면과 같음) — 출력에만 그림을 더 넣을 때 재정의"""
+        return self.compute(vals)
+
     def kind_text(self, vals):
         return ""
 
@@ -529,7 +533,7 @@ class MemberWindow:
         items, skipped = [], []
         for m in targets:
             try:
-                out = self.compute(m["values"])
+                out = self.compute_print(m["values"])
             except self.InputError:
                 skipped.append(m["values"].get("name", "?"))
                 continue
