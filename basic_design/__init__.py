@@ -29,7 +29,8 @@ CATALOG = [
              "open": "basic_design.rc.slab_table_app:open_slab_table"},
         ]},
         {"id": "beam", "title": "Beam", "sub": "보", "modes": [
-            {"id": "lite", "title": "Lite", "sub": "단일 보 단면 설계"},
+            {"id": "lite", "title": "Lite", "sub": "직사각형 보 단면 검토\n단면 1~3개 (단부·중앙부)",
+             "open": "basic_design.rc.beam_lite:open_beam_lite"},
             {"id": "pro", "title": "Pro", "sub": "연속보 해석·설계"},
         ]},
         {"id": "column", "title": "Column", "sub": "기둥", "modes": [
