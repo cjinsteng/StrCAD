@@ -8,7 +8,9 @@ import tkinter.font as tkfont
 
 from . import theme as T
 
-STYLE_FG = {"n": T.INK, "b": T.INK, "sub": T.INK, "ok": T.OK, "ng": T.NG, "dim": T.MUTED, "warn": T.WARN, "blue": T.OK}
+STYLE_FG = {"n": T.INK, "b": T.INK, "sub": T.INK, "ok": T.OK, "ng": T.NG, "dim": T.MUTED, "warn": T.WARN, "blue": T.OK,
+            "bgw": "#854D0E", "bgo": "#9A3412"}
+CELL_BG = {"bgw": "#FEF3C7", "bgo": "#FFEDD5"}       # 검토 칸 배경 (노랑: 간격, 주황: 최소철근)
 MARGIN = 26
 INDENT = 18
 LINE_H = 21
@@ -153,10 +155,13 @@ def _draw_table(cv, F, it, y, breaks):
     for i, hr in enumerate(head):
         x = x0
         for j, c in enumerate(hr):
-            txt, style = (c if isinstance(c, tuple) else (c, "n"))
+            txt, style = (c[:2] if isinstance(c, tuple) else (c, "n"))
             if style == "sel":                                # 사용 철근 열 강조
                 cv.create_rectangle(x + 2, y + 2 + rh * i, x + widths[j] - 2, y + 2 + rh * (i + 1),
                                     fill=T.ORANGE, outline="")
+            elif style == "hw":                               # 검토 필요 열(머리글)
+                cv.create_rectangle(x + 2, y + 2 + rh * i, x + widths[j] - 2, y + 2 + rh * (i + 1),
+                                    fill="#FDBA74", outline="")
             if txt:
                 cv.create_text(x + widths[j] / 2, y + 2 + rh * i + rh / 2, text=txt,
                                font=F["b"] if style == "sel" else F["n"], fill="white" if style == "sel" else T.INK)
@@ -169,10 +174,15 @@ def _draw_table(cv, F, it, y, breaks):
             continue
         x = x0
         for j, c in enumerate(r):
-            txt, style = (c if isinstance(c, tuple) else (c, "n"))
+            txt, style = (c[:2] if isinstance(c, tuple) else (c, "n"))
+            tip = c[2] if isinstance(c, tuple) and len(c) > 2 else None
+            if style in CELL_BG:
+                cv.create_rectangle(x + 1, y + 1, x + widths[j] - 1, y + rh - 1, fill=CELL_BG[style], outline="")
+            if tip and hasattr(cv, "tip_rects"):              # 마우스 설명 영역 (화면 전용)
+                cv.tip_rects.append((x, y, x + widths[j], y + rh, tip))
             if txt:
                 al = aligns[j] if j < len(aligns) else "c"
-                f = F["b"] if style in ("b", "ng") else F["n"]
+                f = F["b"] if style in ("b", "ng", "bgw", "bgo") else F["n"]
                 fg = STYLE_FG.get(style, T.INK)
                 if al == "l":
                     cv.create_text(x + 8, y + rh / 2, text=txt, anchor="w", font=f, fill=fg)

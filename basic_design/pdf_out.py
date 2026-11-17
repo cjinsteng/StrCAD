@@ -208,7 +208,7 @@ def _pages_for(rep, sketch, sketch_box, scale, page_h):
     return out
 
 
-def _compose(body, header, name, page_no, page_cnt, stamp):
+def _compose(body, header, name, page_no, page_cnt, stamp, footer):
     from PIL import Image, ImageDraw
     W, H = _mm(A4_MM[0]), _mm(A4_MM[1])
     mx = _mm(MARGIN_X_MM)
@@ -227,13 +227,13 @@ def _compose(body, header, name, page_no, page_cnt, stamp):
     page.paste(body, (mx, _mm(HEAD_MM)))
     y_f = H - _mm(FOOT_MM) + _mm(4)
     d.line([(mx, y_f), (W - mx, y_f)], fill="#9CA3AF", width=max(int(k * 0.6), 1))
-    d.text((mx, y_f + _mm(1.5)), "StrCAD  ·  Basic Design  │  RC Slab Lite", font=f_small, fill=T.MUTED, anchor="lt")
+    d.text((mx, y_f + _mm(1.5)), footer, font=f_small, fill=T.MUTED, anchor="lt")
     d.text((W / 2, y_f + _mm(1.5)), stamp, font=f_small, fill=T.MUTED, anchor="mt")
     d.text((W - mx, y_f + _mm(1.5)), f"{page_no} / {page_cnt}", font=f_small, fill=T.MUTED, anchor="rt")
     return page
 
 
-def render_pages(items, header="RC SLAB DESIGN"):
+def render_pages(items, header="RC SLAB DESIGN", footer="StrCAD  ·  Basic Design  │  RC Slab Lite"):
     """items: [(report, sketch_fn, sketch_box, name), …] → A4 쪽 이미지 목록 (부재마다 새 쪽)"""
     try:
         import PIL  # noqa: F401
@@ -247,7 +247,7 @@ def render_pages(items, header="RC SLAB DESIGN"):
         for body in _pages_for(rep, sketch, box, scale, page_h):
             parts.append((body, name))
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    return [_compose(body, header, name, i + 1, len(parts), stamp) for i, (body, name) in enumerate(parts)]
+    return [_compose(body, header, name, i + 1, len(parts), stamp, footer) for i, (body, name) in enumerate(parts)]
 
 
 def write_pdf(path, pages):
@@ -290,8 +290,8 @@ def write_pdf(path, pages):
         f.write(out)
 
 
-def export_pdf(path, items, header="RC SLAB DESIGN"):
-    pages = render_pages(items, header)
+def export_pdf(path, items, header="RC SLAB DESIGN", footer="StrCAD  ·  Basic Design  │  RC Slab Lite"):
+    pages = render_pages(items, header, footer)
     write_pdf(path, pages)
     return len(pages)
 

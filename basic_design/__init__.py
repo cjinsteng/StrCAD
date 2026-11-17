@@ -24,7 +24,8 @@ CATALOG = [
             {"id": "lite", "title": "Lite", "sub": "1방향·2방향 등분포하중\n단일 슬래브 설계",
              "open": "basic_design.rc.slab_lite:open_slab_lite"},
             {"id": "pro", "title": "Pro", "sub": "집중·라인·분포하중 자유 재하\n유한요소해석 설계"},
-            {"id": "table", "title": "Table", "sub": "강도·배근 입력 →\n배근별 모멘트 일람표"},
+            {"id": "table", "title": "Table", "sub": "강도·배근 입력 →\n배근별 모멘트 일람표",
+             "open": "basic_design.rc.slab_table_app:open_slab_table"},
         ]},
         {"id": "beam", "title": "Beam", "sub": "보", "modes": [
             {"id": "lite", "title": "Lite", "sub": "단일 보 단면 설계"},
