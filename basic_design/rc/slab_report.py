@@ -109,8 +109,14 @@ def _one_way(r):
     k = "" if abs(r["h_kfy"] - 1.0) < 1e-9 else f" × (0.43+fy/700 = {r['h_kfy']:.3f})"
     rep.t(f"Treq = ln/{r['h_n']:.1f}{k} = {r['h_req']:.0f} mm      (KDS 14 20 30 표 4.2-1)", 1)
     ok = r["h_ok"]
-    rep.t(f"Thk = {r['t']:g}   {'>' if ok else '<'}   Treq = {r['h_req']:.0f} mm   --->  {'O.K.' if ok else 'N.G. (처짐 검토 필요)'}",
-          1, "ok" if ok else "ng")
+    if ok:
+        rep.t(f"Thk = {r['t']:g}   >   Treq = {r['h_req']:.0f} mm   --->  O.K.", 1, "ok")
+    else:
+        dfl = r.get("defl")
+        dok = dfl is not None and dfl["ok_live"] and dfl["ok_long"]
+        tail = "N.G. (처짐 검토 필요)" if dfl is None else (
+            "처짐 검토 → " + ("O.K." if dok else "N.G.") + "  (Check Deflection 참조)")
+        rep.t(f"Thk = {r['t']:g}   <   Treq = {r['h_req']:.0f} mm   --->  {tail}", 1, "ok" if dok else "ng")
 
     rep.h("Flexure Reinforcement")
     _flex_table(rep, r, r["rows"], [r["min_row"], r["temp_row"]])
@@ -124,18 +130,60 @@ def _one_way(r):
              if r["temp_s"] else None)
 
     rep.h("Check Shear Strength")
-    rep.t(f"Strength Reduction Factor   φ = {S.PHI_V:.3f}", 1)
+    rep.t(f"Strength Reduction Factor   φ = {r['phi_v']:.3f}", 1)
     s = r["shear"][0]
     rep.t(f"Vu = {s['txt']} = {s['vu']:.1f}   {'<' if s['ok'] else '>'}   φVc = {s['phi_vc']:.1f} kN/m   --->  {_okng(s['ok'])[0]}",
           1, "ok" if s["ok"] else "ng")
+
+    if r.get("defl"):
+        _deflection(rep, r, r["defl"])
 
     _notes(rep, r, [
         "유효깊이 d = T - Cc - db/2 (선택 철근 공칭지름 기준)",
         "Min Bar: 경간방향 최소철근(KDS 14 20 20 4.2.2(3)),  Temp. Bar: 직각방향 수축·온도철근(KDS 14 20 50 4.6.2)",
         "D16 이상 철근 열은 fy(D16↑), 혼용 열은 작은 fy 기준 소요철근량으로 간격을 산정 (굵은 열 = 사용 철근)",
-        "강도감소계수 φ: 인장지배 0.85, 변화구간은 εt 에 따라 보간 (KDS 14 20 20 4.1.2)",
+        f"강도감소계수: 휨 φ = {r['phi_f']:.2f} (인장지배, 변화구간은 εt 에 따라 0.65 와 보간),  전단 φ = {r['phi_v']:.2f}",
     ])
     return rep
+
+
+def _deflection(rep, r, D):
+    rep.h("Check Deflection")
+    rep.t(f"Multiplier for Long-term Deflection   ξ = {D['xi']:.2f}  ({D['months']:g} months)      "
+          f"λΔ = ξ/(1+50ρ') = {D['xi']:.2f}  (ρ' = 0)", 1)
+    rep.t(f"Ec = 8500·∛fcm = {D['ec']:,.0f} N/mm²     n = Es/Ec = {D['n']:.2f}     "
+          f"fr = 0.63√fck = {D['fr']:.2f} N/mm²", 1)
+    rep.t(f"Ig = {D['ig'] / 1000:,.0f} mm⁴/mm      Mcr = fr·Ig/yt = {D['mcr']:.2f} kN·m/m", 1)
+    sus = f"D + {D['sus_live'] * 100:.0f}% L"
+
+    def block(title, m, icr, as_, sym):
+        rep.t(title, 0, "sub")
+        rep.t(f"Moment due to Dead Load   =  {m['d']:6.2f} kN·m/m", 2)
+        rep.t(f"Moment due to Live Load    =  {m['l']:6.2f} kN·m/m", 2)
+        rep.t(f"Moment due to Sus. Load   =  {m['s']:6.2f} kN·m/m    ({sus})", 2)
+        rep.t(f"Icr,{sym} = {icr / 1000:,.0f} mm⁴/mm     (As = {as_:.0f} mm²/m, 소요철근량 기준)", 2)
+    if D["has_end"]:
+        block("Crack Moment of Inertia at Ends" if r["support"] != "CANT" else "Crack Moment of Inertia at Support",
+              D["end"], D["icr_end"], D["as_end"], "Neg")
+    if D["has_pos"]:
+        block("Crack Moment of Inertia at Midspan", D["pos"], D["icr_pos"], D["as_pos"], "Pos")
+
+    rep.t("Effective Moment of Inertia", 0, "sub")
+    ie = D["ie"]
+    for k, lbl in (("d", "Dead Load"), ("l", "Live Load"), ("dl", "D+L Load"), ("s", "Sus. Load")):
+        rep.t(f"Ie due to {lbl:<10}  =  {ie[k] / 1000:,.0f} mm⁴/mm", 2)
+    for k, lbl, sym in (("dd", "Dead Load", "Δd"), ("dl", "Live Load", "Δl"), ("ddl", "D+L Load", "Δdl"),
+                        ("ds", "Sus. Load", "Δs")):
+        rep.t(f"Deflection due to {lbl:<10}  {sym} = {D[k]:.2f} mm", 2)
+    rep.t("Compute Deflections", 0, "sub")
+    st = "ok" if D["ok_live"] else "ng"
+    rep.t(f"Short-time Deflection   Δdl - Δd  = {D['dl_inst']:.2f} mm   {'<' if D['ok_live'] else '>'}   "
+          f"L/{D['lim_live']:g} = {D['a_live']:.2f} mm   --->  {'O.K.' if D['ok_live'] else 'N.G.'}", 1, st)
+    st = "ok" if D["ok_long"] else "ng"
+    rep.t(f"Long-term Deflection    λΔ·Δs + (Δdl - Δd) = {D['long']:.2f} mm   {'<' if D['ok_long'] else '>'}   "
+          f"L/{D['lim_long']:g} = {D['a_long']:.2f} mm   --->  {'O.K.' if D['ok_long'] else 'N.G.'}", 1, st)
+    rep.t("Δ = 5L²/(48·Ec·Ie)·[Mm - 0.1(M1+M2)]" if r["support"] != "CANT" else "Δ = M·L²/(4·Ec·Ie)", 1, "dim")
+    rep.t("Ie: 양단 연속 0.70·Iem + 0.15(Ie1+Ie2),  1단 연속 0.85·Iem + 0.15·Ie,cont  (KDS 14 20 30 4.2.1)", 1, "dim")
 
 
 # ── 2방향 ────────────────────────────────────────────────────
@@ -171,7 +219,7 @@ def _two_way(r):
     _summary(rep, r)
 
     rep.h("Check Shear Strength")
-    rep.t(f"Strength Reduction Factor   φ = {S.PHI_V:.3f}", 1)
+    rep.t(f"Strength Reduction Factor   φ = {r['phi_v']:.3f}", 1)
     for s in r["shear"]:
         rep.t(s["label"], 0, "sub")
         rep.t(f"{s['sym']} = {s['txt']} = {s['vu']:.1f}   {'<' if s['ok'] else '>'}   φVc = {s['phi_vc']:.1f} kN/m   --->  {_okng(s['ok'])[0]}",
@@ -182,7 +230,7 @@ def _two_way(r):
         "유효깊이: 단변방향 d = T - Cc - db/2,  장변방향 d = 단변방향 d - db (선택 철근 공칭지름 기준)",
         "휨철근 최대간격 min(2t, 300),  Min Bar: 수축·온도철근(KDS 14 20 50 4.6.2) 최대간격 min(5t, 450)",
         "D16 이상 철근 열은 fy(D16↑), 혼용 열은 작은 fy 기준 소요철근량으로 간격을 산정 (굵은 열 = 사용 철근)",
-        "강도감소계수 φ: 인장지배 0.85, 변화구간은 εt 에 따라 보간 (KDS 14 20 20 4.1.2)",
+        f"강도감소계수: 휨 φ = {r['phi_f']:.2f} (인장지배, 변화구간은 εt 에 따라 0.65 와 보간),  전단 φ = {r['phi_v']:.2f}",
     ])
     return rep
 

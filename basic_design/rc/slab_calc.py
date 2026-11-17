@@ -88,65 +88,66 @@ def strain_limits(fy):
     return ey, (0.005 if fy <= 400 else 2.5 * ey), (0.004 if fy <= 400 else 2.0 * ey)
 
 
-def phi_of(eps_t, fy):
-    """εt 에 따른 휨 강도감소계수: 인장지배 0.85, 압축지배 0.65, 변화구간 직선보간"""
+def phi_of(eps_t, fy, pf=PHI_F):
+    """εt 에 따른 휨 강도감소계수: 인장지배 pf(기본 0.85), 압축지배 0.65, 변화구간 직선보간"""
     ey, lim, _ = strain_limits(fy)
+    lo = min(0.65, pf)
     if eps_t >= lim:
-        return PHI_F
+        return pf
     if eps_t <= ey:
-        return 0.65
-    return 0.65 + (PHI_F - 0.65) * (eps_t - ey) / (lim - ey)
+        return lo
+    return lo + (pf - lo) * (eps_t - ey) / (lim - ey)
 
 
-def section(as_, d, fck, fy, b=1000.0):
+def section(as_, d, fck, fy, b=1000.0, pf=PHI_F):
     """단철근 직사각형 단면 해석 → dict(a, c, eps_t, phi, phi_mn[kN·m])"""
     eta, beta1, ecu = stress_block(fck)
     a = as_ * fy / (0.85 * eta * fck * b)
     c = a / beta1
     eps_t = ecu * (d - c) / c if c > 0 else 1.0
-    phi = phi_of(eps_t, fy)
+    phi = phi_of(eps_t, fy, pf)
     return {"a": a, "c": c, "eps_t": eps_t, "phi": phi, "phi_mn": phi * as_ * fy * (d - a / 2.0) / 1e6}
 
 
-def flexure(mu, d, fck, fy, b=1000.0):
+def flexure(mu, d, fck, fy, b=1000.0, pf=PHI_F):
     """단철근 직사각형 단면 소요철근량 (φMn = Mu).
     인장지배(φ=0.85)로 풀어 εt 가 한계 미만이면 변화구간 φ(εt) 를 적용해 다시 구한다.
     εt 가 휨부재 최소 허용변형률 미만이 되어야 하면 단면 부족(N.G.).
     반환 dict(ok, rho, as_req, a, c, eps_t, phi, msg)"""
     eta, beta1, ecu = stress_block(fck)
     fc = 0.85 * eta * fck
-    out = {"ok": True, "rho": 0.0, "as_req": 0.0, "a": 0.0, "c": 0.0, "eps_t": None, "phi": PHI_F, "msg": ""}
+    out = {"ok": True, "rho": 0.0, "as_req": 0.0, "a": 0.0, "c": 0.0, "eps_t": None, "phi": pf, "msg": ""}
     if mu <= 0 or d <= 0:
         return out
     _, lim, emin = strain_limits(fy)
     as_req = None
-    disc = 1.0 - 2.0 * (mu * 1e6 / (PHI_F * b * d * d)) / fc
+    disc = 1.0 - 2.0 * (mu * 1e6 / (pf * b * d * d)) / fc
     if disc > 0:
         as0 = fc / fy * (1.0 - math.sqrt(disc)) * b * d
-        if section(as0, d, fck, fy, b)["eps_t"] >= lim:
+        if section(as0, d, fck, fy, b, pf)["eps_t"] >= lim:
             as_req = as0
     if as_req is None:                                   # 변화구간: φ(εt)·Mn(As) = Mu 를 이분법으로
         c_max = ecu * d / (ecu + emin)
         as_max = fc * b * beta1 * c_max / fy
-        if section(as_max, d, fck, fy, b)["phi_mn"] < mu:
+        if section(as_max, d, fck, fy, b, pf)["phi_mn"] < mu:
             out.update(ok=False, msg=f"단면 부족 — εt < εt,min({emin:.4f}), 두께 증가 필요")
             return out
         lo, hi = 0.0, as_max
         for _ in range(60):
             mid = (lo + hi) / 2.0
-            if section(mid, d, fck, fy, b)["phi_mn"] < mu:
+            if section(mid, d, fck, fy, b, pf)["phi_mn"] < mu:
                 lo = mid
             else:
                 hi = mid
         as_req = hi
-    sec = section(as_req, d, fck, fy, b)
+    sec = section(as_req, d, fck, fy, b, pf)
     out.update(rho=as_req / (b * d), as_req=as_req, a=sec["a"], c=sec["c"], eps_t=sec["eps_t"], phi=sec["phi"])
     return out
 
 
-def phi_mn(as_prov, d, fck, fy, b=1000.0):
+def phi_mn(as_prov, d, fck, fy, b=1000.0, pf=PHI_F):
     """설계휨강도 φMn (kN·m / 폭 b) — φ 는 εt 에 따라"""
-    return section(as_prov, d, fck, fy, b)["phi_mn"]
+    return section(as_prov, d, fck, fy, b, pf)["phi_mn"]
 
 
 def rho_min(fy):
@@ -154,9 +155,9 @@ def rho_min(fy):
     return 0.0020 if fy <= 400 else max(0.0020 * 400.0 / fy, 0.0014)
 
 
-def phi_vc(d, fck, b=1000.0):
+def phi_vc(d, fck, b=1000.0, pv=PHI_V):
     """φVc (kN / 폭 b) — KDS 14 20 22 식(4.2-1), λ = 1.0"""
-    return PHI_V * math.sqrt(fck) * b * d / 6.0 / 1000.0
+    return pv * math.sqrt(fck) * b * d / 6.0 / 1000.0
 
 
 def factored(wd, wl):
@@ -191,6 +192,10 @@ def spacings(as_by_fy, fy13, fy16, s_max, cols):
 
 
 def _common(inp):
+    for k, lbl in (("phi_f", "휨 강도감소계수 φf"), ("phi_v", "전단 강도감소계수 φv")):
+        v = inp.get(k)
+        if v is not None and not (0.0 < v <= 1.0):
+            raise SlabInputError(f"{lbl} 는 0 초과 1.0 이하로 입력하세요.")
     fck, fy13, fy16 = inp["fck"], inp["fy13"], inp["fy16"]
     t, cc, bar = inp["t"], inp["cc"], inp["bar"]
     if bar not in REBAR:
@@ -211,10 +216,10 @@ def _common(inp):
     return fck, fy13, fy16, fy, t, cc, bar, db
 
 
-def _row(direction, loc, mu, formula, d, fck, fy, fy13, fy16, s_max, cols):
+def _row(direction, loc, mu, formula, d, fck, fy, fy13, fy16, s_max, cols, pf=PHI_F):
     """휨 배근표 한 행 계산"""
-    fl = flexure(mu, d, fck, fy)
-    as_by_fy = {f: flexure(mu, d, fck, f)["as_req"] for f in {fy13, fy16}}
+    fl = flexure(mu, d, fck, fy, pf=pf)
+    as_by_fy = {f: flexure(mu, d, fck, f, pf=pf)["as_req"] for f in {fy13, fy16}}
     sp = spacings(as_by_fy, fy13, fy16, s_max, cols)
     if not fl["ok"]:
         sp = [None] * len(cols)
@@ -223,7 +228,7 @@ def _row(direction, loc, mu, formula, d, fck, fy, fy13, fy16, s_max, cols):
             "eps_t": fl["eps_t"], "phi": fl["phi"], "sp": sp, "s_max": s_max}
 
 
-def _summary(rows, min_row, bar, fck, fy, cols):
+def _summary(rows, min_row, bar, fck, fy, cols, pf=PHI_F):
     """선택 철근 기준 최종 배근 (소요·최소 중 좁은 간격)"""
     idx = col_labels(cols).index(bar)
     area = REBAR[bar][1]
@@ -241,7 +246,7 @@ def _summary(rows, min_row, bar, fck, fy, cols):
             continue
         s = min(s_req, s_min)
         as_prov = area / s * 1000.0
-        sec = section(as_prov, r["d"], fck, fy)
+        sec = section(as_prov, r["d"], fck, fy, pf=pf)
         ok = sec["phi_mn"] + 1e-9 >= r["mu"] and sec["eps_t"] >= emin
         if s_min < s_req:
             gov = "최소철근"
@@ -254,9 +259,122 @@ def _summary(rows, min_row, bar, fck, fy, cols):
     return out
 
 
-def _phi_notes(rows):
+def _phi_notes(rows, pf=PHI_F):
     return [f"{(r['dir'] + ' ') if r['dir'] not in ('', 'Main') else ''}{r['loc']}: 변화구간 단면 "
-            f"(εt = {r['eps_t']:.4f}) → φ = {r['phi']:.3f} 적용" for r in rows if r["ok"] and r["phi"] < PHI_F - 1e-6]
+            f"(εt = {r['eps_t']:.4f}) → φ = {r['phi']:.3f} 적용" for r in rows if r["ok"] and r["phi"] < pf - 1e-6]
+
+
+# ── 처짐 (KDS 14 20 30 4.2.1) ────────────────────────────────
+XI_POINTS = [(0, 0.0), (3, 1.0), (6, 1.2), (12, 1.4), (60, 2.0)]     # 재하기간(개월) – 시간경과계수 ξ
+
+
+def xi_of(months):
+    """지속하중 시간경과계수 ξ: 3개월 1.0, 6개월 1.2, 12개월 1.4, 5년 이상 2.0 (사이값 직선보간)"""
+    m = max(0.0, min(float(months), 60.0))
+    for (m0, x0), (m1, x1) in zip(XI_POINTS, XI_POINTS[1:]):
+        if m0 <= m <= m1:
+            return x0 + (x1 - x0) * (m - m0) / (m1 - m0)
+    return 2.0
+
+
+def ec_of(fck):
+    """콘크리트 탄성계수 Ec = 8500·∛fcm  (KDS 14 20 10 4.3.3, fcm = fck + Δf)"""
+    df = 4.0 if fck <= 40 else (6.0 if fck >= 60 else 4.0 + (fck - 40) / 10.0)
+    return 8500.0 * (fck + df) ** (1.0 / 3.0)
+
+
+def i_cracked(as_, d, n, b=1000.0):
+    """균열 환산단면 2차모멘트 (단철근, mm⁴ / 폭 b)"""
+    if as_ <= 0:
+        return 0.0
+    na = n * as_
+    c = (-na + math.sqrt(na * na + 2.0 * b * na * d)) / b
+    return b * c ** 3 / 3.0 + na * (d - c) ** 2
+
+
+def i_eff(mcr, ma, ig, icr):
+    """유효단면 2차모멘트 (KDS 14 20 30 식 4.2-1)"""
+    if ma <= mcr or ma <= 0:
+        return ig
+    k = (mcr / ma) ** 3
+    return min(k * ig + (1.0 - k) * icr, ig)
+
+
+def deflection_one_way(r, months=60, lim_live=360.0, lim_long=480.0, sus_live=0.5):
+    """1방향 슬래브 처짐 검토.  r: calc_one_way 결과.
+    · 사용하중 모멘트 = 강도설계와 같은 계수(wl²/n)에 사용하중을 적용
+    · 균열단면은 소요철근량(최소철근 이상) 기준,  Ie 는 연속단 가중평균
+    · Δ = 5L²/(48·Ec·Ie)·[Mm - 0.1(M1+M2)],  캔틸레버 Δ = M·L²/(4·Ec·Ie)
+    · 단기: 활하중 순간처짐 Δ(D+L) - Δ(D) ≤ L/lim_live
+    · 장기: ξ·Δ(지속) + [Δ(D+L) - Δ(D)] ≤ L/lim_long   (ρ' = 0 → λΔ = ξ)"""
+    t, d, fck, fy, L = r["t"], r["d"], r["fck"], r["fy"], r["L"] * 1000.0
+    sup = r["support"]
+    ec = ec_of(fck)
+    n = ES / ec
+    ig = 1000.0 * t ** 3 / 12.0
+    fr = 0.63 * math.sqrt(fck)
+    mcr = fr * ig / (t / 2.0) / 1e6
+    xi = xi_of(months)
+    as_min = r["min_row"]["as_req"]
+    coef = {}                                         # 위치 → (분모 n, 소요 As)
+    for row in r["rows"]:
+        key = row["loc"].split()[-1]                  # Cont / Pos / DisC
+        coef[key] = (r["L"] ** 2 / row["mu"] * r["wu"] if row["mu"] else None, max(row["as_req"], as_min))
+
+    def moments(w):
+        """(M1, Mm, M2) 사용하중 모멘트 크기 [kN·m/m] — M1·M2 는 단부(부모멘트)"""
+        def m(key):
+            return w * r["L"] ** 2 / coef[key][0] if key in coef and coef[key][0] else 0.0
+        if sup == "CANT":
+            return m("Cont"), 0.0, 0.0
+        if sup == "SS":
+            return 0.0, m("Pos"), 0.0
+        if sup == "CC":
+            return m("Cont"), m("Pos"), m("Cont")
+        return m("DisC"), m("Pos"), m("Cont")          # 좌: 불연속단, 우: 연속단
+
+    icr_end = i_cracked(coef["Cont"][1], d, n) if "Cont" in coef else 0.0
+    icr_pos = i_cracked(coef["Pos"][1], d, n) if "Pos" in coef else 0.0
+    icr_dis = i_cracked(coef["DisC"][1], d, n) if "DisC" in coef else 0.0
+
+    def ie_of(w):
+        m1, mm, m2 = moments(w)
+        if sup == "CANT":
+            return i_eff(mcr, m1, ig, icr_end)
+        iem = i_eff(mcr, mm, ig, icr_pos)
+        if sup == "SS":
+            return iem
+        if sup == "CC":
+            return 0.70 * iem + 0.15 * (i_eff(mcr, m1, ig, icr_end) + i_eff(mcr, m2, ig, icr_end))
+        return 0.85 * iem + 0.15 * i_eff(mcr, m2, ig, icr_end)     # 한쪽 연속
+
+    def delta(w, ie):
+        m1, mm, m2 = moments(w)
+        if sup == "CANT":
+            return m1 * 1e6 * L ** 2 / (4.0 * ec * ie)
+        return 5.0 * L ** 2 / (48.0 * ec * ie) * max(mm - 0.1 * (m1 + m2), 0.0) * 1e6
+
+    wd, wl = r["wd"], r["wl"]
+    loads = {"d": wd, "l": wl, "dl": wd + wl, "s": wd + sus_live * wl}
+    ie = {k: ie_of(w) for k, w in loads.items()}      # 활하중 순간처짐 검토는 Δ(D+L) - Δ(D) 로 산정
+    dd = delta(wd, ie["d"])
+    ddl = delta(wd + wl, ie["dl"])
+    ds = delta(loads["s"], ie["s"])
+    dl_inst = ddl - dd
+    long_ = xi * ds + dl_inst
+    a_live, a_long = L / lim_live, L / lim_long
+    m_end = moments(1.0)
+    return {
+        "months": months, "xi": xi, "ec": ec, "n": n, "ig": ig, "fr": fr, "mcr": mcr, "sus_live": sus_live,
+        "has_end": sup != "SS", "has_pos": sup != "CANT",
+        "end": {k: (m_end[2] if sup not in ("CANT",) else m_end[0]) * w for k, w in loads.items() if k != "dl"},
+        "pos": {k: m_end[1] * w for k, w in loads.items() if k != "dl"},
+        "icr_end": icr_end if sup != "CANT" else icr_end, "icr_pos": icr_pos, "icr_dis": icr_dis,
+        "as_end": coef.get("Cont", (0, 0))[1], "as_pos": coef.get("Pos", (0, 0))[1],
+        "ie": ie, "dd": dd, "dl": delta(wl, ie["l"]), "ddl": ddl, "ds": ds,
+        "dl_inst": dl_inst, "long": long_, "lim_live": lim_live, "lim_long": lim_long,
+        "a_live": a_live, "a_long": a_long, "ok_live": dl_inst <= a_live + 1e-9, "ok_long": long_ <= a_long + 1e-9,
+    }
 
 
 # ── 1방향 슬래브 ──────────────────────────────────────────────
@@ -264,6 +382,7 @@ def calc_one_way(inp):
     """inp: name, span(m, 순경간), t, cc, fck, fy13, fy16, wd, wl, bar,
             support('SS'|'DC'|'DCI'|'CC'|'CANT'), spans(2|3), kcr(280|210)"""
     fck, fy13, fy16, fy, t, cc, bar, db = _common(inp)
+    pf, pv = inp.get("phi_f", PHI_F), inp.get("phi_v", PHI_V)
     L = inp["span"]
     if L <= 0:
         raise SlabInputError("경간(Span)은 0보다 커야 합니다.")
@@ -321,7 +440,7 @@ def calc_one_way(inp):
     rows = []
     for key, loc, n, note in mom:
         rows.append(_row("Main", f"{loc} {key}", w2 / n, f"Wu·L²/{n:g}" + (f" ({note})" if note else ""),
-                         d, fck, fy, fy13, fy16, s_main, cols))
+                         d, fck, fy, fy13, fy16, s_main, cols, pf))
 
     def min_bar(s_max, label):
         as_by_fy = {f: rho_min(f) * 1000.0 * t for f in {fy13, fy16}}
@@ -335,7 +454,7 @@ def calc_one_way(inp):
     k_fy = 1.0 if abs(fy - 400.0) < 1e-6 else 0.43 + fy / 700.0
     h_req = L * 1000.0 / n_h * k_fy
 
-    pvc = phi_vc(d, fck)
+    pvc = phi_vc(d, fck, pv=pv)
     warn = []
     if sup not in ("SS", "CANT"):
         if inp["wl"] > 3.0 * inp["wd"]:
@@ -344,12 +463,12 @@ def calc_one_way(inp):
     for r in rows:
         if not r["ok"]:
             warn.append(f"{r['loc']}: {r['msg']}")
-    warn += _phi_notes(rows)
-    summary = _summary(rows, min_row, bar, fck, fy, cols)
+    warn += _phi_notes(rows, pf)
+    summary = _summary(rows, min_row, bar, fck, fy, cols, pf)
     temp_s = temp_row["sp"][col_labels(cols).index(bar)]
 
-    return {
-        "type": "1way", "name": inp.get("name", ""), "inp": dict(inp),
+    res = {
+        "type": "1way", "name": inp.get("name", ""), "inp": dict(inp), "phi_f": pf, "phi_v": pv,
         "L": L, "t": t, "cc": cc, "fck": fck, "fy13": fy13, "fy16": fy16, "fy": fy, "bar": bar, "db": db, "d": d,
         "support": sup, "support_txt": ONE_WAY_SUPPORTS[sup][0], "two_span": two_span,
         "wd": inp["wd"], "wl": inp["wl"], "wu": wu, "wu_txt": wu_txt,
@@ -359,8 +478,15 @@ def calc_one_way(inp):
         "kcr": kcr, "fs": fs, "s_crack": s_crack, "s_code": s_code, "s_main": s_main, "s_temp": s_temp,
         "shear": [{"label": "", "vu": vu, "txt": v_txt, "phi_vc": pvc, "d": d, "ok": vu <= pvc + 1e-9}],
         "summary": summary, "warn": warn, "diagram": diagram,
-        "ok": (t + 1e-9 >= h_req) and all(s["ok"] for s in summary) and vu <= pvc + 1e-9,
     }
+    res["defl"] = None
+    if t + 1e-9 < h_req and all(rw["ok"] for rw in rows):         # 최소두께 미달 → 처짐 계산으로 검토
+        res["defl"] = deflection_one_way(res, months=inp.get("months", 60), lim_live=inp.get("lim_live", 360.0),
+                                         lim_long=inp.get("lim_long", 480.0), sus_live=inp.get("sus_live", 0.5))
+    dfl = res["defl"]
+    thk_ok = (t + 1e-9 >= h_req) or (dfl is not None and dfl["ok_live"] and dfl["ok_long"])
+    res["ok"] = thk_ok and all(s["ok"] for s in summary) and vu <= pvc + 1e-9
+    return res
 
 
 # ── 2방향 슬래브 ──────────────────────────────────────────────
@@ -400,6 +526,7 @@ def calc_two_way(inp):
             beams = [(b,h) ×4]  (B1 상, B2 하, B3 좌, B4 우 ; mm)
        Lx = 단변(가로), Ly = 장변(세로)"""
     fck, fy13, fy16, fy, t, cc, bar, db = _common(inp)
+    pf, pv = inp.get("phi_f", PHI_F), inp.get("phi_v", PHI_V)
     lx, ly = inp["lx"], inp["ly"]
     if lx <= 0 or ly <= 0:
         raise SlabInputError("Lx, Ly 는 0보다 커야 합니다.")
@@ -432,11 +559,11 @@ def calc_two_way(inp):
         pos = (c_dl * wdu + c_ll * wlu) * span * span
         if n_cont > 0:
             rows.append(_row(direction, "연속단 Cont", c_neg * wu * span * span,
-                             f"{c_neg:.4f}·Wu·{sym}²", d, fck, fy, fy13, fy16, s_flex, cols))
+                             f"{c_neg:.4f}·Wu·{sym}²", d, fck, fy, fy13, fy16, s_flex, cols, pf))
         if n_cont < 2:
-            rows.append(_row(direction, "불연속단 DisC", pos / 3.0, "M(Pos)/3", d, fck, fy, fy13, fy16, s_flex, cols))
+            rows.append(_row(direction, "불연속단 DisC", pos / 3.0, "M(Pos)/3", d, fck, fy, fy13, fy16, s_flex, cols, pf))
         rows.append(_row(direction, "중앙부 Pos", pos,
-                         f"({c_dl:.4f}·Wdu+{c_ll:.4f}·Wlu)·{sym}²", d, fck, fy, fy13, fy16, s_flex, cols))
+                         f"({c_dl:.4f}·Wdu+{c_ll:.4f}·Wlu)·{sym}²", d, fck, fy, fy13, fy16, s_flex, cols, pf))
 
     n_long_cont = int(edges[2]) + int(edges[3])      # 단변방향 경간의 양 끝 = 장변(좌·우)
     n_short_cont = int(edges[0]) + int(edges[1])     # 장변방향 경간의 양 끝 = 단변(상·하)
@@ -484,9 +611,9 @@ def calc_two_way(inp):
     vuy = c["wb"] * wu * ly / 2.0
     shear = [
         {"label": "Short Direction Shear", "sym": "Vux", "vu": vux, "txt": f"{c['wa']:.3f}·Wu·Lx/2",
-         "phi_vc": phi_vc(d_s, fck), "d": d_s},
+         "phi_vc": phi_vc(d_s, fck, pv=pv), "d": d_s},
         {"label": "Long Direction Shear", "sym": "Vuy", "vu": vuy, "txt": f"{c['wb']:.3f}·Wu·Ly/2",
-         "phi_vc": phi_vc(d_l, fck), "d": d_l},
+         "phi_vc": phi_vc(d_l, fck, pv=pv), "d": d_l},
     ]
     for s in shear:
         s["ok"] = s["vu"] <= s["phi_vc"] + 1e-9
@@ -494,12 +621,12 @@ def calc_two_way(inp):
     warn = [f"{r['dir']} {r['loc']}: {r['msg']}" for r in rows if not r["ok"]]
     if inc:
         warn.append("불연속단 테두리보 강성비 αf < 0.8 — 최소 두께 10% 증대 적용 (KDS 14 20 30 4.2.2(3)③)")
-    warn += _phi_notes(rows)
-    summary = _summary(rows, min_row, bar, fck, fy, cols)
+    warn += _phi_notes(rows, pf)
+    summary = _summary(rows, min_row, bar, fck, fy, cols, pf)
     h_ok = t + 1e-9 >= h_req
 
     return {
-        "type": "2way", "name": inp.get("name", ""), "inp": dict(inp),
+        "type": "2way", "name": inp.get("name", ""), "inp": dict(inp), "phi_f": pf, "phi_v": pv,
         "lx": lx, "ly": ly, "m": m, "case": case, "edges": edges, "beams": beams, "coef": c,
         "t": t, "cc": cc, "fck": fck, "fy13": fy13, "fy16": fy16, "fy": fy, "bar": bar, "db": db,
         "d_s": d_s, "d_l": d_l,

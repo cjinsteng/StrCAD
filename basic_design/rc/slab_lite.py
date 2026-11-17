@@ -35,8 +35,12 @@ DEFAULTS = {
     "support": S.ONE_WAY_SUPPORTS["CC"][0], "spans": "3경간 이상", "expo": "그 외 환경 (κcr=210)",
     "case": "Case2", "bar": "D10",
     "b1b": "400", "b1h": "600", "b2b": "400", "b2h": "600", "b3b": "400", "b3h": "600", "b4b": "400", "b4h": "600",
+    "phi_f": "0.85", "phi_v": "0.75",
+    "months": "60", "lim_live": "360", "lim_long": "480", "sus_live": "50",
 }
 LABELS = {
+    "phi_f": "휨 강도감소계수 φf", "phi_v": "전단 강도감소계수 φv", "months": "재하기간",
+    "lim_live": "활하중 처짐제한 L/", "lim_long": "장기처짐제한 L/", "sus_live": "지속 활하중 비율",
     "span": "Span", "lx": "Lx", "ly": "Ly", "t": "두께 T", "cc": "피복 Cc", "fck": "fck", "fy13": "fy(D13↓)",
     "fy16": "fy(D16↑)", "wd": "고정하중 Wd", "wl": "활하중 Wl",
     "b1b": "B1 폭", "b1h": "B1 춤", "b2b": "B2 폭", "b2h": "B2 춤", "b3b": "B3 폭", "b3h": "B3 춤", "b4b": "B4 폭", "b4h": "B4 춤",
@@ -64,9 +68,19 @@ def inputs_from_values(vals):
     one = vals.get("type") == TYPE_1WAY
     inp = {"name": str(vals.get("name", "")).strip(), "type": "1way" if one else "2way",
            "bar": str(vals.get("bar", "")).strip() or "D10"}
-    for k in ("t", "cc", "fck", "fy13", "fy16", "wd", "wl"):
+    for k in ("t", "cc", "fck", "fy13", "fy16", "wd", "wl", "phi_f", "phi_v"):
         inp[k] = _num(vals, k)
     if one:
+        m = _num(vals, "months")
+        if not 1 <= m <= 60:
+            raise S.SlabInputError("재하기간은 1 ~ 60 개월로 입력하세요.")
+        ll, lg = _num(vals, "lim_live"), _num(vals, "lim_long")
+        if not (1 <= ll <= 360 and 1 <= lg <= 480):
+            raise S.SlabInputError("처짐제한은 활하중 L/1 ~ L/360, 장기 L/1 ~ L/480 범위로 입력하세요.")
+        sl = _num(vals, "sus_live")
+        if not 0 <= sl <= 100:
+            raise S.SlabInputError("지속 활하중 비율은 0 ~ 100 % 로 입력하세요.")
+        inp.update(months=m, lim_live=ll, lim_long=lg, sus_live=sl / 100.0)
         inp["span"] = _num(vals, "span")
         inp["support"] = next((k for k, v in S.ONE_WAY_SUPPORTS.items() if v[0] == vals.get("support")), "CC")
         inp["spans"] = SPAN_OPTS.get(vals.get("spans"), 3)
@@ -413,6 +427,42 @@ class SlabLiteWindow:
         self.g_bar = self._group(row4, "사용 철근")
         self.g_bar.pack(side="left", fill="y")
 
+        row5 = tk.Frame(p, bg=T.SURFACE)
+        row5.pack(fill="x", padx=10, pady=4)
+        g = self._group(row5, "강도감소계수")
+        g.pack(side="left", fill="y")
+        self._field(g, 0, "휨 φf :", "phi_f", "(인장지배)", width=6)
+        self._field(g, 1, "전단 φv :", "phi_v", "", width=6)
+
+        # 처짐 검토 설정 — 1방향 슬래브가 최소두께 N.G. 일 때만 표시
+        self.row_defl = tk.Frame(p, bg=T.SURFACE, height=1)
+        self.row_defl.pack(fill="x", padx=10, pady=(4, 0))
+        g = self.g_defl = self._group(self.row_defl, "처짐 검토  (최소두께 N.G.)")
+        self._lbl(g, "재하기간 :", anchor="e").grid(row=0, column=0, sticky="e", pady=2)
+        tk.Spinbox(g, from_=1, to=60, increment=1, textvariable=self.v["months"], width=5, font=self.f_n,
+                   fg=T.INPUT_FG, relief="solid", bd=1, command=self.calc).grid(row=0, column=1, sticky="w", padx=4)
+        self.lbl_xi = self._lbl(g, "")
+        self.lbl_xi.grid(row=0, column=2, columnspan=2, sticky="w")
+        self._lbl(g, "활하중 순간처짐 :", anchor="e").grid(row=1, column=0, sticky="e", pady=2)
+        f = tk.Frame(g, bg=T.SURFACE)
+        f.grid(row=1, column=1, columnspan=3, sticky="w", padx=4)
+        self._lbl(f, "L /").pack(side="left")
+        self._cmb(f, "lim_live", ["180", "240", "360"], 5).pack(side="left", padx=3)
+        self._lbl(f, "(1 ~ 360)", fg=T.MUTED).pack(side="left")
+        self._lbl(g, "장기처짐 :", anchor="e").grid(row=2, column=0, sticky="e", pady=2)
+        f = tk.Frame(g, bg=T.SURFACE)
+        f.grid(row=2, column=1, columnspan=3, sticky="w", padx=4)
+        self._lbl(f, "L /").pack(side="left")
+        self._cmb(f, "lim_long", ["240", "360", "480"], 5).pack(side="left", padx=3)
+        self._lbl(f, "(1 ~ 480)", fg=T.MUTED).pack(side="left")
+        self._lbl(g, "지속 활하중 :", anchor="e").grid(row=3, column=0, sticky="e", pady=2)
+        f = tk.Frame(g, bg=T.SURFACE)
+        f.grid(row=3, column=1, columnspan=3, sticky="w", padx=4)
+        self._ent(f, "sus_live", 5).pack(side="left")
+        self._lbl(f, "%  (지속하중 = D + 비율 × L)", fg=T.MUTED).pack(side="left", padx=3)
+        self.v["months"].trace_add("write", lambda *_: self._show_xi())
+        self._show_xi()
+
         tk.Label(p, text="Enter / F5 : 계산    Ctrl+S : 저장    Ctrl+O : 열기    Ctrl+P : 출력", font=(T.FAM, 8),
                  bg=T.SURFACE, fg=T.MUTED).pack(side="bottom", pady=8)
 
@@ -469,6 +519,27 @@ class SlabLiteWindow:
                         widget=self._cmb(self.g_bar, "expo", list(S.EXPOSURES), 19, "readonly"))
         self.calc(silent=True)
 
+    def _show_xi(self):
+        try:
+            m = float(self.v["months"].get())
+            self.lbl_xi.config(text=f"개월   →  ξ = {S.xi_of(m):.2f}")
+        except (ValueError, tk.TclError):
+            self.lbl_xi.config(text="개월")
+
+    def _update_defl_group(self, res):
+        """1방향 · 최소두께 N.G. 일 때만 처짐 설정을 보여 준다"""
+        shown = getattr(self, "_defl_shown", False)
+        if res is None:                                 # 입력 오류 중에는 1방향이면 그대로 둔다
+            need = shown and self.v["type"].get() == TYPE_1WAY
+        else:
+            need = res["type"] == "1way" and not res["h_ok"]
+        if need and not shown:
+            self.g_defl.pack(side="left", fill="y")
+        elif not need and shown:
+            self.g_defl.pack_forget()
+            self.row_defl.configure(height=1)
+        self._defl_shown = need
+
     def _copy_beam(self, i):
         """↑ : 바로 위 보 치수를 복사"""
         self.v[f"b{i}b"].set(self.v[f"b{i - 1}b"].get())
@@ -497,11 +568,13 @@ class SlabLiteWindow:
             self.members[self.cur]["ok"] = None
             self._refresh_row()
             self.cv.delete("all")
+            self._update_defl_group(None)
             self._set_status(f"입력 오류 — {str(e).splitlines()[0]}", ok=False)
             if not silent:
                 messagebox.showwarning("입력 확인", str(e), parent=self.win)
             return None
         self.result = res
+        self._update_defl_group(res)
         self.report = R.build(res)
         fonts(self.win)
         render(self.cv, self.report, sketch=R.sketch(res), sketch_box=R.sketch_box(res))

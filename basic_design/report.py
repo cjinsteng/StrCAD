@@ -120,6 +120,8 @@ def render(cv, rep, sketch=None, sketch_box=(590, 18, 290, 330), breaks=None):
             first_h = False
         elif kind == "t":
             _, text, lv, style = it
+            if style == "sub":
+                breaks.append(y)                         # 소제목 앞에서도 나눌 수 있게
             f = F["sub"] if style == "sub" else (F["b"] if style in ("b", "ok", "ng") else F["n"])
             cv.create_text(MARGIN + lv * INDENT, y + LINE_H // 2, text=text, anchor="w", font=f,
                            fill=STYLE_FG.get(style, T.INK))
