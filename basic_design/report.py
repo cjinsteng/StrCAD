@@ -83,6 +83,10 @@ _fonts = {}
 
 
 def fonts(root=None):
+    """계산서 글꼴. Tk 가 아닌 그리기 대상(PDF 출력용 PilCanvas)은 자체 글꼴(report_fonts)을 쓴다."""
+    own = getattr(root, "report_fonts", None)
+    if own:
+        return own
     if not _fonts:
         _fonts["h"] = tkfont.Font(root=root, family=T.FAM, size=14, weight="bold")
         _fonts["sub"] = tkfont.Font(root=root, family=T.FAM, size=11, weight="bold")
@@ -92,8 +96,11 @@ def fonts(root=None):
     return _fonts
 
 
-def render(cv, rep, sketch=None, sketch_box=(590, 18, 290, 330)):
-    """rep 을 Canvas 에 그린다. sketch(cv, x, y, w, h) 는 오른쪽 위 그림 영역."""
+def render(cv, rep, sketch=None, sketch_box=(590, 18, 290, 330), breaks=None):
+    """rep 을 Canvas 에 그린다. sketch(cv, x, y, w, h) 는 오른쪽 위 그림 영역.
+    breaks(list) 를 주면 쪽을 나눠도 되는 y 위치를 담아 준다 (출력용). 반환: 전체 높이."""
+    if breaks is None:
+        breaks = []
     F = fonts(cv)
     cv.delete("all")
     y = 16
@@ -102,6 +109,7 @@ def render(cv, rep, sketch=None, sketch_box=(590, 18, 290, 330)):
     for it in rep.items:
         kind = it[0]
         if kind == "h":
+            breaks.append(y + 4)                         # 제목 앞에서만 나눔(제목이 쪽 끝에 홀로 남지 않게)
             y += 6 if first_h else 16
             right = (sx - 14) if (sketch and y < sy + sh) else PAGE_W - MARGIN
             tw = F["h"].measure(it[1])
@@ -116,21 +124,23 @@ def render(cv, rep, sketch=None, sketch_box=(590, 18, 290, 330)):
             cv.create_text(MARGIN + lv * INDENT, y + LINE_H // 2, text=text, anchor="w", font=f,
                            fill=STYLE_FG.get(style, T.INK))
             y += LINE_H + (3 if style == "sub" else 0)
+            if style != "sub":
+                breaks.append(y)
         elif kind == "gap":
             y += it[1]
         elif kind == "table":
             if sketch and y < sy + sh + 8:
                 y = sy + sh + 14                        # 표는 그림 아래에서 시작
-            y = _draw_table(cv, F, it, y)
+            y = _draw_table(cv, F, it, y, breaks)
     if sketch:
         cv.create_rectangle(sx, sy, sx + sw, sy + sh, outline=T.NAVY)
         sketch(cv, sx, sy, sw, sh)
-    y += 30
-    cv.configure(scrollregion=(0, 0, PAGE_W, max(y, sy + sh + 30)))
+    y = max(y + 30, (sy + sh + 30) if sketch else 0)
+    cv.configure(scrollregion=(0, 0, PAGE_W, y))
     return y
 
 
-def _draw_table(cv, F, it, y):
+def _draw_table(cv, F, it, y, breaks):
     _, head, rows, widths, aligns = it
     x0 = MARGIN
     tw = sum(widths)
@@ -165,5 +175,6 @@ def _draw_table(cv, F, it, y):
                     cv.create_text(x + widths[j] / 2, y + rh / 2, text=txt, font=f, fill=fg)
             x += widths[j]
         y += rh
+        breaks.append(y)
     cv.create_line(x0, y, x0 + tw, y, fill=T.INK, width=2)
     return y + 8

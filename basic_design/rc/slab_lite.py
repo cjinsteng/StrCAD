@@ -2,10 +2,16 @@
 basic_design/rc/slab_lite.py
 RC Slab — Lite : 1방향 / 2방향 단일 슬래브(등분포하중) 설계 창
 
-  왼쪽  입력 패널 (Name · Type · 치수 · 재료 · 하중 · 지지 형식 · 사용 철근)
+  왼쪽   부재 목록 (Memb List) — 추가 · 복제 · 삭제 · 순서 이동, 파일(.slab) 한 개에 모두 저장
+  가운데 입력 패널 (Name · Type · 치수 · 재료 · 하중 · 지지 형식 · 사용 철근)
   오른쪽 계산서 (Design Conditions / Min. Thk. / Flexure / Summary / Shear)
+  출력   A4 PDF (머릿말 "RC SLAB DESIGN") — 현재 부재 / 전체 부재
 """
+import datetime
 import json
+import os
+import re
+import tempfile
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -19,6 +25,7 @@ TYPE_1WAY = "1방향 슬래브"
 TYPE_2WAY = "2방향 슬래브"
 SPAN_OPTS = {"3경간 이상": 3, "2경간": 2}
 FILE_TYPES = [("Slab Lite 파일", "*.slab"), ("모든 파일", "*.*")]
+PRINT_HEADER = "RC SLAB DESIGN"
 
 DEFAULTS = {
     "name": "S1", "type": TYPE_2WAY,
@@ -35,37 +42,77 @@ LABELS = {
 }
 
 
+# ── 입력값(문자열 dict) → 계산 입력 ──────────────────────────
+def _num(vals, key):
+    s = str(vals.get(key, "")).strip().replace(",", "")
+    try:
+        return float(s)
+    except ValueError:
+        raise S.SlabInputError(f"'{LABELS.get(key, key)}' 값이 숫자가 아닙니다: \"{s}\"") from None
+
+
+def _case_no(vals):
+    try:
+        return int(str(vals.get("case", "")).replace("Case", "").strip())
+    except ValueError:
+        return 2
+
+
+def inputs_from_values(vals):
+    """화면 입력값(문자열) → slab_calc.calculate() 입력 dict.  잘못된 값은 SlabInputError"""
+    one = vals.get("type") == TYPE_1WAY
+    inp = {"name": str(vals.get("name", "")).strip(), "type": "1way" if one else "2way",
+           "bar": str(vals.get("bar", "")).strip() or "D10"}
+    for k in ("t", "cc", "fck", "fy13", "fy16", "wd", "wl"):
+        inp[k] = _num(vals, k)
+    if one:
+        inp["span"] = _num(vals, "span")
+        inp["support"] = next((k for k, v in S.ONE_WAY_SUPPORTS.items() if v[0] == vals.get("support")), "CC")
+        inp["spans"] = SPAN_OPTS.get(vals.get("spans"), 3)
+        inp["kcr"] = S.EXPOSURES.get(vals.get("expo"), 210.0)
+    else:
+        inp["lx"] = _num(vals, "lx")
+        inp["ly"] = _num(vals, "ly")
+        inp["case"] = _case_no(vals)
+        inp["beams"] = [(_num(vals, f"b{i}b"), _num(vals, f"b{i}h")) for i in range(1, 5)]
+    return inp
+
+
+def _safe_name(s):
+    return re.sub(r'[\\/:*?"<>|\s]+', "_", s).strip("_") or "slab"
+
+
 class SlabLiteWindow:
     def __init__(self, parent, username=""):
         self.user = username
         self.path = None
         self.result = None
         self.report = None
+        self.members = [{"values": dict(DEFAULTS), "ok": None}]      # 부재 목록
+        self.cur = 0
+        self._busy = False
         self.win = win = tk.Toplevel(parent)
-        win.title("StrCAD - Basic Design │ RC Slab Lite" + (f"  ─  {username}" if username else ""))
-        win.geometry("1300x840")
-        win.minsize(1080, 620)
+        win.geometry("1540x880")
+        win.minsize(1200, 620)
         win.configure(bg=T.SURFACE)
         T.set_icon(win)
         self.v = {k: tk.StringVar(win, value=val) for k, val in DEFAULTS.items()}
-        self._style()
+        self.f_n = (T.FAM, 9)
+        self.f_b = (T.FAM, 9, "bold")
         self._build()
         self.v["type"].trace_add("write", lambda *_: self._on_type())
         self.v["case"].trace_add("write", lambda *_: self._draw_case())
+        self.v["name"].trace_add("write", lambda *_: self._on_name())
         win.bind("<Return>", lambda _: self.calc())
         win.bind("<F5>", lambda _: self.calc())
         win.bind("<Control-s>", lambda _: self.save())
         win.bind("<Control-o>", lambda _: self.open())
+        win.bind("<Control-p>", lambda _: self.print_pdf(False))
+        self._update_title()
         self._on_type()
+        self._refresh_list()
         win.lift()
         win.focus_force()
-
-    # ── 스타일 ───────────────────────────────────────────────
-    def _style(self):
-        st = ttk.Style(self.win)
-        st.configure("BD.TCombobox", padding=2)
-        self.f_n = (T.FAM, 9)
-        self.f_b = (T.FAM, 9, "bold")
 
     # ── 화면 구성 ────────────────────────────────────────────
     def _build(self):
@@ -77,16 +124,37 @@ class SlabLiteWindow:
         tk.Label(bar, text=" Lite ", font=(T.FAM, 8, "bold"), bg=T.ORANGE, fg="white").pack(side="left")
         tk.Label(bar, text="단일 슬래브 · 등분포하중 · 1방향 / 2방향", font=(T.FAM, 9), bg=T.NAVY,
                  fg="#B9C4DA").pack(side="left", padx=14)
-        for txt, cmd in (("계산서 복사", self.copy_report), ("계산서 저장", self.save_report), ("저장", self.save),
-                         ("열기", self.open), ("새로 만들기", self.new)):
-            b = tk.Button(bar, text=txt, command=cmd, font=self.f_n, bg=T.NAVY_2, fg="white", relief="flat",
+
+        def tbtn(txt, cmd, bg=T.NAVY_2):
+            b = tk.Button(bar, text=txt, command=cmd, font=self.f_n, bg=bg, fg="white", relief="flat",
                           activebackground=T.ORANGE, activeforeground="white", cursor="hand2", padx=10, pady=3)
             b.pack(side="right", padx=(0, 6), pady=8)
+            return b
+        self.btn_print = tbtn("출력 (A4) ▾", self._print_menu, bg=T.ORANGE_D)
+        tbtn("다른 이름으로", self.save_as)
+        tbtn("저장", self.save)
+        tbtn("열기", self.open)
+        tbtn("새 파일", self.new)
+        self.menu_print = m = tk.Menu(win, tearoff=0, font=self.f_n)
+        m.add_command(label="현재 부재 출력 (A4)          Ctrl+P", command=lambda: self.print_pdf(False))
+        m.add_command(label="전체 부재 출력 (A4)", command=lambda: self.print_pdf(True))
+        m.add_separator()
+        m.add_command(label="PDF로 저장 — 현재 부재…", command=lambda: self.print_pdf(False, ask=True))
+        m.add_command(label="PDF로 저장 — 전체 부재…", command=lambda: self.print_pdf(True, ask=True))
+        m.add_separator()
+        m.add_command(label="계산서 텍스트 저장…", command=self.save_report)
+        m.add_command(label="계산서 복사 (클립보드)", command=self.copy_report)
 
         self.status = tk.Label(win, text="", anchor="w", font=self.f_n, bg="#E5E9F0", fg=T.INK, padx=12, pady=4)
         self.status.pack(fill="x", side="bottom")
 
-        left = tk.Frame(win, bg=T.SURFACE, width=398)
+        lst = tk.Frame(win, bg=T.SURFACE, width=204)
+        lst.pack(side="left", fill="y")
+        lst.pack_propagate(False)
+        tk.Frame(win, bg=T.LINE, width=1).pack(side="left", fill="y")
+        self._build_list(lst)
+
+        left = tk.Frame(win, bg=T.SURFACE, width=392)
         left.pack(side="left", fill="y")
         left.pack_propagate(False)
         tk.Frame(win, bg=T.LINE, width=1).pack(side="left", fill="y")
@@ -105,6 +173,157 @@ class SlabLiteWindow:
         cv.bind("<Button-4>", lambda _: cv.yview_scroll(-1, "units"))
         cv.bind("<Button-5>", lambda _: cv.yview_scroll(1, "units"))
 
+    # ── 부재 목록 ────────────────────────────────────────────
+    def _build_list(self, p):
+        hd = tk.Frame(p, bg=T.NAVY_2, height=26)
+        hd.pack(fill="x")
+        hd.pack_propagate(False)
+        tk.Label(hd, text="Memb List", font=self.f_b, bg=T.NAVY_2, fg="white").pack(side="left", padx=10)
+        self.lbl_cnt = tk.Label(hd, text="", font=(T.FAM, 8), bg=T.NAVY_2, fg="#B9C4DA")
+        self.lbl_cnt.pack(side="right", padx=8)
+
+        tb = tk.Frame(p, bg=T.SURFACE)
+        tb.pack(fill="x", padx=6, pady=6)
+        for txt, cmd in (("추가", self.member_add), ("복제", self.member_copy), ("삭제", self.member_delete),
+                         ("▲", lambda: self.member_move(-1)), ("▼", lambda: self.member_move(1))):
+            b = tk.Button(tb, text=txt, command=cmd, font=(T.FAM, 8), bg="white", fg=T.INK, relief="groove",
+                          cursor="hand2", padx=5 if len(txt) > 1 else 4, pady=1)
+            b.pack(side="left", padx=(0, 3))
+
+        st = ttk.Style(self.win)
+        st.configure("BD.Treeview", font=self.f_n, rowheight=22)
+        st.configure("BD.Treeview.Heading", font=self.f_n)
+        box = tk.Frame(p, bg=T.SURFACE)
+        box.pack(fill="both", expand=True, padx=(6, 0), pady=(0, 6))
+        self.tree = tr = ttk.Treeview(box, columns=("no", "name", "type", "res"), show="headings",
+                                      selectmode="browse", style="BD.Treeview")
+        for cid, txt, w, anc in (("no", "No", 30, "center"), ("name", "Name", 90, "w"), ("type", "형식", 38, "center"),
+                                 ("res", "결과", 38, "center")):
+            tr.heading(cid, text=txt)
+            tr.column(cid, width=w, minwidth=w, anchor=anc, stretch=(cid == "name"))
+        tr.tag_configure("ng", foreground=T.NG)
+        tr.tag_configure("odd", background="#EEF2F8")
+        sb = ttk.Scrollbar(box, orient="vertical", command=tr.yview)
+        tr.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        tr.pack(fill="both", expand=True)
+        tr.bind("<<TreeviewSelect>>", self._on_tree_select)
+
+    def _row_values(self, i):
+        m = self.members[i]
+        vals = m["values"]
+        res = "" if m["ok"] is None else ("OK" if m["ok"] else "NG")
+        return (i + 1, vals.get("name", ""), "1W" if vals.get("type") == TYPE_1WAY else "2W", res)
+
+    def _row_tags(self, i):
+        tags = ["odd"] if i % 2 else []
+        if self.members[i]["ok"] is False:
+            tags.append("ng")
+        return tags
+
+    def _refresh_list(self):
+        """목록 전체 다시 그리기 + 현재 부재 선택"""
+        self._busy = True
+        try:
+            tr = self.tree
+            tr.delete(*tr.get_children())
+            for i in range(len(self.members)):
+                tr.insert("", "end", iid=str(i), values=self._row_values(i), tags=self._row_tags(i))
+            tr.selection_set(str(self.cur))
+            tr.see(str(self.cur))
+            self.lbl_cnt.config(text=f"{len(self.members)}개")
+            self.win.update_idletasks()                 # 선택 이벤트를 _busy 동안 비운다
+        finally:
+            self._busy = False
+
+    def _refresh_row(self, i=None):
+        i = self.cur if i is None else i
+        if self.tree.exists(str(i)):
+            self.tree.item(str(i), values=self._row_values(i), tags=self._row_tags(i))
+
+    def _sync_current(self):
+        """화면 입력값 → 현재 부재"""
+        self.members[self.cur]["values"] = {k: var.get() for k, var in self.v.items()}
+
+    def _load_member(self, i):
+        """부재 i 를 화면에 올리고 계산"""
+        self.cur = i
+        vals = self.members[i]["values"]
+        self._busy = True
+        try:
+            for k, var in self.v.items():
+                var.set(str(vals.get(k, DEFAULTS[k])))
+        finally:
+            self._busy = False
+        self._on_type()
+
+    def _on_tree_select(self, _=None):
+        if self._busy:
+            return
+        sel = self.tree.selection()
+        if not sel:
+            return
+        i = int(sel[0])
+        if i == self.cur or i >= len(self.members):
+            return
+        self._sync_current()
+        self._load_member(i)
+
+    def _on_name(self):
+        if self._busy:
+            return
+        self.members[self.cur]["values"]["name"] = self.v["name"].get()
+        self._refresh_row()
+
+    def _unique_name(self, base):
+        names = {m["values"].get("name", "") for m in self.members}
+        if base not in names:
+            return base
+        m = re.match(r"^(.*?)(\d+)$", base)
+        stem, n = (m.group(1), int(m.group(2))) if m else (base + "-", 1)
+        while f"{stem}{n}" in names:
+            n += 1
+        return f"{stem}{n}"
+
+    def member_add(self):
+        self._sync_current()
+        vals = dict(DEFAULTS)
+        vals["type"] = self.v["type"].get()
+        vals["name"] = self._unique_name("S1")
+        self.members.insert(self.cur + 1, {"values": vals, "ok": None})
+        self._load_member(self.cur + 1)
+        self._refresh_list()
+
+    def member_copy(self):
+        self._sync_current()
+        vals = dict(self.members[self.cur]["values"])
+        vals["name"] = self._unique_name(vals.get("name") or "S1")
+        self.members.insert(self.cur + 1, {"values": vals, "ok": None})
+        self._load_member(self.cur + 1)
+        self._refresh_list()
+
+    def member_delete(self):
+        nm = self.v["name"].get() or "(이름 없음)"
+        if not messagebox.askyesno("부재 삭제", f"'{nm}' 부재를 목록에서 삭제할까요?", parent=self.win):
+            return
+        if len(self.members) == 1:
+            self.members = [{"values": dict(DEFAULTS, type=self.v["type"].get()), "ok": None}]
+            self._load_member(0)
+        else:
+            self.members.pop(self.cur)
+            self._load_member(min(self.cur, len(self.members) - 1))
+        self._refresh_list()
+
+    def member_move(self, step):
+        j = self.cur + step
+        if not 0 <= j < len(self.members):
+            return
+        self._sync_current()
+        self.members[self.cur], self.members[j] = self.members[j], self.members[self.cur]
+        self.cur = j
+        self._refresh_list()
+
+    # ── 입력 패널 ────────────────────────────────────────────
     def _group(self, parent, title):
         return tk.LabelFrame(parent, text=title, font=self.f_b, bg=T.SURFACE, fg=T.NAVY, bd=1, relief="groove",
                              padx=8, pady=6)
@@ -120,8 +339,7 @@ class SlabLiteWindow:
         return e
 
     def _cmb(self, parent, key, values, width=7, state="normal"):
-        return ttk.Combobox(parent, textvariable=self.v[key], values=values, width=width, state=state,
-                            font=self.f_n, style="BD.TCombobox")
+        return ttk.Combobox(parent, textvariable=self.v[key], values=values, width=width, state=state, font=self.f_n)
 
     def _field(self, parent, row, label, key, unit, width=7, widget=None):
         self._lbl(parent, label, anchor="e").grid(row=row, column=0, sticky="e", pady=2)
@@ -174,16 +392,17 @@ class SlabLiteWindow:
         self.g_bar = self._group(row4, "사용 철근")
         self.g_bar.pack(side="left", fill="y")
 
-        tk.Label(p, text="Enter / F5 : 계산     Ctrl+S : 저장     Ctrl+O : 열기", font=(T.FAM, 8), bg=T.SURFACE,
-                 fg=T.MUTED).pack(side="bottom", pady=8)
+        tk.Label(p, text="Enter / F5 : 계산    Ctrl+S : 저장    Ctrl+O : 열기    Ctrl+P : 출력", font=(T.FAM, 8),
+                 bg=T.SURFACE, fg=T.MUTED).pack(side="bottom", pady=8)
 
     # ── Type 에 따라 달라지는 입력 ───────────────────────────
     def _on_type(self):
+        if self._busy:
+            return
         one = self.v["type"].get() == TYPE_1WAY
         for g in (self.g_dim, self.g_sup, self.g_bar):
             for w in g.winfo_children():
                 w.destroy()
-        # 치수
         if one:
             self._field(self.g_dim, 0, "Span :", "span", "m")
             self._lbl(self.g_dim, "(순경간 ln)", fg=T.MUTED).grid(row=1, column=0, columnspan=3, sticky="w")
@@ -191,7 +410,6 @@ class SlabLiteWindow:
             self._field(self.g_dim, 0, "Lx :", "lx", "m")
             self._field(self.g_dim, 1, "Ly :", "ly", "m")
             self._lbl(self.g_dim, "(Lx ≤ Ly, 중심간)", fg=T.MUTED).grid(row=2, column=0, columnspan=3, sticky="w")
-        # 지지 형식
         if one:
             g = self._group(self.g_sup, "지지형식")
             g.pack(fill="x")
@@ -224,7 +442,6 @@ class SlabLiteWindow:
                     tk.Button(g2, text="↑", font=(T.FAM, 7), width=2, relief="groove", bg="white", cursor="hand2",
                               command=lambda k=i: self._copy_beam(k)).grid(row=i - 1, column=4, sticky="w")
             self._draw_case()
-        # 사용 철근
         self._field(self.g_bar, 0, "철근 :", "bar", "", widget=self._cmb(self.g_bar, "bar", ["D10", "D13", "D16"], 6, "readonly"))
         if one:
             self._field(self.g_bar, 1, "노출환경 :", "expo", "",
@@ -236,54 +453,29 @@ class SlabLiteWindow:
         self.v[f"b{i}b"].set(self.v[f"b{i - 1}b"].get())
         self.v[f"b{i}h"].set(self.v[f"b{i - 1}h"].get())
 
-    def _case_no(self):
-        try:
-            return int(self.v["case"].get().replace("Case", "").strip())
-        except ValueError:
-            return 2
-
     def _draw_case(self):
         cv = getattr(self, "case_cv", None)
         if cv is None or not cv.winfo_exists():
             return
         cv.delete("all")
-        n = self._case_no()
+        n = _case_no({"case": self.v["case"].get()})
         R.draw_plan_icon(cv, CASE_EDGES.get(n, CASE_EDGES[2]), 12, 10, 54, 72, labels=True, font=(T.FAM, 8, "bold"))
         if getattr(self, "case_lbl", None) is not None and self.case_lbl.winfo_exists():
             self.case_lbl.config(text=CASE_DESC.get(n, ""))
 
-    # ── 입력 수집 ────────────────────────────────────────────
-    def _num(self, key):
-        s = self.v[key].get().strip().replace(",", "")
-        try:
-            return float(s)
-        except ValueError:
-            raise S.SlabInputError(f"'{LABELS.get(key, key)}' 값이 숫자가 아닙니다: \"{s}\"") from None
-
-    def collect(self):
-        one = self.v["type"].get() == TYPE_1WAY
-        inp = {"name": self.v["name"].get().strip(), "type": "1way" if one else "2way",
-               "bar": self.v["bar"].get().strip() or "D10"}
-        for k in ("t", "cc", "fck", "fy13", "fy16", "wd", "wl"):
-            inp[k] = self._num(k)
-        if one:
-            inp["span"] = self._num("span")
-            inp["support"] = next((k for k, val in S.ONE_WAY_SUPPORTS.items() if val[0] == self.v["support"].get()), "CC")
-            inp["spans"] = SPAN_OPTS.get(self.v["spans"].get(), 3)
-            inp["kcr"] = S.EXPOSURES.get(self.v["expo"].get(), 210.0)
-        else:
-            inp["lx"] = self._num("lx")
-            inp["ly"] = self._num("ly")
-            inp["case"] = self._case_no()
-            inp["beams"] = [(self._num(f"b{i}b"), self._num(f"b{i}h")) for i in range(1, 5)]
-        return inp
-
     # ── 계산 ─────────────────────────────────────────────────
+    def collect(self):
+        return inputs_from_values({k: var.get() for k, var in self.v.items()})
+
     def calc(self, silent=False):
+        self._sync_current()
         try:
             res = S.calculate(self.collect())
         except S.SlabInputError as e:
             self.result = self.report = None
+            self.members[self.cur]["ok"] = None
+            self._refresh_row()
+            self.cv.delete("all")
             self._set_status(f"입력 오류 — {str(e).splitlines()[0]}", ok=False)
             if not silent:
                 messagebox.showwarning("입력 확인", str(e), parent=self.win)
@@ -291,8 +483,10 @@ class SlabLiteWindow:
         self.result = res
         self.report = R.build(res)
         fonts(self.win)
-        render(self.cv, self.report, sketch=R.sketch(res))
+        render(self.cv, self.report, sketch=R.sketch(res), sketch_box=R.sketch_box(res))
         self.cv.yview_moveto(0)
+        self.members[self.cur]["ok"] = res["ok"]
+        self._refresh_row()
         nm = res["name"] or "(이름 없음)"
         kind = "1방향" if res["type"] == "1way" else "2방향"
         self._set_status(f"{nm}  ·  {kind} 슬래브  ·  T = {res['t']:g} mm  ─  "
@@ -300,57 +494,157 @@ class SlabLiteWindow:
                          ok=res["ok"])
         return res
 
+    def _calc_all(self):
+        """모든 부재의 결과(OK/NG) 갱신"""
+        for m in self.members:
+            try:
+                m["ok"] = S.calculate(inputs_from_values(m["values"]))["ok"]
+            except S.SlabInputError:
+                m["ok"] = None
+
     def _set_status(self, text, ok=True):
         self.status.config(text=text, fg=T.OK if ok else T.NG)
 
-    # ── 파일 ─────────────────────────────────────────────────
-    def new(self):
-        typ = self.v["type"].get()
-        for k, val in DEFAULTS.items():
-            if k != "type":
-                self.v[k].set(val)
-        self.path = None
-        self.v["type"].set(typ)            # trace → 화면 갱신 + 계산
+    def _update_title(self):
+        f = os.path.basename(self.path) if self.path else "제목 없음"
+        self.win.title(f"StrCAD - Basic Design │ RC Slab Lite  ─  {f}" + (f"  ─  {self.user}" if self.user else ""))
 
-    def save(self):
-        path = filedialog.asksaveasfilename(parent=self.win, title="슬래브 저장", defaultextension=".slab",
-                                            filetypes=FILE_TYPES, initialfile=(self.v["name"].get() or "slab") + ".slab")
-        if not path:
+    # ── 파일 (부재 목록 전체를 한 파일에) ────────────────────
+    def new(self):
+        if len(self.members) > 1 and not messagebox.askyesno(
+                "새 파일", "현재 부재 목록을 모두 비우고 새로 시작할까요?\n(저장하지 않은 내용은 사라집니다)", parent=self.win):
             return
-        data = {"app": "StrCAD Basic Design", "module": "rc_slab_lite", "version": 1,
-                "values": {k: var.get() for k, var in self.v.items()}}
+        self.members = [{"values": dict(DEFAULTS, type=self.v["type"].get()), "ok": None}]
+        self.path = None
+        self._update_title()
+        self._load_member(0)
+        self._refresh_list()
+
+    def _write(self, path):
+        self._sync_current()
+        data = {"app": "StrCAD Basic Design", "module": "rc_slab_lite", "version": 2, "current": self.cur,
+                "members": [m["values"] for m in self.members]}
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except OSError as e:
             messagebox.showerror("저장 실패", str(e), parent=self.win)
-            return
+            return False
         self.path = path
-        self._set_status(f"저장했습니다: {path}")
+        self._update_title()
+        self._set_status(f"저장했습니다 (부재 {len(self.members)}개): {path}")
+        return True
+
+    def save(self):
+        if self.path:
+            return self._write(self.path)
+        return self.save_as()
+
+    def save_as(self):
+        init = os.path.basename(self.path) if self.path else "slab_list.slab"
+        path = filedialog.asksaveasfilename(parent=self.win, title="부재 목록 저장", defaultextension=".slab",
+                                            filetypes=FILE_TYPES, initialfile=init)
+        return self._write(path) if path else False
 
     def open(self):
-        path = filedialog.askopenfilename(parent=self.win, title="슬래브 열기", filetypes=FILE_TYPES)
+        path = filedialog.askopenfilename(parent=self.win, title="부재 목록 열기", filetypes=FILE_TYPES)
         if not path:
             return
         try:
             with open(path, encoding="utf-8") as f:
-                vals = json.load(f).get("values", {})
-        except (OSError, ValueError, AttributeError) as e:
+                data = json.load(f)
+            if isinstance(data.get("members"), list) and data["members"]:
+                raw = data["members"]
+            else:
+                raw = [data["values"]]                    # version 1: 부재 한 개
+            members = []
+            for vals in raw:
+                merged = dict(DEFAULTS)
+                merged.update({k: str(val) for k, val in vals.items() if k in DEFAULTS})
+                if merged["type"] not in (TYPE_1WAY, TYPE_2WAY):
+                    merged["type"] = TYPE_2WAY
+                members.append({"values": merged, "ok": None})
+            cur = int(data.get("current", 0))
+        except (OSError, ValueError, KeyError, AttributeError, TypeError) as e:
             messagebox.showerror("열기 실패", f"파일을 읽지 못했습니다.\n{e}", parent=self.win)
             return
-        typ = str(vals.get("type", self.v["type"].get()))
-        for k, val in vals.items():
-            if k in self.v and k != "type":
-                self.v[k].set(str(val))
+        self.members = members
         self.path = path
-        self.v["type"].set(typ if typ in (TYPE_1WAY, TYPE_2WAY) else TYPE_2WAY)
+        self._calc_all()
+        self._update_title()
+        self._load_member(cur if 0 <= cur < len(members) else 0)
+        self._refresh_list()
+        self._set_status(f"열었습니다 (부재 {len(members)}개): {path}")
+
+    # ── 출력 ─────────────────────────────────────────────────
+    def _print_menu(self):
+        b = self.btn_print
+        self.menu_print.tk_popup(b.winfo_rootx(), b.winfo_rooty() + b.winfo_height())
+
+    def _print_items(self, all_members):
+        """[(report, sketch, sketch_box, name)], 건너뛴 부재 이름"""
+        self._sync_current()
+        targets = self.members if all_members else [self.members[self.cur]]
+        items, skipped = [], []
+        for m in targets:
+            try:
+                res = S.calculate(inputs_from_values(m["values"]))
+            except S.SlabInputError:
+                skipped.append(m["values"].get("name", "?"))
+                continue
+            items.append((R.build(res), R.sketch(res), R.sketch_box(res), res["name"]))
+        return items, skipped
+
+    def print_pdf(self, all_members=False, ask=False):
+        """A4 PDF 를 만들어 PDF 뷰어로 연다(뷰어에서 인쇄).  ask=True 면 저장 위치를 묻고 열지는 않는다."""
+        from .. import pdf_out
+        items, skipped = self._print_items(all_members)
+        if not items:
+            messagebox.showwarning("출력", "출력할 수 있는 부재가 없습니다.\n입력값을 확인하세요.", parent=self.win)
+            return None
+        if not all_members:
+            base = "RC_SLAB_" + _safe_name(items[0][3])
+        elif self.path:
+            base = "RC_SLAB_" + _safe_name(os.path.splitext(os.path.basename(self.path))[0])
+        else:
+            base = "RC_SLAB_전체"
+        if ask:
+            path = filedialog.asksaveasfilename(parent=self.win, title="PDF로 저장", defaultextension=".pdf",
+                                                filetypes=[("PDF", "*.pdf")], initialfile=base + ".pdf")
+            if not path:
+                return None
+        else:
+            folder = os.path.join(tempfile.gettempdir(), "StrCAD_print")
+            os.makedirs(folder, exist_ok=True)
+            path = os.path.join(folder, f"{base}_{datetime.datetime.now():%H%M%S}.pdf")
+        self.win.config(cursor="watch")
+        self._set_status("출력용 PDF 를 만드는 중…")
+        self.win.update_idletasks()
+        try:
+            n = pdf_out.export_pdf(path, items, header=PRINT_HEADER)
+        except (pdf_out.PdfExportError, OSError) as e:
+            messagebox.showerror("출력 실패", str(e), parent=self.win)
+            self._set_status("출력 실패", ok=False)
+            return None
+        finally:
+            self.win.config(cursor="")
+        msg = f"A4 {n}쪽 PDF 를 만들었습니다: {path}"
+        if skipped:
+            msg += f"   (입력 오류로 제외: {', '.join(skipped)})"
+        self._set_status(msg)
+        if not ask:
+            try:
+                pdf_out.open_file(path)
+            except OSError as e:
+                messagebox.showinfo("출력", f"PDF 를 만들었지만 자동으로 열지 못했습니다.\n{path}\n\n{e}", parent=self.win)
+        return path
 
     def save_report(self):
         if self.calc() is None:
             return
         path = filedialog.asksaveasfilename(parent=self.win, title="계산서 저장", defaultextension=".txt",
                                             filetypes=[("텍스트", "*.txt")],
-                                            initialfile=(self.v["name"].get() or "slab") + "_계산서.txt")
+                                            initialfile=_safe_name(self.v["name"].get()) + "_계산서.txt")
         if not path:
             return
         try:

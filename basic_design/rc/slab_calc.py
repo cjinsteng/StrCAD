@@ -238,6 +238,17 @@ def calc_one_way(inp):
             mom += [("Pos", "중앙부", 11.0, "")]
         vu, v_txt = 1.15 * wu * L / 2.0, "1.15·Wu·L/2"
 
+    # 모멘트도·전단도용 설계값 (좌단, 중앙, 우단) — 부모멘트는 양수 크기로 저장
+    mv = {key: w2 / n for key, _, n, _ in mom}
+    if sup == "CANT":
+        diagram = {"ml": mv["Cont"], "mp": 0.0, "mr": 0.0, "vl": vu, "vr": 0.0}
+    elif sup == "CC":
+        diagram = {"ml": mv["Cont"], "mp": mv["Pos"], "mr": mv["Cont"], "vl": vu, "vr": -vu}
+    elif sup == "SS":
+        diagram = {"ml": 0.0, "mp": mv["Pos"], "mr": 0.0, "vl": vu, "vr": -vu}
+    else:                                            # 좌: 불연속단, 우: 첫 번째 내부 받침부
+        diagram = {"ml": mv.get("DisC", 0.0), "mp": mv["Pos"], "mr": mv["Cont"], "vl": wu * L / 2.0, "vr": -vu}
+
     # 간격 제한
     fs = 2.0 / 3.0 * fy
     s_crack = min(375.0 * kcr / fs - 2.5 * cc, 300.0 * kcr / fs)
@@ -286,7 +297,7 @@ def calc_one_way(inp):
         "rows": rows, "min_row": min_row, "temp_row": temp_row, "temp_s": temp_s,
         "kcr": kcr, "fs": fs, "s_crack": s_crack, "s_code": s_code, "s_main": s_main, "s_temp": s_temp,
         "shear": [{"label": "", "vu": vu, "txt": v_txt, "phi_vc": pvc, "d": d, "ok": vu <= pvc + 1e-9}],
-        "summary": summary, "warn": warn,
+        "summary": summary, "warn": warn, "diagram": diagram,
         "ok": (t + 1e-9 >= h_req) and all(s["ok"] for s in summary) and vu <= pvc + 1e-9,
     }
 

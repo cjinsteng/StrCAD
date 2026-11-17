@@ -230,16 +230,83 @@ def draw_plan_icon(cv, edges, x, y, w, h, labels=True, font=None):
         cv.create_text(x + w - 11, y + h / 2, text="B4", font=font, fill=T.NAVY)
 
 
+def sketch_box(res):
+    """오른쪽 위 그림 영역 (x, y, w, h) — 1방향은 모멘트도·전단도가 들어가 더 높다."""
+    return (590, 18, 290, 392) if res["type"] == "1way" else (590, 18, 290, 330)
+
+
+def moment_curve(ml, mp, mr, cantilever=False, n=48):
+    """모멘트도 좌표 [(ξ, M)] — M 은 정모멘트(+), 부모멘트(-).
+    양단 설계 부모멘트(ml, mr)를 잇는 직선에 포물선을 더해 최대 정모멘트가 mp 가 되도록 한 곡선."""
+    xs = [i / n for i in range(n + 1)]
+    if cantilever:
+        return [(t, -ml * (1 - t) ** 2) for t in xs]
+
+    def peak(sag):
+        return max(-ml * (1 - t) - mr * t + 4 * sag * t * (1 - t) for t in xs)
+    lo, hi = 0.0, max(mp + ml + mr, 1e-9) * 2
+    for _ in range(50):
+        mid = (lo + hi) / 2
+        if peak(mid) < mp:
+            lo = mid
+        else:
+            hi = mid
+    sag = (lo + hi) / 2
+    return [(t, -ml * (1 - t) - mr * t + 4 * sag * t * (1 - t)) for t in xs]
+
+
+def _moment_diagram(cv, F, r, x1, x2, yb, bx):
+    """1방향 모멘트도 — 부모멘트는 기준선 위, 정모멘트는 아래(인장측)"""
+    dg = r["diagram"]
+    col, fill = "#2563eb", "#DBEAFE"
+    pts = moment_curve(dg["ml"], dg["mp"], dg["mr"], cantilever=(r["support"] == "CANT"))
+    mmax = max(abs(m) for _, m in pts) or 1.0
+    k = 30.0 / mmax
+    xy = [(x1 + (x2 - x1) * t, yb + m * k) for t, m in pts]
+    cv.create_text(bx + 12, yb - 48, text="Moment (kN·m/m)", anchor="w", font=F["s"], fill=col)
+    cv.create_polygon([(x1, yb)] + xy + [(x2, yb)], fill=fill, outline="")
+    cv.create_line(xy, fill=col, width=2)
+    cv.create_line(x1, yb, x1, xy[0][1], fill=col)
+    cv.create_line(x2, yb, x2, xy[-1][1], fill=col)
+    cv.create_line(x1 - 10, yb, x2 + 10, yb, fill=T.INK)
+    if dg["ml"] > 0:
+        cv.create_text(x1 - 4, yb - dg["ml"] * k - 2, text=f"-{dg['ml']:.2f}", anchor="e", font=F["s"], fill=T.INK)
+    if dg["mr"] > 0:
+        cv.create_text(x2 + 4, yb - dg["mr"] * k - 2, text=f"-{dg['mr']:.2f}", anchor="w", font=F["s"], fill=T.INK)
+    if dg["mp"] > 0:
+        t_pk, m_pk = max(pts, key=lambda p: p[1])
+        cv.create_text(x1 + (x2 - x1) * t_pk, yb + m_pk * k + 10, text=f"+{dg['mp']:.2f}", font=F["s"], fill=T.INK)
+
+
+def _shear_diagram(cv, F, r, x1, x2, yb, bx):
+    """1방향 전단도 — 좌단(+)에서 우단(-)으로 직선"""
+    dg = r["diagram"]
+    col, fill = "#059669", "#D1FAE5"
+    vmax = max(abs(dg["vl"]), abs(dg["vr"])) or 1.0
+    k = 26.0 / vmax
+    ya, yc = yb - dg["vl"] * k, yb - dg["vr"] * k
+    cv.create_text(bx + 12, yb - 44, text="Shear (kN/m)", anchor="w", font=F["s"], fill=col)
+    if dg["vl"] * dg["vr"] < 0:
+        xz = x1 + (x2 - x1) * dg["vl"] / (dg["vl"] - dg["vr"])
+        cv.create_polygon(x1, yb, x1, ya, xz, yb, fill=fill, outline="")
+        cv.create_polygon(xz, yb, x2, yc, x2, yb, fill=fill, outline="")
+    else:
+        cv.create_polygon(x1, yb, x1, ya, x2, yc, x2, yb, fill=fill, outline="")
+    cv.create_line(x1, yb, x1, ya, x2, yc, x2, yb, fill=col, width=2)
+    cv.create_line(x1 - 10, yb, x2 + 10, yb, fill=T.INK)
+    cv.create_text(x1 - 4, ya + 2, text=f"{dg['vl']:.1f}", anchor="e", font=F["s"], fill=T.INK)
+    if abs(dg["vr"]) > 0:
+        cv.create_text(x2 + 4, yc - 2, text=f"{dg['vr']:.1f}", anchor="w", font=F["s"], fill=T.INK)
+
+
 def sketch(res):
     """render() 에 넘길 그림 함수"""
     def one_way(cv, x, y, w, h):
         F = fonts(cv)
         r = res
-        cy = y + 110
-        x1, x2 = x + 50, x + w - 50
+        cy = y + 74
+        x1, x2 = x + 52, x + w - 52
         sup = r["support"]
-        if sup == "CANT":
-            x2 = x + w - 80
         cv.create_line(x1 - (0 if sup == "CANT" else 24), cy, x2 + (0 if sup in ("CANT", "SS") else 24), cy,
                        fill=T.INK, width=2)
         # 하중
@@ -266,10 +333,10 @@ def sketch(res):
         if sup == "CC":
             cv.create_text(x1 - 26, cy + 24, text="연속", font=F["s"], fill=T.MUTED)
         elif sup in ("DC", "DCI"):
-            cv.create_text(x1 - 4, cy + 24, text="불연속", font=F["s"], fill=T.MUTED)
-        _dim(cv, x1, cy + 48, x2, cy + 48, f"{r['L'] * 1000:.0f}", F)
-        _section(cv, x + w / 2, y + 220, 110, r, F)
-        cv.create_text(x + w / 2, y + h - 22, text=r["support_txt"], font=F["n"], fill=T.NAVY)
+            cv.create_text(x1 - 26, cy + 24, text="불연속", font=F["s"], fill=T.MUTED)
+        _dim(cv, x1, cy + 46, x2, cy + 46, f"{r['L'] * 1000:.0f}", F)
+        _moment_diagram(cv, F, r, x1, x2, y + 194, x)
+        _shear_diagram(cv, F, r, x1, x2, y + 318, x)
 
     def two_way(cv, x, y, w, h):
         F = fonts(cv)
