@@ -13,6 +13,7 @@ import os
 import re
 import tempfile
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk, filedialog, messagebox
 
 from .. import theme as T
@@ -92,7 +93,7 @@ class SlabLiteWindow:
         self.cur = 0
         self._busy = False
         self.win = win = tk.Toplevel(parent)
-        win.geometry("1540x880")
+        win.geometry("1560x880")
         win.minsize(1200, 620)
         win.configure(bg=T.SURFACE)
         T.set_icon(win)
@@ -148,19 +149,27 @@ class SlabLiteWindow:
         self.status = tk.Label(win, text="", anchor="w", font=self.f_n, bg="#E5E9F0", fg=T.INK, padx=12, pady=4)
         self.status.pack(fill="x", side="bottom")
 
-        lst = tk.Frame(win, bg=T.SURFACE, width=204)
-        lst.pack(side="left", fill="y")
-        lst.pack_propagate(False)
-        tk.Frame(win, bg=T.LINE, width=1).pack(side="left", fill="y")
+        # 부재 목록 | 입력·계산서  — 경계(sash)를 끌어 목록 폭 조절
+        self.pane = pane = tk.PanedWindow(win, orient="horizontal", sashwidth=6, sashrelief="flat", bd=0,
+                                          bg=T.LINE, opaqueresize=True)
+        pane.pack(fill="both", expand=True)
+        lst = tk.Frame(pane, bg=T.SURFACE)
         self._build_list(lst)
+        main = tk.Frame(pane, bg=T.SURFACE)
+        pane.add(lst, minsize=150, width=self._list_width)
+        pane.add(main, minsize=760, stretch="always")
+        try:
+            pane.paneconfigure(lst, stretch="never")
+        except tk.TclError:
+            pass
 
-        left = tk.Frame(win, bg=T.SURFACE, width=392)
+        left = tk.Frame(main, bg=T.SURFACE, width=392)
         left.pack(side="left", fill="y")
         left.pack_propagate(False)
-        tk.Frame(win, bg=T.LINE, width=1).pack(side="left", fill="y")
+        tk.Frame(main, bg=T.LINE, width=1).pack(side="left", fill="y")
         self._build_left(left)
 
-        right = tk.Frame(win, bg=T.PANEL)
+        right = tk.Frame(main, bg=T.PANEL)
         right.pack(side="left", fill="both", expand=True)
         self.cv = cv = tk.Canvas(right, bg=T.PANEL, highlightthickness=0)
         vs = ttk.Scrollbar(right, orient="vertical", command=cv.yview)
@@ -184,23 +193,35 @@ class SlabLiteWindow:
 
         tb = tk.Frame(p, bg=T.SURFACE)
         tb.pack(fill="x", padx=6, pady=6)
+        tk.Label(p, text="↔ 오른쪽 경계를 끌어 폭 조절", font=(T.FAM, 7), bg=T.SURFACE, fg=T.MUTED).pack(
+            side="bottom", anchor="w", padx=8, pady=(0, 4))
         for txt, cmd in (("추가", self.member_add), ("복제", self.member_copy), ("삭제", self.member_delete),
                          ("▲", lambda: self.member_move(-1)), ("▼", lambda: self.member_move(1))):
             b = tk.Button(tb, text=txt, command=cmd, font=(T.FAM, 8), bg="white", fg=T.INK, relief="groove",
                           cursor="hand2", padx=5 if len(txt) > 1 else 4, pady=1)
             b.pack(side="left", padx=(0, 3))
 
+        # 글꼴 크기(Windows 배율 포함)로 열 폭·행 높이를 정해 글자가 잘리지 않게
+        fn = tkfont.Font(self.win, font=self.f_n)
+        fb = tkfont.Font(self.win, font=self.f_b)
+        pad = fn.measure("0") * 2 + 6
+        widths = {"no": max(fb.measure("No"), fn.measure("999")) + pad,
+                  "name": max(fn.measure("1RaS21-W"), fb.measure("Name")) + pad,
+                  "type": max(fb.measure("형식"), fn.measure("2W")) + pad,
+                  "res": max(fb.measure("결과"), fn.measure("NG")) + pad}
+        sb_w = 18
+        self._list_width = sum(widths.values()) + sb_w + 14
         st = ttk.Style(self.win)
-        st.configure("BD.Treeview", font=self.f_n, rowheight=22)
-        st.configure("BD.Treeview.Heading", font=self.f_n)
+        st.configure("BD.Treeview", font=self.f_n, rowheight=fn.metrics("linespace") + 8)
+        st.configure("BD.Treeview.Heading", font=self.f_b)
         box = tk.Frame(p, bg=T.SURFACE)
-        box.pack(fill="both", expand=True, padx=(6, 0), pady=(0, 6))
+        box.pack(fill="both", expand=True, padx=(6, 2), pady=(0, 2))
         self.tree = tr = ttk.Treeview(box, columns=("no", "name", "type", "res"), show="headings",
                                       selectmode="browse", style="BD.Treeview")
-        for cid, txt, w, anc in (("no", "No", 30, "center"), ("name", "Name", 90, "w"), ("type", "형식", 38, "center"),
-                                 ("res", "결과", 38, "center")):
-            tr.heading(cid, text=txt)
-            tr.column(cid, width=w, minwidth=w, anchor=anc, stretch=(cid == "name"))
+        for cid, txt, anc in (("no", "No", "center"), ("name", "Name", "w"), ("type", "형식", "center"),
+                              ("res", "결과", "center")):
+            tr.heading(cid, text=txt, anchor="w" if cid == "name" else "center")
+            tr.column(cid, width=widths[cid], minwidth=widths[cid], anchor=anc, stretch=(cid == "name"))
         tr.tag_configure("ng", foreground=T.NG)
         tr.tag_configure("odd", background="#EEF2F8")
         sb = ttk.Scrollbar(box, orient="vertical", command=tr.yview)
@@ -442,7 +463,7 @@ class SlabLiteWindow:
                     tk.Button(g2, text="↑", font=(T.FAM, 7), width=2, relief="groove", bg="white", cursor="hand2",
                               command=lambda k=i: self._copy_beam(k)).grid(row=i - 1, column=4, sticky="w")
             self._draw_case()
-        self._field(self.g_bar, 0, "철근 :", "bar", "", widget=self._cmb(self.g_bar, "bar", ["D10", "D13", "D16"], 6, "readonly"))
+        self._field(self.g_bar, 0, "철근 :", "bar", "", widget=self._cmb(self.g_bar, "bar", S.BAR_ORDER, 6, "readonly"))
         if one:
             self._field(self.g_bar, 1, "노출환경 :", "expo", "",
                         widget=self._cmb(self.g_bar, "expo", list(S.EXPOSURES), 19, "readonly"))

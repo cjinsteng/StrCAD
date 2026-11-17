@@ -26,8 +26,22 @@ REBAR = {            # 호칭 : (공칭지름 mm, 공칭단면적 mm²)
     "D10": (9.53, 71.33), "D13": (12.7, 126.7), "D16": (15.9, 198.6),
     "D19": (19.1, 286.5), "D22": (22.2, 387.1),
 }
-SPACING_COLS = [("D10",), ("D10", "D13"), ("D13",), ("D13", "D16"), ("D16",)]   # 배근 간격표 열
-COL_LABELS = ["+".join(c) for c in SPACING_COLS]
+BAR_ORDER = ["D10", "D13", "D16", "D19", "D22"]
+
+
+def spacing_cols(bar):
+    """배근 간격표 열: 선택 철근을 가운데 두고 한 단계 아래·위 철근과 혼용
+       D10 → D10, D10+D13, D13, D13+D16, D16   (D10 아래 철근이 없으므로 D13 이 가운데)
+       D13 → D10, D10+D13, D13, D13+D16, D16
+       D16 → D13, D13+D16, D16, D16+D19, D19"""
+    i = BAR_ORDER.index(bar) if bar in BAR_ORDER else 0
+    k = max(0, min(i - 1, len(BAR_ORDER) - 3))
+    a, b, c = BAR_ORDER[k:k + 3]
+    return [(a,), (a, b), (b,), (b, c), (c,)]
+
+
+def col_labels(cols):
+    return ["+".join(c) for c in cols]
 
 ONE_WAY_SUPPORTS = {   # key : (표시, 최소두께 l/n, 표 4.2-1 구분)
     "SS":   ("단순 ── 단순",               20.0, "단순 지지"),
@@ -68,36 +82,71 @@ def stress_block(fck):
     return pts[-1][1:]
 
 
+def strain_limits(fy):
+    """(εy, 인장지배 한계, 휨부재 최소 허용변형률)  — KDS 14 20 20 4.1.2"""
+    ey = fy / ES
+    return ey, (0.005 if fy <= 400 else 2.5 * ey), (0.004 if fy <= 400 else 2.0 * ey)
+
+
+def phi_of(eps_t, fy):
+    """εt 에 따른 휨 강도감소계수: 인장지배 0.85, 압축지배 0.65, 변화구간 직선보간"""
+    ey, lim, _ = strain_limits(fy)
+    if eps_t >= lim:
+        return PHI_F
+    if eps_t <= ey:
+        return 0.65
+    return 0.65 + (PHI_F - 0.65) * (eps_t - ey) / (lim - ey)
+
+
+def section(as_, d, fck, fy, b=1000.0):
+    """단철근 직사각형 단면 해석 → dict(a, c, eps_t, phi, phi_mn[kN·m])"""
+    eta, beta1, ecu = stress_block(fck)
+    a = as_ * fy / (0.85 * eta * fck * b)
+    c = a / beta1
+    eps_t = ecu * (d - c) / c if c > 0 else 1.0
+    phi = phi_of(eps_t, fy)
+    return {"a": a, "c": c, "eps_t": eps_t, "phi": phi, "phi_mn": phi * as_ * fy * (d - a / 2.0) / 1e6}
+
+
 def flexure(mu, d, fck, fy, b=1000.0):
-    """단철근 직사각형 단면 소요철근량.
-    mu: kN·m (폭 b 당).  반환 dict(ok, rho, as_req, a, c, eps_t, eps_lim, msg)"""
+    """단철근 직사각형 단면 소요철근량 (φMn = Mu).
+    인장지배(φ=0.85)로 풀어 εt 가 한계 미만이면 변화구간 φ(εt) 를 적용해 다시 구한다.
+    εt 가 휨부재 최소 허용변형률 미만이 되어야 하면 단면 부족(N.G.).
+    반환 dict(ok, rho, as_req, a, c, eps_t, phi, msg)"""
     eta, beta1, ecu = stress_block(fck)
     fc = 0.85 * eta * fck
-    out = {"ok": True, "rho": 0.0, "as_req": 0.0, "a": 0.0, "c": 0.0, "eps_t": None, "eps_lim": None, "msg": ""}
+    out = {"ok": True, "rho": 0.0, "as_req": 0.0, "a": 0.0, "c": 0.0, "eps_t": None, "phi": PHI_F, "msg": ""}
     if mu <= 0 or d <= 0:
         return out
-    rn = mu * 1e6 / (PHI_F * b * d * d)
-    disc = 1.0 - 2.0 * rn / fc
-    if disc <= 0:
-        out.update(ok=False, msg="단면 부족(압축파괴) — 두께 증가 필요")
-        return out
-    rho = fc / fy * (1.0 - math.sqrt(disc))
-    as_req = rho * b * d
-    a = as_req * fy / (fc * b)
-    c = a / beta1
-    eps_t = ecu * (d - c) / c
-    eps_lim = 0.005 if fy <= 400 else 2.5 * fy / ES          # 인장지배 한계 (φ=0.85 적용 조건)
-    out.update(rho=rho, as_req=as_req, a=a, c=c, eps_t=eps_t, eps_lim=eps_lim)
-    if eps_t < eps_lim:
-        out.update(ok=False, msg="인장지배단면 아님(εt<한계) — 두께 증가 필요")
+    _, lim, emin = strain_limits(fy)
+    as_req = None
+    disc = 1.0 - 2.0 * (mu * 1e6 / (PHI_F * b * d * d)) / fc
+    if disc > 0:
+        as0 = fc / fy * (1.0 - math.sqrt(disc)) * b * d
+        if section(as0, d, fck, fy, b)["eps_t"] >= lim:
+            as_req = as0
+    if as_req is None:                                   # 변화구간: φ(εt)·Mn(As) = Mu 를 이분법으로
+        c_max = ecu * d / (ecu + emin)
+        as_max = fc * b * beta1 * c_max / fy
+        if section(as_max, d, fck, fy, b)["phi_mn"] < mu:
+            out.update(ok=False, msg=f"단면 부족 — εt < εt,min({emin:.4f}), 두께 증가 필요")
+            return out
+        lo, hi = 0.0, as_max
+        for _ in range(60):
+            mid = (lo + hi) / 2.0
+            if section(mid, d, fck, fy, b)["phi_mn"] < mu:
+                lo = mid
+            else:
+                hi = mid
+        as_req = hi
+    sec = section(as_req, d, fck, fy, b)
+    out.update(rho=as_req / (b * d), as_req=as_req, a=sec["a"], c=sec["c"], eps_t=sec["eps_t"], phi=sec["phi"])
     return out
 
 
 def phi_mn(as_prov, d, fck, fy, b=1000.0):
-    """설계휨강도 φMn (kN·m / 폭 b)"""
-    eta, _, _ = stress_block(fck)
-    a = as_prov * fy / (0.85 * eta * fck * b)
-    return PHI_F * as_prov * fy * (d - a / 2.0) / 1e6
+    """설계휨강도 φMn (kN·m / 폭 b) — φ 는 εt 에 따라"""
+    return section(as_prov, d, fck, fy, b)["phi_mn"]
 
 
 def rho_min(fy):
@@ -130,10 +179,10 @@ def _col_fy(col, fy13, fy16):
     return min(fy_of(b, fy13, fy16) for b in col)
 
 
-def spacings(as_by_fy, fy13, fy16, s_max):
+def spacings(as_by_fy, fy13, fy16, s_max, cols):
     """배근 간격표 한 행: 열마다 (간격 mm | None)."""
     out = []
-    for col in SPACING_COLS:
+    for col in cols:
         as_req = as_by_fy[_col_fy(col, fy13, fy16)]
         s = s_max if as_req <= 0 else min(_col_area(col) / as_req * 1000.0, s_max)
         s = _floor10(s)
@@ -162,40 +211,52 @@ def _common(inp):
     return fck, fy13, fy16, fy, t, cc, bar, db
 
 
-def _row(direction, loc, mu, formula, d, fck, fy, fy13, fy16, s_max):
+def _row(direction, loc, mu, formula, d, fck, fy, fy13, fy16, s_max, cols):
     """휨 배근표 한 행 계산"""
     fl = flexure(mu, d, fck, fy)
     as_by_fy = {f: flexure(mu, d, fck, f)["as_req"] for f in {fy13, fy16}}
+    sp = spacings(as_by_fy, fy13, fy16, s_max, cols)
+    if not fl["ok"]:
+        sp = [None] * len(cols)
     return {"dir": direction, "loc": loc, "mu": mu, "formula": formula, "d": d,
             "rho": fl["rho"], "as_req": fl["as_req"], "ok": fl["ok"], "msg": fl["msg"],
-            "eps_t": fl["eps_t"], "sp": spacings(as_by_fy, fy13, fy16, s_max)}
+            "eps_t": fl["eps_t"], "phi": fl["phi"], "sp": sp, "s_max": s_max}
 
 
-def _summary(rows, min_row, bar, fck, fy, s_cap=None):
+def _summary(rows, min_row, bar, fck, fy, cols):
     """선택 철근 기준 최종 배근 (소요·최소 중 좁은 간격)"""
-    idx = COL_LABELS.index(bar) if bar in COL_LABELS else None
+    idx = col_labels(cols).index(bar)
     area = REBAR[bar][1]
+    _, _, emin = strain_limits(fy)
     out = []
     for r in rows:
-        if idx is not None:
-            s_req, s_min = r["sp"][idx], min_row["sp"][idx]
-        else:                                       # 표에 없는 철근(D19, D22)
-            s_req = _floor10(min(area / r["as_req"] * 1000.0, r.get("s_max", 300))) if r["as_req"] > 0 else r.get("s_max", 300)
-            s_min = _floor10(min(area / min_row["as_req"] * 1000.0, min_row.get("s_max", 450)))
-        if s_req is None or s_min is None or not r["ok"]:
-            out.append({"dir": r["dir"], "loc": r["loc"], "s": None, "as_prov": 0, "phi_mn": 0, "mu": r["mu"],
-                        "ok": False, "gov": "-"})
+        base = {"dir": r["dir"], "loc": r["loc"], "mu": r["mu"], "s": None, "as_prov": 0, "phi_mn": 0, "phi": None,
+                "ok": False, "gov": "-"}
+        if not r["ok"]:
+            out.append(dict(base, why="단면 부족"))
+            continue
+        s_req, s_min = r["sp"][idx], min_row["sp"][idx]
+        if s_req is None or s_min is None:
+            out.append(dict(base, why="간격 50 미만"))
             continue
         s = min(s_req, s_min)
-        if s_cap:
-            s = min(s, s_cap)
         as_prov = area / s * 1000.0
-        pm = phi_mn(as_prov, r["d"], fck, fy)
-        out.append({"dir": r["dir"], "loc": r["loc"], "s": s, "as_prov": as_prov, "phi_mn": pm, "mu": r["mu"],
-                    "ok": pm + 1e-9 >= r["mu"],
-                    "gov": "최소철근" if s_min < s_req else
-                           ("간격제한" if r["as_req"] > 0 and area / r["as_req"] * 1000.0 >= r.get("s_max", 1e9) + 10 else "휨")})
+        sec = section(as_prov, r["d"], fck, fy)
+        ok = sec["phi_mn"] + 1e-9 >= r["mu"] and sec["eps_t"] >= emin
+        if s_min < s_req:
+            gov = "최소철근"
+        elif r["as_req"] > 0 and area / r["as_req"] * 1000.0 >= r["s_max"] + 10:
+            gov = "간격제한"
+        else:
+            gov = "휨"
+        out.append(dict(base, s=s, as_prov=as_prov, phi_mn=sec["phi_mn"], phi=sec["phi"], ok=ok, gov=gov,
+                        why="" if ok else ("과다 배근(εt<εt,min)" if sec["eps_t"] < emin else "강도 부족")))
     return out
+
+
+def _phi_notes(rows):
+    return [f"{(r['dir'] + ' ') if r['dir'] not in ('', 'Main') else ''}{r['loc']}: 변화구간 단면 "
+            f"(εt = {r['eps_t']:.4f}) → φ = {r['phi']:.3f} 적용" for r in rows if r["ok"] and r["phi"] < PHI_F - 1e-6]
 
 
 # ── 1방향 슬래브 ──────────────────────────────────────────────
@@ -256,17 +317,16 @@ def calc_one_way(inp):
     s_main = max(min(s_code, s_crack), 0.0)
     s_temp = min(5.0 * t, 450.0)                     # 수축·온도철근: 5t, 450mm 이하
 
+    cols = spacing_cols(bar)
     rows = []
     for key, loc, n, note in mom:
-        r = _row("Main", f"{loc} {key}", w2 / n, f"Wu·L²/{n:g}" + (f" ({note})" if note else ""),
-                 d, fck, fy, fy13, fy16, s_main)
-        r["s_max"] = s_main
-        rows.append(r)
+        rows.append(_row("Main", f"{loc} {key}", w2 / n, f"Wu·L²/{n:g}" + (f" ({note})" if note else ""),
+                         d, fck, fy, fy13, fy16, s_main, cols))
 
     def min_bar(s_max, label):
         as_by_fy = {f: rho_min(f) * 1000.0 * t for f in {fy13, fy16}}
         return {"dir": "", "loc": label, "mu": None, "rho": rho_min(fy), "as_req": rho_min(fy) * 1000.0 * t,
-                "sp": spacings(as_by_fy, fy13, fy16, s_max), "s_max": s_max, "ok": True, "d": d}
+                "sp": spacings(as_by_fy, fy13, fy16, s_max, cols), "s_max": s_max, "ok": True, "d": d}
     min_row = min_bar(s_main, "Min Bar")             # 경간방향 최소철근 (주철근 간격 제한 적용)
     temp_row = min_bar(s_temp, "Temp. Bar")          # 직각방향 수축·온도철근(배력근)
 
@@ -284,9 +344,9 @@ def calc_one_way(inp):
     for r in rows:
         if not r["ok"]:
             warn.append(f"{r['loc']}: {r['msg']}")
-    summary = _summary(rows, min_row, bar, fck, fy)
-    ti = COL_LABELS.index(bar) if bar in COL_LABELS else None
-    temp_s = temp_row["sp"][ti] if ti is not None else _floor10(min(REBAR[bar][1] / temp_row["as_req"] * 1000.0, s_temp))
+    warn += _phi_notes(rows)
+    summary = _summary(rows, min_row, bar, fck, fy, cols)
+    temp_s = temp_row["sp"][col_labels(cols).index(bar)]
 
     return {
         "type": "1way", "name": inp.get("name", ""), "inp": dict(inp),
@@ -295,6 +355,7 @@ def calc_one_way(inp):
         "wd": inp["wd"], "wl": inp["wl"], "wu": wu, "wu_txt": wu_txt,
         "h_req": h_req, "h_n": n_h, "h_kfy": k_fy, "h_ok": t + 1e-9 >= h_req,
         "rows": rows, "min_row": min_row, "temp_row": temp_row, "temp_s": temp_s,
+        "cols": col_labels(cols), "sel_col": col_labels(cols).index(bar),
         "kcr": kcr, "fs": fs, "s_crack": s_crack, "s_code": s_code, "s_main": s_main, "s_temp": s_temp,
         "shear": [{"label": "", "vu": vu, "txt": v_txt, "phi_vc": pvc, "d": d, "ok": vu <= pvc + 1e-9}],
         "summary": summary, "warn": warn, "diagram": diagram,
@@ -364,28 +425,27 @@ def calc_two_way(inp):
     s_flex = min(2.0 * t, 300.0)                     # 위험단면: 2t, 300mm 이하
     s_min = min(5.0 * t, 450.0)                      # 수축·온도철근: 5t, 450mm 이하
 
+    cols = spacing_cols(bar)
     rows = []
 
     def add(direction, d, n_cont, c_neg, c_dl, c_ll, span, sym):
         pos = (c_dl * wdu + c_ll * wlu) * span * span
         if n_cont > 0:
             rows.append(_row(direction, "연속단 Cont", c_neg * wu * span * span,
-                             f"{c_neg:.4f}·Wu·{sym}²", d, fck, fy, fy13, fy16, s_flex))
+                             f"{c_neg:.4f}·Wu·{sym}²", d, fck, fy, fy13, fy16, s_flex, cols))
         if n_cont < 2:
-            rows.append(_row(direction, "불연속단 DisC", pos / 3.0, "M(Pos)/3", d, fck, fy, fy13, fy16, s_flex))
+            rows.append(_row(direction, "불연속단 DisC", pos / 3.0, "M(Pos)/3", d, fck, fy, fy13, fy16, s_flex, cols))
         rows.append(_row(direction, "중앙부 Pos", pos,
-                         f"({c_dl:.4f}·Wdu+{c_ll:.4f}·Wlu)·{sym}²", d, fck, fy, fy13, fy16, s_flex))
+                         f"({c_dl:.4f}·Wdu+{c_ll:.4f}·Wlu)·{sym}²", d, fck, fy, fy13, fy16, s_flex, cols))
 
     n_long_cont = int(edges[2]) + int(edges[3])      # 단변방향 경간의 양 끝 = 장변(좌·우)
     n_short_cont = int(edges[0]) + int(edges[1])     # 장변방향 경간의 양 끝 = 단변(상·하)
     add("Short", d_s, n_long_cont, c["ca_neg"], c["ca_dl"], c["ca_ll"], lx, "Lx")
     add("Long", d_l, n_short_cont, c["cb_neg"], c["cb_dl"], c["cb_ll"], ly, "Ly")
-    for r in rows:
-        r["s_max"] = s_flex
 
     as_by_fy = {f: rho_min(f) * 1000.0 * t for f in {fy13, fy16}}
     min_row = {"dir": "", "loc": "Min Bar", "mu": None, "rho": rho_min(fy), "as_req": rho_min(fy) * 1000.0 * t,
-               "sp": spacings(as_by_fy, fy13, fy16, s_min), "s_max": s_min, "ok": True, "d": d_s}
+               "sp": spacings(as_by_fy, fy13, fy16, s_min, cols), "s_max": s_min, "ok": True, "d": d_s}
 
     # 최소 두께 (KDS 14 20 30 4.2.2)
     lnx = lx * 1000.0 - (beams[2][0] + beams[3][0]) / 2.0
@@ -434,7 +494,8 @@ def calc_two_way(inp):
     warn = [f"{r['dir']} {r['loc']}: {r['msg']}" for r in rows if not r["ok"]]
     if inc:
         warn.append("불연속단 테두리보 강성비 αf < 0.8 — 최소 두께 10% 증대 적용 (KDS 14 20 30 4.2.2(3)③)")
-    summary = _summary(rows, min_row, bar, fck, fy)
+    warn += _phi_notes(rows)
+    summary = _summary(rows, min_row, bar, fck, fy, cols)
     h_ok = t + 1e-9 >= h_req
 
     return {
@@ -446,6 +507,7 @@ def calc_two_way(inp):
         "lnx": lnx, "lny": lny, "beta": beta, "alphas": alphas, "afm": afm,
         "h_req": h_req, "h_txt": h_txt, "h_inc": inc, "h_ok": h_ok,
         "rows": rows, "min_row": min_row, "s_flex": s_flex, "s_min": s_min,
+        "cols": col_labels(cols), "sel_col": col_labels(cols).index(bar),
         "shear": shear, "summary": summary, "warn": warn,
         "ok": h_ok and all(s["ok"] for s in summary) and all(s["ok"] for s in shear),
     }

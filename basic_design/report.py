@@ -151,8 +151,13 @@ def _draw_table(cv, F, it, y, breaks):
     for i, hr in enumerate(head):
         x = x0
         for j, c in enumerate(hr):
-            if c:
-                cv.create_text(x + widths[j] / 2, y + 2 + rh * i + rh / 2, text=c, font=F["n"], fill=T.INK)
+            txt, style = (c if isinstance(c, tuple) else (c, "n"))
+            if style == "sel":                                # 사용 철근 열 강조
+                cv.create_rectangle(x + 2, y + 2 + rh * i, x + widths[j] - 2, y + 2 + rh * (i + 1),
+                                    fill=T.ORANGE, outline="")
+            if txt:
+                cv.create_text(x + widths[j] / 2, y + 2 + rh * i + rh / 2, text=txt,
+                               font=F["b"] if style == "sel" else F["n"], fill="white" if style == "sel" else T.INK)
             x += widths[j]
     y += hh
     cv.create_line(x0, y, x0 + tw, y, fill=T.INK)

@@ -37,9 +37,15 @@ def _loads(rep, r):
     rep.t(f"Wu = {r['wu_txt']} = {r['wu']:.2f} kN/m²", 2)
 
 
+def _sp_cells(sp, r):
+    """간격 셀 — 선택 철근 열은 굵게"""
+    return [(_sp(v), "b") if j == r["sel_col"] else _sp(v) for j, v in enumerate(sp)]
+
+
 def _flex_table(rep, r, rows, tail_rows):
+    labels = [(c, "sel") if j == r["sel_col"] else c for j, c in enumerate(r["cols"])]
     head = [["DIREC", "Loca", "Mu", "ρ", "Ast", "", "", "Spacing", "", ""],
-            ["TION", "tion", "(kN·m/m)", "(%)", "(mm²/m)"] + S.COL_LABELS]
+            ["TION", "tion", "(kN·m/m)", "(%)", "(mm²/m)"] + labels]
     widths = [58, 112, 78, 62, 74, 72, 86, 72, 86, 72]
     aligns = ["l", "l", "r", "r", "r", "c", "c", "c", "c", "c"]
     body = []
@@ -48,27 +54,32 @@ def _flex_table(rep, r, rows, tail_rows):
         if prev is not None and x["dir"] != prev:
             body.append(None)
         st = "n" if x["ok"] else "ng"
-        body.append([x["dir"] if x["dir"] != prev else "", x["loc"], (f"{x['mu']:.2f}", st),
-                     (f"{x['rho'] * 100:.3f}", st), (f"{x['as_req']:.0f}", st)] + [_sp(v) for v in x["sp"]])
+        if x["ok"]:
+            body.append([x["dir"] if x["dir"] != prev else "", x["loc"], (f"{x['mu']:.2f}", st),
+                         (f"{x['rho'] * 100:.3f}", st), (f"{x['as_req']:.0f}", st)] + _sp_cells(x["sp"], r))
+        else:
+            body.append([x["dir"] if x["dir"] != prev else "", x["loc"], (f"{x['mu']:.2f}", st),
+                         ("단면 부족", "ng"), ("", st)] + [("-", "ng")] * len(x["sp"]))
         prev = x["dir"]
     body.append(None)
     for x in tail_rows:
-        body.append(["", x["loc"], "", f"{x['rho'] * 100:.3f}", f"{x['as_req']:.0f}"] + [_sp(v) for v in x["sp"]])
+        body.append(["", x["loc"], "", f"{x['rho'] * 100:.3f}", f"{x['as_req']:.0f}"] + _sp_cells(x["sp"], r))
     rep.table(head, body, widths, aligns)
 
 
 def _summary(rep, r, extra=None):
     rep.h(f"Design Summary  ({r['bar']})")
-    head = [["Direction", "Location", "Use", "As,prov (mm²/m)", "φMn (kN·m/m)", "Mu (kN·m/m)", "비고", "Check"]]
-    widths = [80, 120, 100, 124, 110, 106, 82, 70]
+    head = [["Direction", "Location", "Use", "As,prov", "φMn", "Mu", "비고", "Check"],
+            ["", "", "", "(mm²/m)", "(kN·m/m)", "(kN·m/m)", "", ""]]
+    widths = [80, 116, 100, 96, 96, 96, 140, 68]
     aligns = ["l", "l", "c", "r", "r", "r", "c", "c"]
     body = []
     for s in r["summary"]:
         if s["s"] is None:
-            body.append([s["dir"], s["loc"], ("배근 불가", "ng"), "", "", f"{s['mu']:.2f}", "", ("N.G.", "ng")])
+            body.append([s["dir"], s["loc"], ("-", "ng"), "", "", f"{s['mu']:.2f}", (s["why"], "ng"), ("N.G.", "ng")])
             continue
         body.append([s["dir"], s["loc"], (f"{r['bar']}@{s['s']}", "b"), f"{s['as_prov']:.0f}", f"{s['phi_mn']:.2f}",
-                     f"{s['mu']:.2f}", s["gov"], _okng(s["ok"])])
+                     f"{s['mu']:.2f}", s["gov"] if s["ok"] else (s["why"], "ng"), _okng(s["ok"])])
     for e in (extra or []):
         body.append(e)
     rep.table(head, body, widths, aligns)
@@ -121,7 +132,8 @@ def _one_way(r):
     _notes(rep, r, [
         "유효깊이 d = T - Cc - db/2 (선택 철근 공칭지름 기준)",
         "Min Bar: 경간방향 최소철근(KDS 14 20 20 4.2.2(3)),  Temp. Bar: 직각방향 수축·온도철근(KDS 14 20 50 4.6.2)",
-        "D16 이 포함된 열은 fy(D16↑), 혼용 열은 작은 fy 기준 소요철근량으로 간격을 산정",
+        "D16 이상 철근 열은 fy(D16↑), 혼용 열은 작은 fy 기준 소요철근량으로 간격을 산정 (굵은 열 = 사용 철근)",
+        "강도감소계수 φ: 인장지배 0.85, 변화구간은 εt 에 따라 보간 (KDS 14 20 20 4.1.2)",
     ])
     return rep
 
@@ -169,7 +181,8 @@ def _two_way(r):
         "모멘트·전단: 4변 지지 2방향 슬래브 계수법 (m 은 직선보간),  불연속단 부모멘트 = 정모멘트의 1/3",
         "유효깊이: 단변방향 d = T - Cc - db/2,  장변방향 d = 단변방향 d - db (선택 철근 공칭지름 기준)",
         "휨철근 최대간격 min(2t, 300),  Min Bar: 수축·온도철근(KDS 14 20 50 4.6.2) 최대간격 min(5t, 450)",
-        "D16 이 포함된 열은 fy(D16↑), 혼용 열은 작은 fy 기준 소요철근량으로 간격을 산정",
+        "D16 이상 철근 열은 fy(D16↑), 혼용 열은 작은 fy 기준 소요철근량으로 간격을 산정 (굵은 열 = 사용 철근)",
+        "강도감소계수 φ: 인장지배 0.85, 변화구간은 εt 에 따라 보간 (KDS 14 20 20 4.1.2)",
     ])
     return rep
 
