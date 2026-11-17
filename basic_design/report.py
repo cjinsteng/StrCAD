@@ -9,8 +9,8 @@ import tkinter.font as tkfont
 from . import theme as T
 
 STYLE_FG = {"n": T.INK, "b": T.INK, "sub": T.INK, "ok": T.OK, "ng": T.NG, "dim": T.MUTED, "warn": T.WARN, "blue": T.OK,
-            "bgw": "#854D0E", "bgo": "#9A3412"}
-CELL_BG = {"bgw": "#FEF3C7", "bgo": "#FFEDD5"}       # 검토 칸 배경 (노랑: 간격, 주황: 최소철근)
+            "bgw": "#854D0E", "bgo": "#9A3412", "sel": "white"}
+CELL_BG = {"bgw": "#FEF3C7", "bgo": "#FFEDD5", "sel": T.ORANGE}   # 검토 칸 배경 (노랑: 간격, 주황: 최소철근), 강조 행
 MARGIN = 26
 INDENT = 18
 LINE_H = 21
@@ -182,7 +182,7 @@ def _draw_table(cv, F, it, y, breaks):
                 cv.tip_rects.append((x, y, x + widths[j], y + rh, tip))
             if txt:
                 al = aligns[j] if j < len(aligns) else "c"
-                f = F["b"] if style in ("b", "ng", "bgw", "bgo") else F["n"]
+                f = F["b"] if style in ("b", "ng", "bgw", "bgo", "sel") else F["n"]
                 fg = STYLE_FG.get(style, T.INK)
                 if al == "l":
                     cv.create_text(x + 8, y + rh / 2, text=txt, anchor="w", font=f, fill=fg)

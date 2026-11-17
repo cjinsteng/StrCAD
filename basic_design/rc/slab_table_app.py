@@ -80,7 +80,7 @@ class SlabTableWindow(MemberWindow):
         gb = self._group(col1, "사용 철근")
         gb.pack(fill="x", pady=(8, 0))
         self._field(gb, 0, "철근 :", "bar", "", widget=self._cmb(gb, "bar", S.BAR_ORDER, 6, "readonly"))
-        self._lbl(gb, "= 표의 첫 행", fg=T.MUTED).grid(row=1, column=0, columnspan=3, sticky="w")
+        self._lbl(gb, "= 표의 가운데(주황) 행", fg=T.MUTED).grid(row=1, column=0, columnspan=3, sticky="w")
 
         gs = self._group(row, "철근 간격")
         gs.pack(side="left", fill="y", anchor="n", padx=(8, 0))
@@ -145,9 +145,10 @@ class SlabTableWindow(MemberWindow):
         ok = TB.overall_ok(res)
         nm = res["name"] or "(이름 없음)"
         thk = ", ".join(f"{b['t']:g}" for b in res["blocks"])
-        status = (f"{nm}  ·  T = {thk} mm  ·  간격 {len(res['spacings'])}개  ·  {res['labels'][0]} 기준  ─  "
+        sel = res["labels"][res["sel"]]
+        status = (f"{nm}  ·  T = {thk} mm  ·  간격 {len(res['spacings'])}개  ·  {sel} 기준  ─  "
                   + ("칸에 마우스를 올리면 계산값과 판정 사유가 표시됩니다." if ok
-                     else f"사용 철근({res['labels'][0]}) 행에 과다 배근('---') 칸이 있습니다 — 마우스를 올려 사유 확인"))
+                     else f"사용 철근({sel}) 행에 과다 배근('---') 칸이 있습니다 — 마우스를 올려 사유 확인"))
         return {"report": TB.build_report(res), "sketch": None, "box": (590, 18, 290, 330), "ok": ok,
                 "status": status, "res": res}
 

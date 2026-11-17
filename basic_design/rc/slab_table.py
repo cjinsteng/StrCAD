@@ -2,9 +2,11 @@
 basic_design/rc/slab_table.py
 RC Slab — Table : 두께 · 철근 · 간격별 설계휨강도(φMn) 일람표 (Tk 비의존 계산 + 계산서)
 
-  · 두께 1~6개, 간격 1~7개, 사용 철근을 첫 행으로 한 5가지 배근 (예: D13, D13+D16, D16, D16+D19, D19)
-  · Major(주방향, 바깥층)  d = T - Cc - db/2
-    Minor(부방향, 안쪽층)  d = T - Cc - db,max - db/2   (양방향 같은 배근 가정, 혼용 행 db/2 는 단면적 가중 도심)
+  · 두께 1~6개, 간격 1~7개, 사용 철근을 가운데 행으로 한 5가지 배근
+      D13 → D10, D10+D13, D13, D13+D16, D16      D16 → D13, D13+D16, D16, D16+D19, D19   (Slab Lite 간격표와 같음)
+  · 유효깊이는 행(철근 지름)마다 따로 산정
+      Major(주방향, 바깥층)  d = T - Cc - db/2
+      Minor(부방향, 안쪽층)  d = T - Cc - db,max - db/2   (양방향 같은 배근 가정, 혼용 행 db/2 는 단면적 가중 도심)
   · φMn: Slab Lite 와 같은 단면 해석 (변화구간 φ 보간, εt < εt,min 이면 '---')
   · MinRatio: 수축·온도철근비(KDS 14 20 50 4.6.2)를 만족하는 최대 간격 (≤ 5t, 450)
   · φVc = φv·(1/6)·√fck·b·d   (사용 철근 Major d)
@@ -28,12 +30,19 @@ class TableInputError(ValueError):
 
 
 def table_rows(bar):
-    """사용 철근을 첫 행으로: D13 → D13, D13+D16, D16, D16+D19, D19  (D19·D22 는 위가 모자라 D16 부터)"""
-    order = S.BAR_ORDER
-    i = order.index(bar) if bar in order else 1
-    i = min(i, len(order) - 3)
-    a, b, c = order[i:i + 3]
-    return [(a,), (a, b), (b,), (b, c), (c,)]
+    """사용 철근을 가운데 행으로 (아래·위 한 단계 철근과 혼용) — Slab Lite 간격표 열과 같은 규칙
+       D10 은 아래 철근이 없어 D10 ~ D16, D22 는 위 철근이 없어 D16 ~ D22"""
+    return S.spacing_cols(bar)
+
+
+def sel_index(rows, bar):
+    """사용 철근 행 번호"""
+    return rows.index((bar,)) if (bar,) in rows else len(rows) // 2
+
+
+def eff_depth(t, cc, combo, minor):
+    """행(철근 지름)별 유효깊이"""
+    return t - cc - _half(combo) - (_db(combo) if minor else 0.0)
 
 
 def _area(combo):
@@ -59,7 +68,7 @@ def _cell(t, cc, combo, s, minor, inp, lim):
     fck, fy13, fy16, pf = inp["fck"], inp["fy13"], inp["fy16"], inp["phi_f"]
     db = _db(combo)
     fy = _fy(combo, fy13, fy16)
-    d = t - cc - _half(combo) - (db if minor else 0.0)
+    d = eff_depth(t, cc, combo, minor)
     as_ = _area(combo) / s * 1000.0
     _, lim_t, emin = S.strain_limits(fy)
     name = "+".join(combo)
@@ -117,16 +126,18 @@ def calc_table(inp):
         if not 50 <= s <= 600:
             raise TableInputError(f"철근 간격 {s:g} mm — 50 ~ 600 mm 범위로 입력하세요.")
     rows = table_rows(inp["bar"])
+    isel = sel_index(rows, inp["bar"])
     kcr = inp.get("kcr", 210.0)
     out = []
     for t in thks:
         if t - cc - 2 * max(_db(c) for c in rows) <= 10:
             raise TableInputError(f"두께 {t:g} mm 에 비해 피복두께가 너무 큽니다 (부방향 유효깊이 부족).")
-        fy_main = _fy(rows[0], fy13, fy16)
+        fy_main = _fy(rows[isel], fy13, fy16)
         fs = 2.0 / 3.0 * fy_main
         lim = {"s_crit": min(2.0 * t, 300.0),
                "s_crack": min(375.0 * kcr / fs - 2.5 * cc, 300.0 * kcr / fs)}
-        blk = {"t": t, "lim": lim, "major": [], "minor": [], "minratio": []}
+        blk = {"t": t, "lim": lim, "major": [], "minor": [], "minratio": [],
+               "d_major": [eff_depth(t, cc, c, False) for c in rows], "d_minor": [eff_depth(t, cc, c, True) for c in rows]}
         for combo in rows:
             fy = _fy(combo, fy13, fy16)
             as_min = S.rho_min(fy) * 1000.0 * t
@@ -134,12 +145,12 @@ def calc_table(inp):
             blk["minratio"].append({"s": s_mr, "as_min": as_min, "fy": fy})
             blk["major"].append([_cell(t, cc, combo, s, False, inp, lim) for s in sps])
             blk["minor"].append([_cell(t, cc, combo, s, True, inp, lim) for s in sps])
-        d_v = t - cc - _half(rows[0])
+        d_v = blk["d_major"][isel]
         blk["phi_vc"] = S.phi_vc(d_v, fck, pv=inp["phi_v"])
         blk["d_v"] = d_v
         out.append(blk)
     return {"name": inp.get("name", ""), "inp": dict(inp), "rows": rows, "blocks": out, "spacings": sps,
-            "labels": ["+".join(c) for c in rows]}
+            "labels": ["+".join(c) for c in rows], "sel": isel}
 
 
 # ── 계산서 ───────────────────────────────────────────────────
@@ -163,26 +174,33 @@ def build_report(res):
           f"φf = {inp['phi_f']:.2f} (휨, 인장지배)    φv = {inp['phi_v']:.2f} (전단)", 1)
     sps = res["spacings"]
     nsp = len(sps)
-    w_lbl, w_mr = 104, 96
-    w_sp = min(86, (848 - w_lbl - w_mr) // nsp)
-    widths = [w_lbl] + [w_sp] * nsp + [w_mr]
-    aligns = ["l"] + ["r"] * nsp + ["c"]
+    w_lbl, w_d, w_mr = 96, 70, 90
+    w_sp = min(84, (848 - w_lbl - w_d - w_mr) // nsp)
+    widths = [w_lbl, w_d] + [w_sp] * nsp + [w_mr]
+    aligns = ["l", "r"] + ["r"] * nsp + ["c"]
+    isel = res["sel"]
     for blk in res["blocks"]:
         t, lim = blk["t"], blk["lim"]
         rep.h(f"Slab Thk :  {t:g} mm")
         for key, title in (("major", "Major Direction Moment"), ("minor", "Minor Direction Moment")):
             rep.t(f"{title}   (Unit : kN·m/m)", 0, "sub")
-            head = [[""] + [((f"@ {s:g}", "hw") if key == "major" and s > lim["s_crack"] + 1e-9 else f"@ {s:g}")
-                            for s in sps] + ["MinRatio"]]
+            head = [["", "d (mm)"] + [((f"@ {s:g}", "hw") if key == "major" and s > lim["s_crack"] + 1e-9
+                                       else f"@ {s:g}") for s in sps] + ["MinRatio"]]
             body = []
-            for lbl, cells, mr in zip(res["labels"], blk[key], blk["minratio"]):
-                body.append([(lbl, "b")] + [(c["txt"], c["style"], c["tip"]) for c in cells]
+            dk = "d_" + key
+            for i, (lbl, cells, mr) in enumerate(zip(res["labels"], blk[key], blk["minratio"])):
+                body.append([(lbl, "sel" if i == isel else "b"),
+                             (f"{blk[dk][i]:.1f}", "dim",
+                              f"{lbl} {'Minor(안쪽층)' if key == 'minor' else 'Major(바깥층)'} 유효깊이\n"
+                              + ("d = T - Cc - db,max - db/2" if key == "minor" else "d = T - Cc - db/2")
+                              + f" = {blk[dk][i]:.1f} mm")]
+                            + [(c["txt"], c["style"], c["tip"]) for c in cells]
                             + [(f"@ {mr['s']}", "n", f"{lbl}: 수축·온도철근 As,min = {mr['as_min']:.0f} mm²/m"
                                 f"  (ρ = {S.rho_min(mr['fy']):.4f} × 1000 × {t:g})\n최대 간격 = min(As1/As,min, 5t, 450)"
                                 f" = {mr['s']} mm")])
             rep.table(head, body, widths, aligns)
         rep.t(f"φVc = {inp['phi_v']:.2f}·(1/6)·√fck·b·d = {blk['phi_vc']:.1f} kN/m      (d = {blk['d_v']:.1f} mm, "
-              f"{res['labels'][0]} 주방향)", 1)
+              f"사용 철근 {res['labels'][isel]} 주방향)", 1)
         # 이 두께에서 검토가 필요한 항목
         msgs = []
         n_na = _count(blk, "major", "na") + _count(blk, "minor", "na")
@@ -207,7 +225,9 @@ def build_report(res):
     rep.h("Notes")
     for n in (
         "칸 위에 마우스를 올리면 d, As, εt, φ 와 판정 사유가 표시됩니다.",
-        "Major: 바깥층 d = T - Cc - db/2,  Minor: 안쪽층 d = T - Cc - db,max - db/2  (양방향 같은 배근 가정)",
+        "유효깊이는 행(철근 지름)마다 따로 산정 — Major: 바깥층 d = T - Cc - db/2,  Minor: 안쪽층 d = T - Cc - db,max - db/2"
+        "  (양방향 같은 배근 가정)",
+        "주황 행 = 사용 철근 (아래·위 한 단계 철근과 혼용한 배근을 위아래에 표시)",
         "혼용 행(예: D13+D16)은 두 철근을 번갈아 배치 — 평균 단면적, 작은 fy, 단면적 가중 도심 기준",
         "강도감소계수: 인장지배 φf, 변화구간 0.65 와 보간,  εt < εt,min(fy≤400: 0.004, 그 외 2εy) 이면 '---'",
         "MinRatio: KDS 14 20 50 4.6.2 수축·온도철근비, 최대 간격 min(5t, 450)",
@@ -218,5 +238,5 @@ def build_report(res):
 
 
 def overall_ok(res):
-    """목록 표시용: 사용 철근 행(첫 행) 주방향에 과다 배근(---) 이 있으면 NG"""
-    return not any(c["flag"] == "na" for blk in res["blocks"] for c in blk["major"][0])
+    """목록 표시용: 사용 철근 행 주방향에 과다 배근(---) 이 있으면 NG"""
+    return not any(c["flag"] == "na" for blk in res["blocks"] for c in blk["major"][res["sel"]])
