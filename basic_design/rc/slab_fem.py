@@ -1,6 +1,9 @@
 """
 basic_design/rc/slab_fem.py
-직사각형 슬래브 유한요소 해석 (Tk 비의존 · numpy)
+슬래브 유한요소 해석 (Tk 비의존 · numpy) — 직사각형 / 다각형 / 개구부
+
+  · 격자     x·y 격자선(간격은 달라도 됨) 위의 사각형 요소 중 '활성' 칸만 사용
+              → 직각 변 다각형·사각형 개구부는 정확히, 사선 변은 계단 모양으로 근사
 
   · 판 요소   4절점 MITC4 (Mindlin–Reissner, 전단 잠김 없음),  절점 자유도 (w, φx, φy)
                w: 처짐(아래 +),  φx = ∂w/∂x,  φy = ∂w/∂y  (얇은 판 한계)
@@ -138,24 +141,42 @@ def beam_section(bw, h, t, both_sides):
 
 # ── 모델 ─────────────────────────────────────────────────────
 class SlabModel:
-    """직사각형 슬래브 FE 모델.  nid(i, j) = j·(nx+1) + i   (i: x 방향, j: y 방향)"""
+    """격자 (xs, ys) 위의 활성 칸(active[j, i])으로 이루어진 슬래브 FE 모델.
+    격자 절점 (i, j) 중 활성 칸에 붙은 절점만 자유도를 가진다."""
 
-    def __init__(self, lx, ly, t, e, nu=0.167, nx=16, ny=24):
-        self.lx, self.ly, self.t, self.e, self.nu = lx, ly, t, e, nu
-        self.nx, self.ny = nx, ny
-        self.a, self.b = lx / nx, ly / ny
-        self.nn = (nx + 1) * (ny + 1)
+    def __init__(self, xs, ys, active, t, e, nu=0.167):
+        self.xs, self.ys = np.asarray(xs, float), np.asarray(ys, float)
+        self.nx, self.ny = len(self.xs) - 1, len(self.ys) - 1
+        self.active = np.asarray(active, bool)
+        if self.active.shape != (self.ny, self.nx) or not self.active.any():
+            raise FemError("슬래브 영역이 없습니다.")
+        self.t, self.e, self.nu = t, e, nu
+        self.lx, self.ly = self.xs[-1] - self.xs[0], self.ys[-1] - self.ys[0]
+        used = np.zeros((self.ny + 1, self.nx + 1), bool)
+        used[:-1, :-1] |= self.active
+        used[:-1, 1:] |= self.active
+        used[1:, :-1] |= self.active
+        used[1:, 1:] |= self.active
+        self.used = used
+        self.nmap = -np.ones((self.ny + 1, self.nx + 1), int)
+        self.nmap[used] = np.arange(int(used.sum()))
+        self.nn = int(used.sum())
         self.ndof = 3 * self.nn
-        self.xs = np.linspace(0, lx, nx + 1)
-        self.ys = np.linspace(0, ly, ny + 1)
-        self.ke, self.db, self.ds = plate_matrices(self.a, self.b, e, nu, t)
+        self._mat = {}
         self.k = np.zeros((self.ndof, self.ndof))
         self.fixed = np.zeros(self.ndof, dtype=bool)
-        self.beams = []                                   # (edge, n1, n2, dofs, ke, factor)
-        self._assemble_plate()
+        self.beams = []                 # (edge_id, pos, length, dofs, ke)
+        for j, i in zip(*np.nonzero(self.active)):
+            d = self._dofs(self.elem_nodes(i, j))
+            self.k[np.ix_(d, d)] += self.elem(i, j)[0]
 
+    @classmethod
+    def rectangle(cls, lx, ly, t, e, nu=0.167, nx=16, ny=24):
+        return cls(np.linspace(0, lx, nx + 1), np.linspace(0, ly, ny + 1), np.ones((ny, nx), bool), t, e, nu)
+
+    # ── 번호 ─────────────────────────────────────────────────
     def nid(self, i, j):
-        return j * (self.nx + 1) + i
+        return int(self.nmap[j, i])
 
     def elem_nodes(self, i, j):
         return [self.nid(i, j), self.nid(i + 1, j), self.nid(i + 1, j + 1), self.nid(i, j + 1)]
@@ -167,30 +188,42 @@ class SlabModel:
             out += [3 * n, 3 * n + 1, 3 * n + 2]
         return out
 
-    def _assemble_plate(self):
-        for j in range(self.ny):
-            for i in range(self.nx):
-                d = self._dofs(self.elem_nodes(i, j))
-                self.k[np.ix_(d, d)] += self.ke
+    def size(self, i, j):
+        return self.xs[i + 1] - self.xs[i], self.ys[j + 1] - self.ys[j]
 
-    def edge_nodes(self, edge):
-        nx, ny = self.nx, self.ny
-        if edge == "top":
-            return [self.nid(i, ny) for i in range(nx + 1)]
-        if edge == "bottom":
-            return [self.nid(i, 0) for i in range(nx + 1)]
-        if edge == "left":
-            return [self.nid(0, j) for j in range(ny + 1)]
-        return [self.nid(nx, j) for j in range(ny + 1)]
+    def elem(self, i, j):
+        """(Ke, Db, Ds) — 크기가 같은 요소는 한 번만 계산"""
+        a, b = self.size(i, j)
+        key = (round(a, 9), round(b, 9))
+        if key not in self._mat:
+            self._mat[key] = plate_matrices(a, b, self.e, self.nu, self.t)
+        return self._mat[key]
 
-    def set_edge(self, edge, kind, bw=0.0, bh=0.0):
-        """변 지지 조건.  bw, bh: 보 폭·춤 [m]"""
+    def is_active(self, i, j):
+        return 0 <= i < self.nx and 0 <= j < self.ny and bool(self.active[j, i])
+
+    # ── 경계 ─────────────────────────────────────────────────
+    def boundary_sides(self):
+        """활성 칸과 비활성(또는 바깥) 칸 사이의 변 목록.
+        dict(along 'x'|'y', n1 (i, j), n2 (i, j), mid (x, y), out (i, j) 바깥쪽 칸)"""
+        out = []
+        xs, ys = self.xs, self.ys
+        for j, i in zip(*np.nonzero(self.active)):
+            for along, n1, n2, nb in (("x", (i, j), (i + 1, j), (i, j - 1)), ("x", (i, j + 1), (i + 1, j + 1), (i, j + 1)),
+                                      ("y", (i, j), (i, j + 1), (i - 1, j)), ("y", (i + 1, j), (i + 1, j + 1), (i + 1, j))):
+                if not self.is_active(*nb):
+                    mid = ((xs[n1[0]] + xs[n2[0]]) / 2.0, (ys[n1[1]] + ys[n2[1]]) / 2.0)
+                    out.append({"along": along, "n1": n1, "n2": n2, "mid": mid, "out": nb})
+        return out
+
+    def support_side(self, side, kind, bw=0.0, bh=0.0, edge_id=None, pos=0.0):
+        """경계 변 하나에 지지 조건 적용.  bw, bh: 보 폭·춤 [m],  pos: 변을 따라 잰 위치(보 부재력 정렬용)"""
         if kind not in EDGE_TYPES:
             raise FemError(f"알 수 없는 변 지지: {kind}")
         _, has_beam, vert, rot = EDGE_TYPES[kind]
-        nodes = self.edge_nodes(edge)
-        along_x = edge in ("top", "bottom")
-        for n in nodes:
+        along_x = side["along"] == "x"
+        n1, n2 = self.nid(*side["n1"]), self.nid(*side["n2"])
+        for n in (n1, n2):
             if vert:
                 self.fixed[3 * n] = True
                 self.fixed[3 * n + (1 if along_x else 2)] = True      # 변 방향 기울기도 0 (w ≡ 0)
@@ -202,61 +235,87 @@ class SlabModel:
             f = 0.5 if cont else 1.0                                   # 연속단 보: 대칭 → 강성 1/2
             ei = self.e * i_net * f
             gj = self.e / (2 * (1 + self.nu)) * j * TORSION_FACTOR * f
-            length = self.a if along_x else self.b
+            if along_x:
+                length = self.xs[side["n2"][0]] - self.xs[side["n1"][0]]
+            else:
+                length = self.ys[side["n2"][1]] - self.ys[side["n1"][1]]
             ke = beam_matrix(length, ei, gj)
             ib, it = (1, 2) if along_x else (2, 1)                     # 휨 회전 / 비틀림 회전 자유도
-            for n1, n2 in zip(nodes[:-1], nodes[1:]):
-                d = [3 * n1, 3 * n1 + ib, 3 * n1 + it, 3 * n2, 3 * n2 + ib, 3 * n2 + it]
-                self.k[np.ix_(d, d)] += ke
-                self.beams.append((edge, n1, n2, d, ke, f))
+            d = [3 * n1, 3 * n1 + ib, 3 * n1 + it, 3 * n2, 3 * n2 + ib, 3 * n2 + it]
+            self.k[np.ix_(d, d)] += ke
+            self.beams.append((edge_id, pos, length, d, ke))
 
-    def set_corner(self, ix, iy, fixed=True):
-        if fixed:
-            self.fixed[3 * self.nid(ix * self.nx, iy * self.ny)] = True
+    def fix_w(self, x, y):
+        """좌표 (x, y) 의 격자 절점에 수직 지지"""
+        i = int(np.argmin(np.abs(self.xs - x)))
+        j = int(np.argmin(np.abs(self.ys - y)))
+        if abs(self.xs[i] - x) > 1e-6 or abs(self.ys[j] - y) > 1e-6 or not self.used[j, i]:
+            raise FemError(f"지지점 ({x:g}, {y:g}) 이 슬래브 절점이 아닙니다.")
+        self.fixed[3 * self.nid(i, j)] = True
 
     # ── 하중 ─────────────────────────────────────────────────
-    def _point(self, f, x, y, p):
-        if not (-1e-9 <= x <= self.lx + 1e-9 and -1e-9 <= y <= self.ly + 1e-9):
-            raise FemError(f"하중 위치 ({x:g}, {y:g}) 가 슬래브 밖입니다.")
-        i = min(int(x / self.a), self.nx - 1)
-        j = min(int(y / self.b), self.ny - 1)
-        xi = 2 * (x - self.xs[i]) / self.a - 1
-        eta = 2 * (y - self.ys[j]) / self.b - 1
+    def locate(self, x, y):
+        """(x, y) 가 속한 활성 칸 (i, j) 또는 None"""
+        tol = 1e-9
+        if x < self.xs[0] - tol or x > self.xs[-1] + tol or y < self.ys[0] - tol or y > self.ys[-1] + tol:
+            return None
+        i = min(max(int(np.searchsorted(self.xs, x, side="right")) - 1, 0), self.nx - 1)
+        j = min(max(int(np.searchsorted(self.ys, y, side="right")) - 1, 0), self.ny - 1)
+        ci = [i] + ([i - 1] if abs(x - self.xs[i]) < 1e-7 and i > 0 else [])
+        cj = [j] + ([j - 1] if abs(y - self.ys[j]) < 1e-7 and j > 0 else [])
+        for jj in cj:
+            for ii in ci:
+                if self.active[jj, ii]:
+                    return ii, jj
+        return None
+
+    def _point(self, f, x, y, p, strict=True):
+        cell = self.locate(x, y)
+        if cell is None:
+            if strict:
+                raise FemError(f"하중 위치 ({x:g}, {y:g}) 가 슬래브 밖(또는 개구부)입니다.")
+            return 0.0
+        i, j = cell
+        a, b = self.size(i, j)
+        xi = 2 * (x - self.xs[i]) / a - 1
+        eta = 2 * (y - self.ys[j]) / b - 1
         n = 0.25 * (1 + _XI * xi) * (1 + _ETA * eta)
         for node, w in zip(self.elem_nodes(i, j), n):
             f[3 * node] += p * w
+        return p
 
     def load_vector(self, q=0.0, points=(), lines=(), areas=()):
-        """q [kN/m²],  points (x, y, P),  lines (x1, y1, x2, y2, w kN/m),  areas (x1, y1, x2, y2, w kN/m²)"""
+        """q [kN/m²],  points (x, y, P),  lines (x1, y1, x2, y2, w kN/m),  areas (x1, y1, x2, y2, w kN/m²)
+        라인·면 하중 중 슬래브 밖/개구부에 걸친 부분은 재하하지 않는다."""
         f = np.zeros(self.ndof)
         if q:
-            pe = q * self.a * self.b / 4.0
-            for j in range(self.ny):
-                for i in range(self.nx):
-                    for n in self.elem_nodes(i, j):
-                        f[3 * n] += pe
+            for j, i in zip(*np.nonzero(self.active)):
+                a, b = self.size(i, j)
+                for n in self.elem_nodes(i, j):
+                    f[3 * n] += q * a * b / 4.0
         for x, y, p in points:
             if p:
                 self._point(f, x, y, p)
-        h = min(self.a, self.b)
+        h = min(float(np.diff(self.xs).min()), float(np.diff(self.ys).min()))
+        hx, hy = float(np.diff(self.xs).mean()), float(np.diff(self.ys).mean())
         for x1, y1, x2, y2, w in lines:
             length = math.hypot(x2 - x1, y2 - y1)
             if not w or length <= 0:
                 continue
-            m = max(int(math.ceil(length / (h / 4.0))), 1)
+            m = max(int(math.ceil(length / (max(h, min(hx, hy) / 2.0) / 4.0))), 1)
             for k in range(m):
                 s = (k + 0.5) / m
-                self._point(f, x1 + (x2 - x1) * s, y1 + (y2 - y1) * s, w * length / m)
+                self._point(f, x1 + (x2 - x1) * s, y1 + (y2 - y1) * s, w * length / m, strict=False)
         for x1, y1, x2, y2, w in areas:
             xa, xb, ya, yb = min(x1, x2), max(x1, x2), min(y1, y2), max(y1, y2)
             if not w or xb - xa <= 0 or yb - ya <= 0:
                 continue
-            mx = max(int(math.ceil((xb - xa) / (self.a / 4.0))), 1)
-            my = max(int(math.ceil((yb - ya) / (self.b / 4.0))), 1)
+            mx = max(int(math.ceil((xb - xa) / (hx / 4.0))), 1)
+            my = max(int(math.ceil((yb - ya) / (hy / 4.0))), 1)
             pa = w * (xb - xa) * (yb - ya) / (mx * my)
             for ii in range(mx):
                 for jj in range(my):
-                    self._point(f, xa + (xb - xa) * (ii + 0.5) / mx, ya + (yb - ya) * (jj + 0.5) / my, pa)
+                    self._point(f, xa + (xb - xa) * (ii + 0.5) / mx, ya + (yb - ya) * (jj + 0.5) / my, pa, strict=False)
         return f
 
     # ── 해석 ─────────────────────────────────────────────────
@@ -281,57 +340,72 @@ class SlabModel:
         return out
 
     def recover(self, u):
-        """절점 결과 dict: w[mm], mx, my, mxy [kN·m/m], qx, qy [kN/m]  — 배열 모양 (ny+1, nx+1)
+        """절점 결과 dict: w[mm], mx, my, mxy [kN·m/m], qx, qy [kN/m]  — 배열 모양 (ny+1, nx+1), 슬래브 밖은 NaN
         내부 절점: 주변 요소가 그 절점에서 주는 값의 평균.
-        경계 절점: 요소 중심값(정확도가 가장 좋은 점) 세 개를 지나는 2차 곡선으로 변까지 외삽."""
+        경계 절점: 주변 요소 중심값(정확도가 가장 좋은 점)에 2차 곡면을 맞춰 변까지 외삽."""
         nx, ny = self.nx, self.ny
         shp = (ny + 1, nx + 1)
         corners = [(-1, -1), (1, -1), (1, 1), (-1, 1)]
-        bms = [-self.db @ _bb(xi, eta, self.a, self.b) for xi, eta in corners]      # M = -Db·κ
-        bqs = [self.ds @ _bs(xi, eta, self.a, self.b) for xi, eta in corners]
-        bm0 = -self.db @ _bb(0, 0, self.a, self.b)
-        bq0 = self.ds @ _bs(0, 0, self.a, self.b)
+        ops = {}
         acc = np.zeros((5, self.nn))
         cnt = np.zeros(self.nn)
-        cen = np.zeros((5, ny, nx))
-        for j in range(ny):
-            for i in range(nx):
-                nodes = self.elem_nodes(i, j)
-                ue = u[self._dofs(nodes)]
-                cen[0:3, j, i] = bm0 @ ue
-                cen[3:5, j, i] = bq0 @ ue
-                for c, n in enumerate(nodes):
-                    acc[0:3, n] += bms[c] @ ue
-                    acc[3:5, n] += bqs[c] @ ue
-                    cnt[n] += 1
-        nod = (acc / cnt).reshape((5,) + shp)
-
-        def ghost(c0, c1, c2):                 # (ghost + c0)/2 = 2차 외삽한 변 위의 값
-            return (11.0 * c0 - 10.0 * c1 + 3.0 * c2) / 4.0
-        if nx >= 3 and ny >= 3:
-            ext = np.zeros((5, ny + 2, nx + 2))
-            ext[:, 1:-1, 1:-1] = cen
-            ext[:, 1:-1, 0] = ghost(cen[:, :, 0], cen[:, :, 1], cen[:, :, 2])
-            ext[:, 1:-1, -1] = ghost(cen[:, :, -1], cen[:, :, -2], cen[:, :, -3])
-            ext[:, 0, :] = ghost(ext[:, 1, :], ext[:, 2, :], ext[:, 3, :])
-            ext[:, -1, :] = ghost(ext[:, -2, :], ext[:, -3, :], ext[:, -4, :])
-            avg = 0.25 * (ext[:, :-1, :-1] + ext[:, 1:, :-1] + ext[:, :-1, 1:] + ext[:, 1:, 1:])
-            for sl in ((slice(None), 0), (slice(None), -1), (0, slice(None)), (-1, slice(None))):
-                nod[(slice(None),) + sl] = avg[(slice(None),) + sl]
-        return {"w": (u[0::3] * 1000.0).reshape(shp), "mx": nod[0], "my": nod[1], "mxy": nod[2],
-                "qx": nod[3], "qy": nod[4]}
+        cen = np.full((5, ny, nx), np.nan)
+        for j, i in zip(*np.nonzero(self.active)):
+            a, b = self.size(i, j)
+            key = (round(a, 9), round(b, 9))
+            if key not in ops:
+                _, db, ds = self.elem(i, j)
+                ops[key] = ([np.vstack([-db @ _bb(xi, eta, a, b), ds @ _bs(xi, eta, a, b)]) for xi, eta in corners],
+                            np.vstack([-db @ _bb(0, 0, a, b), ds @ _bs(0, 0, a, b)]))      # M = -Db·κ, Q = Ds·γ
+            oc, o0 = ops[key]
+            nodes = self.elem_nodes(i, j)
+            ue = u[self._dofs(nodes)]
+            cen[:, j, i] = o0 @ ue
+            for c, n in enumerate(nodes):
+                acc[:, n] += oc[c] @ ue
+                cnt[n] += 1
+        nod = np.full((5,) + shp, np.nan)
+        nod[:, self.used] = acc / cnt
+        w = np.full(shp, np.nan)
+        w[self.used] = u[0::3] * 1000.0
+        # 경계 절점 외삽
+        xc = (self.xs[:-1] + self.xs[1:]) / 2.0
+        yc = (self.ys[:-1] + self.ys[1:]) / 2.0
+        full = np.zeros(shp, bool)                       # 네 칸이 모두 활성인 절점
+        full[1:-1, 1:-1] = self.active[:-1, :-1] & self.active[:-1, 1:] & self.active[1:, :-1] & self.active[1:, 1:]
+        hx, hy = float(np.diff(self.xs).mean()), float(np.diff(self.ys).mean())
+        for j, i in zip(*np.nonzero(self.used & ~full)):
+            i0, i1 = max(i - 3, 0), min(i + 3, nx)
+            j0, j1 = max(j - 3, 0), min(j + 3, ny)
+            sub = self.active[j0:j1, i0:i1]
+            if sub.sum() < 3:
+                continue
+            jj, ii = np.nonzero(sub)
+            px = (xc[i0:i1][ii] - self.xs[i]) / hx
+            py = (yc[j0:j1][jj] - self.ys[j]) / hy
+            vals = cen[:, j0:j1, i0:i1][:, jj, ii].T                     # (점, 5)
+            wgt = 1.0 / (1.0 + px * px + py * py)                        # 가까운 점에 더 큰 가중
+            for basis in (np.column_stack([np.ones_like(px), px, py, px * px, px * py, py * py]),
+                          np.column_stack([np.ones_like(px), px, py])):
+                if len(px) < basis.shape[1] + 2:
+                    continue
+                am = basis * wgt[:, None]
+                if np.linalg.matrix_rank(am) < basis.shape[1]:
+                    continue
+                coef = np.linalg.lstsq(am, vals * wgt[:, None], rcond=None)[0]
+                nod[:, j, i] = coef[0]
+                break
+        return {"w": w, "mx": nod[0], "my": nod[1], "mxy": nod[2], "qx": nod[3], "qy": nod[4]}
 
     def beam_forces(self, u):
-        """변별 보 부재력 {edge: {"s": 위치[m], "m": 모멘트[kN·m], "v": 전단[kN]}}  (정모멘트 = 아래 인장)
+        """변(edge_id)별 보 부재력 {edge_id: {"s": 위치[m], "m": 모멘트[kN·m], "v": 전단[kN]}}  (정모멘트 = 아래 인장)
         이 패널의 슬래브 하중에 의한 분담분 (연속단 보는 인접 패널 분담분을 따로 더해야 함)"""
         out = {}
-        for edge, n1, n2, d, ke, f in self.beams:
+        for edge, pos, length, d, ke in sorted(self.beams, key=lambda b: (str(b[0]), b[1])):
             fe = ke @ u[d]                        # 절점력: (V1, M1, T1, V2, M2, T2)
             o = out.setdefault(edge, {"s": [], "m": [], "v": []})
-            length = self.a if edge in ("top", "bottom") else self.b
-            s0 = len(o["s"]) // 2 * length
-            # 요소 단부 단면력: M(시작) = -M1, M(끝) = M2  ;  V = V1 (요소 내 일정)
-            o["s"] += [s0, s0 + length]
+            # 요소 단부 단면력: M(시작) = -M1 … 부호를 정모멘트(+) 로 맞춤
+            o["s"] += [pos - length / 2.0, pos + length / 2.0]
             o["m"] += [fe[1], -fe[4]]
             o["v"] += [fe[0], fe[0]]
         return out

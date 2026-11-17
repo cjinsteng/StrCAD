@@ -122,11 +122,11 @@ class ResultViewer:
         key = self.field.get()
         _, lbl, unit, desc = next(f for f in P.FIELDS if f[0] == key)
         fld = r["fields"][key]
-        self.info.config(text=f"{desc}      max {fld.max():.2f}   min {fld.min():.2f} {unit}      "
+        self.info.config(text=f"{desc}      max {np.nanmax(fld):.2f}   min {np.nanmin(fld):.2f} {unit}      "
                               + ("끌기: 회전 · 휠: 확대" if self.mode.get() == "3d" else f"조합 {r['gov']}"))
         if self.mode.get() == "2d":
             P.draw_contour(cv, 16, 10, w - 32, h - 20, r["xs"], r["ys"], fld, f"{lbl}  ({unit})   — {r['name']}",
-                           values=self.show_val.get())
+                           values=self.show_val.get(), active=r["active"])
         else:
             self._draw_3d(w, h, fld, f"{lbl}  ({unit})   — {r['name']}")
 
@@ -134,15 +134,16 @@ class ResultViewer:
         cv, r = self.cv, self.res
         F = fonts(cv)
         xs, ys = r["xs"], r["ys"]
-        lx, ly = xs[-1], ys[-1]
+        lx, ly = xs[-1] - xs[0], ys[-1] - ys[0]
         nx, ny = len(xs) - 1, len(ys) - 1
         size = max(lx, ly)
-        wz = r["w_elastic"]
+        act = r["active"]
+        wz = np.nan_to_num(r["w_elastic"])
         wmax = float(np.abs(wz).max())
         zs = (-wz / wmax * 0.12 * size) if (self.deform.get() and wmax > 1e-12) else np.zeros_like(wz)
         az, el = math.radians(self.az), math.radians(self.el)
         ca, sa, ce, se = math.cos(az), math.sin(az), math.cos(el), math.sin(el)
-        gx, gy = np.meshgrid(xs - lx / 2.0, ys - ly / 2.0)
+        gx, gy = np.meshgrid(xs - xs[0] - lx / 2.0, ys - ys[0] - ly / 2.0)
         xr = gx * ca - gy * sa
         yr = gx * sa + gy * ca
         sx = xr
@@ -159,13 +160,15 @@ class ResultViewer:
         ox, oy = (w - 70) / 2.0, h / 2.0 + 10
         px = ox + sx * sc
         py = oy - sy * sc
-        vmin, vmax = float(fld.min()), float(fld.max())
+        vmin, vmax = float(np.nanmin(fld)), float(np.nanmax(fld))
         # 변형 전 외곽 (바닥 기준선)
         base = [(ox + bx[k] * sc, oy - by[k] * sc) for k in range(4)]
         cv.create_polygon(base, fill="", outline="#9CA3AF", dash=(4, 3))
         quads = []
         for j in range(ny):
             for i in range(nx):
+                if not act[j, i]:
+                    continue
                 dep = depth[j, i] + depth[j, i + 1] + depth[j + 1, i] + depth[j + 1, i + 1]
                 quads.append((dep, i, j))
         quads.sort(reverse=True)                    # 먼 것부터
@@ -174,9 +177,10 @@ class ResultViewer:
             cv.create_polygon(px[j, i], py[j, i], px[j, i + 1], py[j, i + 1], px[j + 1, i + 1], py[j + 1, i + 1],
                               px[j + 1, i], py[j + 1, i], fill=P.band_color(v, vmin, vmax), outline="#374151")
         # 모서리 지지 표시
-        for key, _, ix, iy in P.CORNERS:
-            if r["corners"].get(key, True):
-                jj, ii = iy * ny, ix * nx
+        for v in r["verts"]:
+            if v["fix"]:
+                ii = int(np.argmin(np.abs(xs - v["x"])))
+                jj = int(np.argmin(np.abs(ys - v["y"])))
                 cv.create_rectangle(px[jj, ii] - 4, py[jj, ii] - 4, px[jj, ii] + 4, py[jj, ii] + 4, fill="#dc2626",
                                     outline="#7f1d1d")
         # 축 표시
