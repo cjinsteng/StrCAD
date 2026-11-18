@@ -388,6 +388,10 @@ def analyze(m):
     for cid, ls in lost.items():
         warnings.append(f"[{m['cases'][cid]['name']}] 전달되지 않은 하중 {ls:.2f} kN "
                         f"(부재와 연결되지 않은 노드·선·면의 하중)")
+    for cid, cs in m["cases"].items():
+        if float(cs.get("slab_selfweight", 0) or 0) and any(
+                ld.get("sw") and ld["case"] == cid for ld in m["aloads"]):
+            warnings.append(f"[{cs['name']}] 슬래브 자중이 중복됩니다 (케이스 슬래브 자중 계수 + 면하중 '자중 포함').")
     if weak.any():
         warnings.append(f"강성이 없는 자유도 {int(weak.sum())}개를 자동 구속했습니다.")
     return {"mesh": mesh, "results": results, "warnings": warnings,

@@ -76,7 +76,7 @@ E = pm.concrete_Ec(24) * 1e3; I = 0.4 * 0.6 ** 3 / 12
 chk("보 처짐", -res["w"].min(), 5 * 20 * 8 ** 4 / (384 * E * I), 0.01)
 chk("보 반력", res["react"][n1][0], 80, 1e-6)
 # 4) 보 위 슬래브 (2×2 격자, 기둥 핀): 평형
-m = pm.new_model(); m["mesh_size"] = 0.5
+m = pm.new_model(); m["mesh_size"] = 0.5; m["cases"][1]["slab_selfweight"] = 1.0
 pm.generate_grid(m, [6, 6], [5, 5], beams=True, slabs=True, sec=1, slab=1, sup=1)
 for aid in m["areas"]:
     m["aloads"].append(dict(id=pm.next_load_id(m), case=2, area=aid, q=5.0))
@@ -126,7 +126,7 @@ f = find_face(m, 1, 1)
 chk("면 인식 꼭짓점", len(f), 4)
 chk("면 인식 넓이", pm.area_of(m, pm.add_area(m, f)), 12, 1e-9)
 # 7) 변 중간 노드가 있는 슬래브 + 이웃 면 분할수 맞춤
-m = pm.new_model(); m["mesh_size"] = 0.7; m["cases"][1]["selfweight"] = 1
+m = pm.new_model(); m["mesh_size"] = 0.7; m["cases"][1]["selfweight"] = 1; m["cases"][1]["slab_selfweight"] = 1
 pm.generate_grid(m, [6, 6], [6], beams=True, slabs=True, sup=1)
 big = pm.add_area(m, [])  # 잘못된 입력 무시
 n_mid = pm.add_node(m, 9, 0)            # 오른쪽 아래 변 분할 → 면 꼭짓점 5개 (4 코너)
@@ -178,9 +178,10 @@ aid = pm.add_area(m, [g[(0, 0)], g[(2, 0)], g[(2, 2)], g[(0, 2)]], kind="slab", 
 m["sup_types"][3].update(col_n=2, col_H=3.0)
 for k in [(0, 0), (2, 0), (2, 2), (0, 2)]:
     m["supports"][g[k]] = 3
-m["aloads"].append(dict(id=1, case=1, area=aid, q=5)); m["nloads"].append(dict(id=2, case=1, node=g[(1, 1)], p=10))
+m["aloads"].append(dict(id=1, case=1, area=aid, q=5, sw=True)); m["nloads"].append(dict(id=2, case=1, node=g[(1, 1)], p=10))
 r = analyze(m); res = r["results"][("case", 1)]; mesh = r["mesh"]
 nd = np.unique(mesh.plates.ravel())
+chk("면하중 자중포함 하중합", r["applied"][1], 54 * (5 + 3.6) + 10 + 24 * 0.24 * 30, 1e-6)
 chk("Midas My max 16.1", res["My"][nd].max(), 16.09, 0.06)
 chk("Midas My min -11.5", res["My"][nd].min(), -11.50, 0.08)
 chk("Midas Mx max 12.4", res["Mx"][nd].max(), 12.37, 0.06)

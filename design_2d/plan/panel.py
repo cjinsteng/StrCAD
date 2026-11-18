@@ -168,8 +168,8 @@ class PlanAnalysisPanel(DrawMixin, TreeTabMixin, InputTabMixin, LoadTabMixin, Re
         btn(row, "▦ 격자 생성", self.open_grid_gen).pack(side="left", padx=1)
         btn(row, "⤢", self.fit_view, padx=6).pack(side="left", padx=1)
         sep()
-        btn(row, "▶ 해석 (F5)", self.run_analysis, bg=GRN, fg=WHI, font=FONT_B,
-            padx=10).pack(side="left", padx=2)
+        self.b_run = btn(row, "▶ 해석 (F5)", self.toggle_analysis, bg=GRN, fg=WHI, font=FONT_B, padx=10)
+        self.b_run.pack(side="left", padx=2)
         sep()
         self.res_combo_var = tk.StringVar()
         self.res_combo = combo(row, self.res_combo_var, [], width=14)
@@ -197,7 +197,7 @@ class PlanAnalysisPanel(DrawMixin, TreeTabMixin, InputTabMixin, LoadTabMixin, Re
         w.bind("<Control-y>", lambda e: self._key_guard(e, self.redo))
         w.bind("<Control-s>", lambda e: self.save_file())
         w.bind("<Control-o>", lambda e: self.open_file())
-        w.bind("<F5>", lambda e: self.run_analysis())
+        w.bind("<F5>", lambda e: self.toggle_analysis())
         w.bind("<Control-a>", lambda e: self._key_guard(e, self.select_all))
 
     def _key_guard(self, e, fn):
@@ -717,6 +717,7 @@ class PlanAnalysisPanel(DrawMixin, TreeTabMixin, InputTabMixin, LoadTabMixin, Re
 
     def refresh_all(self):
         self._refresh_undo_btns()
+        self._update_run_btn()
         self.refresh_tree()
         self.show_editor()
         self.refresh_load_tab()
@@ -858,6 +859,31 @@ class PlanAnalysisPanel(DrawMixin, TreeTabMixin, InputTabMixin, LoadTabMixin, Re
     # ════════════════════════════════════════════════════════
     #  해석
     # ════════════════════════════════════════════════════════
+    def toggle_analysis(self):
+        """해석 버튼: 결과가 없으면 해석, 있으면 해석 해제(작업 상태로 복귀)"""
+        if self.analysis is not None:
+            self.clear_analysis()
+        else:
+            self.run_analysis()
+
+    def clear_analysis(self):
+        self.analysis = None
+        self.res_type.set("")
+        self.refresh_result_list()
+        self._update_run_btn()
+        self.redraw()
+        self.msg("해석 해제 — 작업 상태")
+        self.nb.select(self.tab_tree)
+
+    def _update_run_btn(self):
+        b = getattr(self, "b_run", None)
+        if b is None:
+            return
+        if self.analysis is not None:
+            b.config(text="■ 해석 해제 (F5)", bg=ORG, activebackground="#c2410c")
+        else:
+            b.config(text="▶ 해석 (F5)", bg=GRN, activebackground=BG5)
+
     def run_analysis(self):
         self.chain = None; self.poly = []
         self.msg("해석 중…", C_SEL)
@@ -875,6 +901,7 @@ class PlanAnalysisPanel(DrawMixin, TreeTabMixin, InputTabMixin, LoadTabMixin, Re
         finally:
             self.win.config(cursor="")
         self.analysis = res
+        self._update_run_btn()
         if self.res_key not in res["results"]:
             self.res_key = ("case", self.active_case) if ("case", self.active_case) in res["results"] \
                 else next(iter(res["results"]))

@@ -328,7 +328,8 @@ class DrawMixin:
                 sp += self.w2c(cx + (x - cx) * 0.86, cy + (y - cy) * 0.86)
             c.create_polygon(sp, fill="", outline=col, dash=(3, 3))
             px, py = self.w2c(cx, cy)
-            c.create_text(px, py + 22 + 13 * k, text=f"⬇ {float(ld['q']):g} kN/m²", fill=col, font=FONT_B)
+            c.create_text(px, py + 22 + 13 * k, fill=col, font=FONT_B,
+                          text=f"⬇ {float(ld['q']):g} kN/m²" + (" +자중" if ld.get("sw") else ""))
         for ld in m["lloads"]:
             if ld["case"] != case or ld["line"] not in m["lines"]:
                 continue
