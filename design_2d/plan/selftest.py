@@ -139,4 +139,26 @@ A = (A + A.T) / 2 + 30 * np.eye(30)
 rr, cc = np.nonzero(A)
 x = S._band_solve(rr, cc, A[rr, cc], 30, np.ones((30, 2)))
 chk("밴드 솔버", float(np.abs(A @ x - 1).max()) + 1, 1, 1e-9)
+# 9) 모서리 4개로 만든 면 + 변 중간 노드에서 나뉜 보 → 보·슬래브 연결 (사용자 보고 버그)
+def ring_model(corner_only):
+    m = pm.new_model(); m["mesh_size"] = 0.5
+    g = pm.generate_grid(m, [5, 4], [3, 3], beams=True, slabs=False, sup=None)
+    for lid in list(m["lines"]):
+        ln = m["lines"][lid]; a, b = m["nodes"][ln["ni"]], m["nodes"][ln["nj"]]
+        if not ((a["x"] == b["x"] and a["x"] in (0, 9)) or (a["y"] == b["y"] and a["y"] in (0, 6))):
+            del m["lines"][lid]
+    m["areas"] = {}
+    ns = [g[(0, 0)], g[(2, 0)], g[(2, 2)], g[(0, 2)]] if corner_only else \
+         [g[(0, 0)], g[(1, 0)], g[(2, 0)], g[(2, 1)], g[(2, 2)], g[(1, 2)], g[(0, 2)], g[(0, 1)]]
+    a = pm.add_area(m, ns, kind="slab", slab=1)
+    m["areas"][a]["nodes"] = ns if corner_only else m["areas"][a]["nodes"]   # 구버전 파일처럼 4노드 유지
+    for k in [(0, 0), (2, 0), (2, 2), (0, 2)]:
+        m["supports"][g[k]] = 3
+    m["aloads"].append(dict(id=1, case=1, area=a, q=5)); m["nloads"].append(dict(id=2, case=1, node=g[(1, 1)], p=10))
+    r = analyze(m); res = r["results"][("case", 1)]
+    return len(r["mesh"].xy), float(-res["w"].min())
+n8, d8 = ring_model(False); n4, d4 = ring_model(True)
+chk("4노드 면 절점수 = 8노드 면", n4, n8, 1e-9)
+chk("4노드 면 처짐 = 8노드 면", d4, d8, 1e-6)
+
 print("\n전체 통과" if not FAILS else f"\n실패: {FAILS}")

@@ -165,7 +165,7 @@ def build_mesh(m):
     for aid, ar in m["areas"].items():
         if ar.get("kind") != "slab":
             continue
-        ns = ar["nodes"]
+        ns = pm.expand_poly(m, ar["nodes"])      # 변 위의 노드(보 분할점)도 꼭짓점으로
         if ar.get("slab") not in m["slabs"]:
             raise MeshError(f"면 A{aid}: 슬래브 타입이 지정되지 않았습니다.")
         cs = _corners(m, ns)
@@ -289,7 +289,44 @@ def build_mesh(m):
     mesh.xy = np.array(mesh.xy, dtype=float) if mesh.xy else np.zeros((0, 2))
     mesh.plates = np.array(mesh.plates, dtype=int).reshape(-1, 4)
     mesh.beams = np.array(mesh.beams, dtype=int).reshape(-1, 2)
+    _merge_coincident(mesh)
+    # 슬래브 영역 안을 지나는데 판 절점과 연결되지 않은 보 경고
+    if len(mesh.plates) and len(mesh.beams):
+        pn = set(mesh.plates.ravel().tolist())
+        loc = PointLocator(mesh)
+        for lid, ch in mesh.line_chain.items():
+            inner = ch[1:-1]
+            if not inner:
+                continue
+            k = inner[len(inner) // 2]
+            if k not in pn and loc.locate(*mesh.xy[k]) is not None:
+                mesh.warnings.append(f"보 L{lid} 이(가) 슬래브 내부를 지나지만 메시 절점과 맞지 않아 "
+                                     f"슬래브와 연결되지 않았습니다. 보를 따라 면을 나눠 주세요.")
     return mesh
+
+
+def _merge_coincident(mesh, tol=1e-6):
+    """같은 위치의 FE 절점을 하나로 합침 (안전장치)"""
+    n = len(mesh.xy)
+    if n == 0:
+        return
+    key = np.round(mesh.xy / tol).astype(np.int64)
+    _, first, inv = np.unique(key, axis=0, return_index=True, return_inverse=True)
+    inv = inv.ravel()
+    if len(first) == n:
+        return
+    keep = np.sort(first)
+    new_id = -np.ones(n, dtype=int)
+    rep = first[inv]                      # 각 절점 → 대표(최초) 절점
+    new_id[keep] = np.arange(len(keep))
+    remap = new_id[rep]
+    mesh.xy = mesh.xy[keep]
+    mesh.plates = remap[mesh.plates] if len(mesh.plates) else mesh.plates
+    mesh.beams = remap[mesh.beams] if len(mesh.beams) else mesh.beams
+    mesh.node_of = {k: int(remap[v]) for k, v in mesh.node_of.items()}
+    mesh.edge_nodes = {k: [int(remap[v]) for v in lst] for k, lst in mesh.edge_nodes.items()}
+    mesh.line_chain = {k: [int(remap[v]) for v in lst] for k, lst in mesh.line_chain.items()}
+    mesh.line_chain_all = {k: [int(remap[v]) for v in lst] for k, lst in mesh.line_chain_all.items()}
 
 
 # ═══════════════════════════════════════════════════════════════
