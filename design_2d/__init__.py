@@ -59,9 +59,9 @@ class _ViewSelectDialog(tk.Toplevel):
              "지점·구속률·단부해제, 집중/분포하중\n"
              "→ 모멘트·전단·축력·반력 (.2df)", CYN),
             ("plan", "🏗", "평면해석",
-             "기둥·보·슬래브를 평면도로 배치\n"
-             "면하중 → 선하중 환산 후 해석\n"
-             "(업데이트 예정)", YEL),
+             "노드·선·면을 그리고 보·슬래브·지점 적용\n"
+             "집중·선·면하중 → 슬래브+보 유한요소해석\n"
+             "→ 슬래브 Mx·My·Qx·Qy·처짐, 보 M·V (.2dp)", YEL),
         ]
         for view, icon, title, desc, color in items:
             card = tk.Frame(cards, bg=BG3,
@@ -125,10 +125,5 @@ def _open_section_view(parent, username=""):
 
 
 def _open_plan_view(parent, username=""):
-    from .plan_view import PlanViewPanel
-    win = tk.Toplevel(parent)
-    win.title("평면해석  —  2D Design" + (f"  [{username}]" if username else ""))
-    win.geometry("1280x760"); win.minsize(900, 600)
-    win.configure(bg="#0f1520"); win.lift(); win.focus_force()
-    PlanViewPanel(win, username=username)
-    return win
+    from .plan import open_plan_analysis
+    return open_plan_analysis(parent, username)
