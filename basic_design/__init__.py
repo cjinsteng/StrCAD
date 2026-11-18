@@ -31,7 +31,8 @@ CATALOG = [
         {"id": "beam", "title": "Beam", "sub": "보", "modes": [
             {"id": "lite", "title": "Lite", "sub": "직사각형 보 단면 검토\n단면 1~3개 (단부·중앙부)",
              "open": "basic_design.rc.beam_lite:open_beam_lite"},
-            {"id": "pro", "title": "Pro", "sub": "연속보 해석·설계"},
+            {"id": "pro", "title": "Pro", "sub": "깊은보 설계\n스트럿-타이 모델 (KDS 14 20 24)",
+             "open": "basic_design.rc.beam_pro:open_beam_pro"},
         ]},
         {"id": "column", "title": "Column", "sub": "기둥", "modes": [
             {"id": "lite", "title": "Lite", "sub": "P-M 상관도 단면 검토"},
