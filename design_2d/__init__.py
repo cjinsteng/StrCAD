@@ -16,7 +16,7 @@ from .constants import (
 #  뷰 선택 팝업
 # ═══════════════════════════════════════════════════════════════
 class _ViewSelectDialog(tk.Toplevel):
-    """2D Design 진입 시 Line View / Plan View 선택"""
+    """2D Design 진입 시 단면해석 / 평면해석 선택"""
 
     def __init__(self, parent, username=""):
         super().__init__(parent)
@@ -39,7 +39,7 @@ class _ViewSelectDialog(tk.Toplevel):
     def _build(self):
         hdr = tk.Frame(self, bg="#0f1a30", height=52)
         hdr.pack(fill="x"); hdr.pack_propagate(False)
-        tk.Label(hdr, text="📐  2D Design  —  뷰 타입 선택",
+        tk.Label(hdr, text="📐  2D Design  —  해석 종류 선택",
                  font=("Malgun Gothic", 12, "bold"),
                  bg="#0f1a30", fg=WHI).pack(expand=True)
         tk.Frame(self, bg=BDR, height=1).pack(fill="x")
@@ -47,21 +47,21 @@ class _ViewSelectDialog(tk.Toplevel):
         body = tk.Frame(self, bg=BG2)
         body.pack(fill="both", expand=True, padx=28, pady=20)
 
-        tk.Label(body, text="설계할 뷰 타입을 선택하세요.",
+        tk.Label(body, text="해석 종류를 선택하세요.",
                  font=("Malgun Gothic", 10), bg=BG2, fg=TX2).pack(pady=(0, 16))
 
         cards = tk.Frame(body, bg=BG2)
         cards.pack(fill="x")
 
         items = [
-            ("line", "📏", "Line View",
-             "보·기둥을 선(Line)으로 모델링\n"
-             "단면력 계산 및 RC/Steel 부재 설계\n"
-             "(.2dd 파일 형식)", CYN),
-            ("plan", "🏗", "Plan View",
-             "기둥·슬래브를 평면도로 배치\n"
+            ("section", "📏", "단면해석",
+             "노드·부재로 골조 단면 모델링\n"
+             "지점·구속률·단부해제, 집중/분포하중\n"
+             "→ 모멘트·전단·축력·반력 (.2df)", CYN),
+            ("plan", "🏗", "평면해석",
+             "기둥·보·슬래브를 평면도로 배치\n"
              "면하중 → 선하중 환산 후 해석\n"
-             "(.2dp 파일 형식)", YEL),
+             "(업데이트 예정)", YEL),
         ]
         for view, icon, title, desc, color in items:
             card = tk.Frame(cards, bg=BG3,
@@ -112,27 +112,22 @@ def open_2d_design(parent, username=""):
     dlg = _ViewSelectDialog(parent, username=username)
     parent.wait_window(dlg)
 
-    if dlg.result == "line":
-        return _open_line_view(parent, username)
+    if dlg.result == "section":
+        return _open_section_view(parent, username)
     elif dlg.result == "plan":
         return _open_plan_view(parent, username)
     return None
 
 
-def _open_line_view(parent, username=""):
-    from .panel import Design2DPanel
-    win = tk.Toplevel(parent)
-    win.title("Line View  —  2D Design" + (f"  [{username}]" if username else ""))
-    win.geometry("1280x760"); win.minsize(900, 600)
-    win.configure(bg="#0f1520"); win.lift(); win.focus_force()
-    Design2DPanel(win, username=username)
-    return win
+def _open_section_view(parent, username=""):
+    from .section import open_section_analysis
+    return open_section_analysis(parent, username)
 
 
 def _open_plan_view(parent, username=""):
     from .plan_view import PlanViewPanel
     win = tk.Toplevel(parent)
-    win.title("Plan View  —  2D Design" + (f"  [{username}]" if username else ""))
+    win.title("평면해석  —  2D Design" + (f"  [{username}]" if username else ""))
     win.geometry("1280x760"); win.minsize(900, 600)
     win.configure(bg="#0f1520"); win.lift(); win.focus_force()
     PlanViewPanel(win, username=username)

@@ -22,7 +22,7 @@ python -m PyInstaller launcher.py --noconfirm --clean --windowed --name StrCAD ^
   --add-data "strcad_cad_analysis\mobile;mobile" ^
   --add-data "strcad_cad_analysis\samples;samples" ^
   --add-data "autotable\auto_table.py;autotable" ^
-  --hidden-import cad_analysis.app --hidden-import cad_analysis.licensing_ui --hidden-import design_2d --hidden-import basic_design --hidden-import basic_design.rc.slab_lite --hidden-import basic_design.rc.slab_table_app --hidden-import basic_design.rc.slab_pro_app --hidden-import basic_design.rc.beam_lite --hidden-import basic_design.rc.beam_pro ^
+  --hidden-import cad_analysis.app --hidden-import cad_analysis.licensing_ui --hidden-import design_2d --hidden-import design_2d.section.panel --hidden-import basic_design --hidden-import basic_design.rc.slab_lite --hidden-import basic_design.rc.slab_table_app --hidden-import basic_design.rc.slab_pro_app --hidden-import basic_design.rc.beam_lite --hidden-import basic_design.rc.beam_pro ^
   --hidden-import cad_analysis.photo_plan --hidden-import cad_analysis.pdf_plan --hidden-import cad_analysis.sheets ^
   --hidden-import report_assistant --hidden-import report_core --hidden-import hwp_reader --hidden-import docx_doc --hidden-import hwp_to_word --hidden-import docx_table --hidden-import docx_pages ^
   --hidden-import olefile --hidden-import win32com.client --hidden-import pythoncom ^
