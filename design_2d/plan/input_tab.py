@@ -92,6 +92,9 @@ class InputTabMixin:
         f.row("격자 간격", lambda p: entry(p, v["grid"], 8), "m")
         f.row("메시 크기", lambda p: entry(p, v["mesh_size"], 8), "m (정밀: 0.25)")
         f.row("보 비틀림 계수", lambda p: entry(p, v["torsion_factor"], 8), "× GJ (0~1)")
+        NM = {"avg": "요소 외삽 평균 (Midas 방식)", "spr": "SPR 패치 복원"}
+        v_nm = tk.StringVar(value=NM.get(m.get("nodal_method", "avg")))
+        f.row("슬래브 절점값", lambda p: combo(p, v_nm, list(NM.values()), 22))
         d = m["defaults"]
         vd = {k: tk.StringVar(value=self._pick(key, d.get(k))) for k, key in
               (("sec", "sections"), ("slab", "slabs"), ("mat", "materials"))}
@@ -107,6 +110,7 @@ class InputTabMixin:
             self.push_undo()
             m["grid"], m["mesh_size"] = vals["grid"], vals["mesh_size"]
             m["torsion_factor"] = min(1.0, max(0.0, vals["torsion_factor"] or 0.0))
+            m["nodal_method"] = {v_: k for k, v_ in NM.items()}.get(v_nm.get(), "avg")
             for k in vd:
                 d[k] = self._id_of(vd[k].get()) or d.get(k)
             self.changed("설정 적용")

@@ -72,6 +72,7 @@ class PlanAnalysisPanel(DrawMixin, TreeTabMixin, InputTabMixin, LoadTabMixin, Re
         self.show_grid = tk.BooleanVar(value=True)
         self.show_mesh = tk.BooleanVar(value=False)
         self.show_values = tk.BooleanVar(value=True)
+        self.show_cell_vals = tk.BooleanVar(value=False)
         self.res_type = tk.StringVar(value="")
         self.res_scale = 1.0
         self.active_case = 1
@@ -114,7 +115,8 @@ class PlanAnalysisPanel(DrawMixin, TreeTabMixin, InputTabMixin, LoadTabMixin, Re
         vbar.pack(fill="x")
         tk.Label(vbar, text="보기", font=FONT_S, bg=BG2, fg=TX3).pack(side="left", padx=(8, 4))
         for text, var in (("번호", self.show_ids), ("하중", self.show_loads), ("격자", self.show_grid),
-                          ("메시", self.show_mesh), ("결과값", self.show_values)):
+                          ("메시", self.show_mesh), ("결과값", self.show_values),
+                          ("메시별 값", self.show_cell_vals)):
             check(vbar, text, var, command=self.redraw).pack(side="left", padx=3)
         tk.Label(vbar, text="  결과 크기", font=FONT_S, bg=BG2, fg=TX3).pack(side="left", padx=(10, 2))
         btn(vbar, "－", lambda: self._res_zoom(1 / 1.25), padx=6, pady=0).pack(side="left", padx=1)

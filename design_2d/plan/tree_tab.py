@@ -241,7 +241,7 @@ class TreeTabMixin:
         if kind == "MAT":
             i = pm.next_id(m["materials"])
             m["materials"][i] = {"name": f"C{24 + 3 * (i - 1)}", "type": "RC", "fck": 24.0 + 3 * (i - 1),
-                                 "fy": 400.0, "E": 0.0, "gamma": 24.0, "nu": 0.2}
+                                 "fy": 400.0, "E": 0.0, "gamma": 24.0, "nu": 0.167}
         elif kind == "SEC":
             i = pm.next_id(m["sections"])
             m["sections"][i] = {"name": f"G{i}", "shape": "rect", "b": 400, "h": 600}

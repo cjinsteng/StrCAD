@@ -220,7 +220,7 @@ def _plate_props(m, aid):
     if mat is None:
         raise PlanError(f"슬래브 '{sl['name']}': 재료가 없습니다.")
     E = pm.material_E(mat) * 1e3
-    nu = float(mat.get("nu", 0.2) or 0.2)
+    nu = float(mat.get("nu", 0.167) or 0.0)
     t = float(sl["t"]) / 1000.0
     if t <= 0:
         raise PlanError(f"슬래브 '{sl['name']}': 두께가 0 입니다.")
@@ -265,7 +265,7 @@ def analyze(m):
         if mat is None:
             raise PlanError(f"보 L{lid}: 재료가 없습니다.")
         E = pm.material_E(mat) * 1e3
-        nu = float(mat.get("nu", 0.2) or 0.2)
+        nu = float(mat.get("nu", 0.167) or 0.0)
         G = E / (2 * (1 + nu))
         A, I = pm.section_props(sec)
         if I <= 0:
@@ -394,6 +394,27 @@ def analyze(m):
             "ndof": ndof, "nfree": len(free), "applied": applied}
 
 
+# Gauss 4점 값 → 요소 절점값 (쌍선형 외삽) 행렬.  Gauss 순서는 plate_k 와 동일
+_g = 1 / math.sqrt(3)
+_GP_NAT = [(-_g, -_g), (-_g, _g), (_g, -_g), (_g, _g)]
+_EXTRAP = np.linalg.inv(np.array([_N(x, e) for x, e in _GP_NAT]))      # 절점값 = _EXTRAP @ GP값
+
+
+def _avg_nodal(mesh, gp_v):
+    """요소별 Gauss 값을 절점으로 외삽한 뒤 절점 공유 요소끼리 평균 (Midas 'Avg. Nodal' 방식)"""
+    nn = len(mesh.xy)
+    nq = gp_v.shape[2]
+    acc = np.zeros((nn, nq)); cnt = np.zeros(nn)
+    if len(mesh.plates):
+        ev = np.einsum("ag,egq->eaq", _EXTRAP, gp_v)          # (ne, 4 절점, nq)
+        np.add.at(acc, mesh.plates, ev)
+        np.add.at(cnt, mesh.plates, 1)
+    out = np.full((nn, nq), np.nan)
+    ok = cnt > 0
+    out[ok] = acc[ok] / cnt[ok, None]
+    return out
+
+
 def _spr(mesh, gp_xy, gp_v):
     """초수렴 패치 복원(SPR, Zienkiewicz-Zhu): 절점 주변 요소 Gauss 점 값에
     1차식을 최소제곱으로 맞춰 절점값 계산. 경계 절점은 이웃 내부 절점 패치식으로 외삽."""
@@ -454,9 +475,13 @@ def _post(m, mesh, u, rf, pdata, bdata, sup_nodes, line_sup=None, BE=None):
     keys = ("Mx", "My", "Mxy", "Qx", "Qy")
     pS, pP, pD = pdata
     gp_v = np.einsum("egij,ej->egi", pS, u[pD]) if len(pD) else np.zeros((0, 4, 5))
-    nodal = _spr(mesh, pP, gp_v)
+    if m.get("nodal_method", "avg") == "spr":
+        nodal = _spr(mesh, pP, gp_v)
+    else:
+        nodal = _avg_nodal(mesh, gp_v)
     for i, k in enumerate(keys):
         out[k] = nodal[:, i]
+    out["elem_center"] = gp_v.mean(axis=1) if len(gp_v) else np.zeros((0, 5))   # 요소 중심값 (ne, 5)
     # ── 보 ──
     beams = {}
     for e, ((dofs, K, (kb, Tb, kt, Tt, L)), lid) in enumerate(zip(bdata, mesh.beam_line)):

@@ -51,12 +51,16 @@ tot = sum(v["Rz"] for v in res["line_react"].values())
 chk("SS 판 반력 합", tot, q * a * a, 1e-6)
 # 2) 고정 정사각형 판: w = 0.00126 qa⁴/D, Mc = 0.0231 qa², 변 중앙 = -0.0513 qa²
 m, aid = plate_model(edge="fix", t=60)
+m["nodal_method"] = "spr"       # 경계 외삽이 나은 SPR 로 이론해 비교
 r = analyze(m); res = r["results"][("case", 1)]; mesh = r["mesh"]
 c = np.argmin(np.hypot(mesh.xy[:, 0] - 3, mesh.xy[:, 1] - 3))
 e = np.argmin(np.hypot(mesh.xy[:, 0] - 0, mesh.xy[:, 1] - 3))
 chk("고정 판 중앙 처짐", -res["w"][c], 0.00126 * q * a ** 4 / D, 0.04)
 chk("고정 판 중앙 Mx", res["Mx"][c], 0.0231 * q * a * a, 0.06)
 chk("고정 판 변중앙 Mx", res["Mx"][e], -0.0513 * q * a * a, 0.10)   # 메시 0.25m (6m 판 24분할)
+m["nodal_method"] = "avg"
+r = analyze(m); res = r["results"][("case", 1)]
+chk("고정 판 변중앙 Mx (Midas식 평균)", res["Mx"][e], -0.0513 * q * a * a, 0.18)
 # 3) 보 하나: 양단 핀 지점, 등분포 선하중 → M = wL²/8, δ = 5wL⁴/384EI
 m = pm.new_model(); m["cases"][1]["selfweight"] = 0; m["mesh_size"] = 0.5
 n1 = pm.add_node(m, 0, 0); n2 = pm.add_node(m, 8, 0)
@@ -160,5 +164,29 @@ def ring_model(corner_only):
 n8, d8 = ring_model(False); n4, d4 = ring_model(True)
 chk("4노드 면 절점수 = 8노드 면", n4, n8, 1e-9)
 chk("4노드 면 처짐 = 8노드 면", d4, d8, 1e-6)
+
+# 10) Midas 비교 (사용자 제공): 9×6m, 테두리 보 400×600, 모서리 기둥 500×500 (상하부, H=3m),
+#     t=150 C24 ν=0.167, 자중 + 5 kN/m² + (5,3) 10kN, 메시 0.25m
+m = pm.new_model(); m["mesh_size"] = 0.25
+g = pm.generate_grid(m, [5, 4], [3, 3], beams=True, slabs=False, sup=None)
+for lid in list(m["lines"]):
+    ln = m["lines"][lid]; a_, b_ = m["nodes"][ln["ni"]], m["nodes"][ln["nj"]]
+    if not ((a_["x"] == b_["x"] and a_["x"] in (0, 9)) or (a_["y"] == b_["y"] and a_["y"] in (0, 6))):
+        del m["lines"][lid]
+m["areas"] = {}
+aid = pm.add_area(m, [g[(0, 0)], g[(2, 0)], g[(2, 2)], g[(0, 2)]], kind="slab", slab=1)
+m["sup_types"][3].update(col_n=2, col_H=3.0)
+for k in [(0, 0), (2, 0), (2, 2), (0, 2)]:
+    m["supports"][g[k]] = 3
+m["aloads"].append(dict(id=1, case=1, area=aid, q=5)); m["nloads"].append(dict(id=2, case=1, node=g[(1, 1)], p=10))
+r = analyze(m); res = r["results"][("case", 1)]; mesh = r["mesh"]
+nd = np.unique(mesh.plates.ravel())
+chk("Midas My max 16.1", res["My"][nd].max(), 16.09, 0.06)
+chk("Midas My min -11.5", res["My"][nd].min(), -11.50, 0.08)
+chk("Midas Mx max 12.4", res["Mx"][nd].max(), 12.37, 0.06)
+chk("Midas Mx min -15.0", res["Mx"][nd].min(), -15.05, 0.06)
+b9 = [d for d in res["beams"].values() if abs(d["s"][-1] - 6) > 1e-6 and abs(d["s"][-1] - 3) > 1e-6]
+chk("Midas 보 M+ 109.5", max(d["M"].max() for d in b9), 109.5, 0.08)
+chk("Midas 보 M- -152.8", min(d["M"].min() for d in b9), -152.8, 0.06)
 
 print("\n전체 통과" if not FAILS else f"\n실패: {FAILS}")

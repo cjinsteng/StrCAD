@@ -95,12 +95,13 @@ def new_model():
         "grid": 0.5,
         "mesh_size": 0.5,
         "torsion_factor": 1.0,
+        "nodal_method": "avg",     # 슬래브 절점값: avg(요소 외삽 평균, Midas 방식) / spr
         "nodes": {},
         "lines": {},     # {id: {ni, nj, kind:"none"|"beam", sec, mat, name}}
         "areas": {},     # {id: {nodes:[...], kind:"none"|"slab", slab, dist, name}}
         "materials": {
             1: {"name": "C24", "type": "RC", "fck": 24.0, "fy": 400.0, "E": 0.0,
-                "gamma": 24.0, "nu": 0.2},
+                "gamma": 24.0, "nu": 0.167},
             2: {"name": "SS275", "type": "STEEL", "fy": 275.0, "E": 210000.0,
                 "gamma": 78.5, "nu": 0.3},
         },
