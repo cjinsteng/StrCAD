@@ -12,9 +12,10 @@ design_2d/section/solver.py  ── 2D 프레임 강성도법 (Euler-Bernoulli, 
 
 【부재하중】 등가절점하중 = ∫Nᵀq dx (Hermite 형상함수, Gauss 적분)
            → 균일 단면 E-B 보에서 고정단력과 정확히 일치
-【단부해제】 정적 응축(static condensation)
-【지점】     구속(Dx, Dy, Rz) + 스프링(kx, ky, kr) + 회전 구속률 γ(%)
-            kr = γ/(1-γ) · Σ(3EI/L)   (연결부재 기준, Monforton-Wu 고정도)
+【단부조건】 고정률 r (0=힌지, 1=강접, 사이=반강접 회전스프링 ks=3EI·r/(L(1-r)))
+            → 내부 회전 DOF 를 정적 응축(static condensation)
+【지점】     구속(Dx, Dy, Rz) + 스프링(kx, ky, kr) + 회전 고정률 r (0~1)
+            kr = r/(1-r) · Σ(3EI/L)   (연결부재 기준, Monforton-Wu 고정도)
 
 【단위】 m, kN, kN·m  (E: MPa → kN/m², 단면: mm → m)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -23,7 +24,7 @@ design_2d/section/solver.py  ── 2D 프레임 강성도법 (Euler-Bernoulli, 
 import math
 import numpy as np
 
-from .model import material_E, section_props, elem_length
+from .model import material_E, section_props, elem_length, end_fix, clamp01
 
 N_SEG = 40                       # 부재당 기본 분할수 (결과 그래프용)
 _GP = np.polynomial.legendre.leggauss(6)
@@ -131,21 +132,47 @@ def _equiv_nodal(L, dists, points):
     return p
 
 
-def _condense(k, p, rel):
-    """단부해제 DOF(rel: 국부 인덱스 리스트) 정적 응축"""
-    if not rel:
-        return k, p
-    r = list(rel); cdx = [i for i in range(6) if i not in r]
-    krr = k[np.ix_(r, r)]
+def _condense(K, P, internal):
+    """정적 응축. internal: 응축할 DOF (0~5 중 해제 DOF, 6 이상은 부재 내부 DOF).
+    반환 6×6 강성, 6 등가하중 (해제 DOF 행·열은 0)"""
+    if not internal:
+        return K[:6, :6].copy(), P[:6].copy()
+    ii = list(internal)
+    cc = [i for i in range(6) if i not in ii]
     try:
-        krr_inv = np.linalg.inv(krr)
+        kii_inv = np.linalg.inv(K[np.ix_(ii, ii)])
     except np.linalg.LinAlgError:
-        return k, p
-    kcr = k[np.ix_(cdx, r)]
+        return K[:6, :6].copy(), P[:6].copy()
+    kci = K[np.ix_(cc, ii)]
     kc = np.zeros((6, 6)); pc = np.zeros(6)
-    kc[np.ix_(cdx, cdx)] = k[np.ix_(cdx, cdx)] - kcr @ krr_inv @ k[np.ix_(r, cdx)]
-    pc[cdx] = p[cdx] - kcr @ krr_inv @ p[r]
+    kc[np.ix_(cc, cc)] = K[np.ix_(cc, cc)] - kci @ kii_inv @ K[np.ix_(ii, cc)]
+    pc[cc] = P[cc] - kci @ kii_inv @ P[ii]
     return kc, pc
+
+
+def _end_condition(k, p, fi, fj, EI, L):
+    """단부 고정률(0=힌지, 1=강접, 사이=반강접) 적용.
+    반강접 단부는 부재 내부 회전 DOF φ 를 두고 절점 회전 θ 와
+    회전스프링 ks = 3EI·r / (L(1-r)) 로 연결한 뒤 φ 를 응축한다."""
+    rel, springs = [], []
+    for idx, r in ((2, fi), (5, fj)):
+        if r <= 1e-6:
+            rel.append(idx)
+        elif r < 1 - 1e-6:
+            springs.append((idx, 3 * EI * r / (L * (1 - r))))
+    if not springs:
+        return _condense(k, p, rel)
+    n = 6 + len(springs)
+    K = np.zeros((n, n)); P = np.zeros(n)
+    cmap = list(range(6))
+    for j, (idx, _) in enumerate(springs):
+        cmap[idx] = 6 + j
+    K[np.ix_(cmap, cmap)] += k
+    P[cmap] += p
+    for j, (idx, ks) in enumerate(springs):
+        a, b = idx, 6 + j
+        K[a, a] += ks; K[b, b] += ks; K[a, b] -= ks; K[b, a] -= ks
+    return _condense(K, P, rel + [6 + j for j in range(len(springs))])
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -249,8 +276,8 @@ def _elem_data(model):
         E = material_E(mat) * 1e3            # kN/m²
         A = A_mm * 1e-6; I = I_mm * 1e-12     # m², m⁴
         c = (nj["x"] - ni["x"]) / L; s = (nj["y"] - ni["y"]) / L
-        rel = ([2] if e.get("rel_i") else []) + ([5] if e.get("rel_j") else [])
-        data[eid] = dict(L=L, c=c, s=s, E=E, A=A, I=I, rel=rel,
+        fi, fj = end_fix(e)
+        data[eid] = dict(L=L, c=c, s=s, E=E, A=A, I=I, fi=fi, fj=fj,
                          gamma=float(mat.get("gamma", 0) or 0),
                          k=_k_local(E, A, I, L), T=_T(c, s))
     return data
@@ -281,7 +308,7 @@ def solve_case(model, case_id, edata=None):
         dists, points = _member_loads(model, eid, case_id, ed["L"], ed["c"],
                                       ed["s"], ed["A"], ed["gamma"], sw)
         p = _equiv_nodal(ed["L"], dists, points)
-        kc, pc = _condense(ed["k"], p, ed["rel"])
+        kc, pc = _end_condition(ed["k"], p, ed["fi"], ed["fj"], ed["E"] * ed["I"], ed["L"])
         ed_case = dict(kc=kc, pc=pc, dists=dists, points=points)
         eload[eid] = ed_case
         T = ed["T"]
@@ -312,7 +339,7 @@ def solve_case(model, case_id, edata=None):
         if st.get("rz"):
             fixed.add(b + 2)
         else:
-            fix = float(st.get("fix", 0) or 0) / 100.0
+            fix = clamp01(st.get("fix", 0) or 0)
             if fix >= 0.999:
                 fixed.add(b + 2)
             elif fix > 1e-6:

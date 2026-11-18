@@ -92,10 +92,11 @@ class DrawMixin:
         c = self.canvas
         m = self.model
         hov = self.hover[1] if self.hover and self.hover[0] == "elem" else None
-        drop = self.drop_hover[1] if self.drop_hover and self.drop_hover[0] == "elem" else None
         drop_set = set()
-        if drop is not None:
-            drop_set = self.sel_elems if drop in self.sel_elems else {drop}
+        if self.drop_hover and self.drop_hover[0] == "elem":
+            drop = self.drop_hover[1]
+            # drop=None → 빈 곳에 놓기 = 선택 항목 전체에 적용
+            drop_set = self.sel_elems if (drop is None or drop in self.sel_elems) else {drop}
         for eid, e in m["elems"].items():
             a, b = m["nodes"][e["ni"]], m["nodes"][e["nj"]]
             ax, ay = self.w2c(a["x"], a["y"])
@@ -129,14 +130,22 @@ class DrawMixin:
                 c.create_line(ax, ay, bx, by, fill=col, width=1, dash=(6, 3))
             else:
                 c.create_line(ax, ay, bx, by, fill=col, width=4 if sel else 3)
-            # 단부 해제 표시
-            for rel, (px, py), sgn in ((e.get("rel_i"), (ax, ay), 1),
-                                       (e.get("rel_j"), (bx, by), -1)):
-                if rel:
-                    off = max(hw, 6) + 8
-                    qx, qy = px + ux * off * sgn, py + uy * off * sgn
+            # 단부조건 표시: 힌지 = 빈 원, 반강접 = 주황 원 + 고정률
+            fi, fj = fm.end_fix(e)
+            for r, (px, py), sgn in ((fi, (ax, ay), 1), (fj, (bx, by), -1)):
+                if r >= 1.0:
+                    continue
+                off = max(hw, 6) + 8
+                qx, qy = px + ux * off * sgn, py + uy * off * sgn
+                if r <= 0.0:
                     c.create_oval(qx - 4, qy - 4, qx + 4, qy + 4, outline=C_SEL,
                                   fill=CANV_BG, width=2)
+                else:
+                    c.create_oval(qx - 4.5, qy - 4.5, qx + 4.5, qy + 4.5, outline=C_SEL,
+                                  fill=ORG, width=1.5)
+                    if self.show_ids.get():
+                        c.create_text(qx + ux * 10 * sgn - uy * 9, qy + uy * 10 * sgn + ux * 9,
+                                      text=f"{r:g}", fill=ORG, font=FONT_C)
             if self.show_ids.get() and (not thin or sel):
                 mx, my = (ax + bx) / 2, (ay + by) / 2
                 off = max(hw, 3) + 9
@@ -154,10 +163,11 @@ class DrawMixin:
     def _draw_nodes(self):
         c = self.canvas
         hov = self.hover[1] if self.hover and self.hover[0] == "node" else None
-        drop = self.drop_hover[1] if self.drop_hover and self.drop_hover[0] == "node" else None
         drop_set = set()
-        if drop is not None:
-            drop_set = self.sel_nodes if drop in self.sel_nodes else {drop}
+        if self.drop_hover and self.drop_hover[0] == "node":
+            drop = self.drop_hover[1]
+            # drop=None → 빈 곳에 놓기 = 선택 항목 전체에 적용
+            drop_set = self.sel_nodes if (drop is None or drop in self.sel_nodes) else {drop}
         for nid, n in self.model["nodes"].items():
             x, y = self.w2c(n["x"], n["y"])
             if nid in drop_set:
@@ -205,7 +215,7 @@ class DrawMixin:
                 if kind == "semi":
                     c.create_arc(x - 15, y - 15, x + 15, y + 15, start=200, extent=140,
                                  style="arc", outline=C_SEL, width=2)
-                    c.create_text(x + 18, y - 14, text=f"{float(st.get('fix', 0)):g}%",
+                    c.create_text(x + 18, y - 14, text=f"r={fm.clamp01(st.get('fix', 0)):g}",
                                   fill=C_SEL, font=FONT_C, anchor="w")
             elif kind == "rolly":
                 c.create_polygon(x, y, x - s * 1.4, y - s, x - s * 1.4, y + s,

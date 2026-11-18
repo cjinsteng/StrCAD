@@ -46,6 +46,7 @@ class InputTabMixin:
             if t:
                 k, i = t
                 fn = {"MAT": self._ed_material, "SEC": self._ed_section, "ST": self._ed_suptype,
+                      "RL": self._ed_reltype,
                       "CASE": self._ed_case, "CO": self._ed_combo,
                       "NL": self._ed_load, "EL": self._ed_load}.get(k)
                 if fn:
@@ -131,6 +132,7 @@ class InputTabMixin:
             e1.focus_set()
         e1.bind("<Return>", add_node)
         self._btn_row(body, [("＋ 노드 추가", add_node, GRN)])
+        self._copy_section(body, [])
 
         section_title(body, "부재 입력 (노드 번호)", GRNH)
         f3 = Form(body)
@@ -178,7 +180,20 @@ class InputTabMixin:
         vs = tk.StringVar(value=self._pick("sup_types", m["supports"].get(nid)) or "없음")
         f2.row("지점 타입", lambda p: combo(p, vs, sup_names))
         st = m["sup_types"].get(m["supports"].get(nid))
-        f2.text("구속", fm.support_desc(st) if st else "-", TX2)
+        v_sfix = tk.StringVar(value=f"{fm.clamp01(st.get('fix', 0)):g}" if st and not st.get("rz") else "")
+        e_fix = f2.row("회전 고정률", lambda p: entry(p, v_sfix, 8), "0=핀 ~ 1=고정")
+        lbl_desc = f2.text("구속", fm.support_desc(st) if st else "-", TX2)
+
+        def on_sup(*_):
+            s2 = m["sup_types"].get(self._id_of(vs.get()))
+            lbl_desc.config(text=fm.support_desc(s2) if s2 else "-")
+            if not s2 or s2.get("rz"):
+                v_sfix.set(""); e_fix.config(state="disabled")
+            else:
+                e_fix.config(state="normal"); v_sfix.set(f"{fm.clamp01(s2.get('fix', 0)):g}")
+        vs.trace_add("write", on_sup)
+        if not st or st.get("rz"):
+            e_fix.config(state="disabled")
 
         def apply(_=None):
             x, y = parse_float(vx.get()), parse_float(vy.get())
@@ -188,9 +203,17 @@ class InputTabMixin:
             if other is not None and other != nid:
                 messagebox.showwarning("입력", f"같은 위치에 노드 N{other} 가 있습니다.", parent=self.win)
                 return
+            sid = self._id_of(vs.get())
+            fx = None
+            if sid is not None and v_sfix.get().strip():
+                fx = parse_float(v_sfix.get())
+                if fx is None or not 0 <= fx <= 1:
+                    messagebox.showwarning("입력", "회전 고정률은 0~1 사이로 입력하세요.", parent=self.win)
+                    return
             self.push_undo()
             n["x"], n["y"] = round(x, 6), round(y, 6)
-            sid = self._id_of(vs.get())
+            if fx is not None:
+                sid = self._resolve_support(sid, fx)
             if sid is None:
                 m["supports"].pop(nid, None)
             else:
@@ -198,6 +221,7 @@ class InputTabMixin:
             self.changed(f"노드 N{nid} 수정")
         ex.bind("<Return>", apply); ey.bind("<Return>", apply)
         self._btn_row(body, [("적용", apply, ACC), ("삭제", self.delete_selected, RED)])
+        self._copy_section(body, [nid])
 
         conn = [eid for eid, e in m["elems"].items() if nid in (e["ni"], e["nj"])]
         section_title(body, f"연결 부재 ({len(conn)})", TX3)
@@ -238,11 +262,8 @@ class InputTabMixin:
         v_name.trace_add("write", on_name)
         sf.v_name.trace_add("write", lambda *_: linked.__setitem__(0, sf.v_name.get() == v_name.get()))
 
-        section_title(body, "단부 해제 (힌지)", C_SEL)
-        rf = tk.Frame(body, bg=BG2); rf.pack(fill="x", padx=4)
-        v_ri = tk.BooleanVar(value=bool(e.get("rel_i"))); v_rj = tk.BooleanVar(value=bool(e.get("rel_j")))
-        check(rf, f"i단 (N{e['ni']}) 힌지", v_ri).pack(side="left")
-        check(rf, f"j단 (N{e['nj']}) 힌지", v_rj).pack(side="left", padx=12)
+        fi0, fj0 = fm.end_fix(e)
+        v_fi, v_fj = self._end_fix_fields(body, e, fi0, fj0)
 
         def apply(_=None):
             spec = sf.get()
@@ -256,7 +277,12 @@ class InputTabMixin:
             e["name"] = v_name.get().strip()
             e["mat"] = self._id_of(v_mat.get()) or e["mat"]
             e["sec"] = sid
-            e["rel_i"], e["rel_j"] = bool(v_ri.get()), bool(v_rj.get())
+            fi, fj = parse_float(v_fi.get()), parse_float(v_fj.get())
+            if fi is None or fj is None or not (0 <= fi <= 1 and 0 <= fj <= 1):
+                self.undo_stack.pop(); self._refresh_undo_btns()
+                messagebox.showwarning("입력", "단부 고정률은 0~1 사이로 입력하세요.", parent=self.win)
+                return
+            fm.set_end_fix(e, fi, fj)
             self.changed(f"부재 E{eid} 수정 — 단면 '{m['sections'][sid]['name']}'")
         en.bind("<Return>", apply)
         self._btn_row(body, [("적용", apply, ACC), ("2등분", lambda: self.split_selected(2), BG3),
@@ -302,6 +328,99 @@ class InputTabMixin:
         self.msg(f"단면 '{spec['name']}' 이(가) 단면 목록에 추가되었습니다.", GRNH)
         return sid
 
+    # ── 부재 단부 고정률 입력 ─────────────────────────────────
+    def _end_fix_fields(self, body, e, fi0, fj0):
+        m = self.model
+        section_title(body, "단부 고정률 (0 = 힌지, 1 = 강접, 사이 = 반강접)", C_SEL)
+        f = Form(body)
+        v_rt = tk.StringVar(value=self._pick("rel_types", fm.rel_type_of(m, e)))
+        cb = f.row("단부조건 타입", lambda p: combo(p, v_rt, self._names("rel_types"), 18))
+        v_fi = tk.StringVar(value=f"{fi0:g}"); v_fj = tk.StringVar(value=f"{fj0:g}")
+        for lbl, v in ((f"i단 (N{e['ni']})", v_fi), (f"j단 (N{e['nj']})", v_fj)):
+            def mk(p, v=v):
+                fr = tk.Frame(p, bg=BG2)
+                entry(fr, v, 6).pack(side="left")
+                for t, val in (("힌지", "0"), ("0.5", "0.5"), ("강접", "1")):
+                    btn(fr, t, lambda val=val, v=v: v.set(val), padx=5, pady=0,
+                        font=FONT_S).pack(side="left", padx=(3, 0))
+                return fr
+            f.row(lbl, mk)
+
+        def on_rt(_=None):
+            rt = m["rel_types"].get(self._id_of(v_rt.get()))
+            if rt:
+                v_fi.set(f"{rt['fi']:g}"); v_fj.set(f"{rt['fj']:g}")
+        cb.bind("<<ComboboxSelected>>", on_rt)
+        tk.Label(body, text="반강접: 단부 회전스프링 k = 3EI·r / (L(1-r))  (Monforton-Wu 고정도)",
+                 font=FONT_S, bg=BG2, fg=TX3).pack(anchor="w", padx=4)
+        return v_fi, v_fj
+
+    def _resolve_support(self, sid, fix):
+        """지점 타입 + 고정률 → 지점 타입 id.
+        같은 구속 조건·고정률의 타입이 있으면 그것, 없으면 새 타입을 목록에 추가."""
+        m = self.model
+        base = m["sup_types"][sid]
+        if base.get("rz") or abs(fm.clamp01(base.get("fix", 0)) - fix) < 1e-9:
+            return sid
+        keys = ("dx", "dy", "rz", "kx", "ky", "kr")
+        for i, st in m["sup_types"].items():
+            if all(float(st.get(k, 0) or 0) == float(base.get(k, 0) or 0) for k in keys) and \
+                    abs(fm.clamp01(st.get("fix", 0)) - fix) < 1e-9:
+                return i
+        root = base["name"].split(" r=")[0]
+        if fix >= 1:
+            name = f"{root} r=1"
+        elif fix <= 0:
+            name = f"{root} r=0"
+        else:
+            name = f"{root} r={fix:g}"
+        i = fm.next_id(m["sup_types"])
+        nst = dict(base); nst["name"] = name; nst["fix"] = fix
+        m["sup_types"][i] = nst
+        self.msg(f"지점 타입 '{name}' 이(가) 목록에 추가되었습니다.", GRNH)
+        return i
+
+    # ── 노드 복사 / 이동 ───────────────────────────────────────
+    def _copy_section(self, body, nids):
+        m = self.model
+        section_title(body, "노드 복사 / 이동", GRNH)
+        f = Form(body)
+        v_ids = tk.StringVar(value=fm.ids_text(nids))
+        st = self.__dict__.setdefault("_copy_state", {"dx": "6", "dy": "0", "n": "1",
+                                                       "elems": True, "extras": False, "link": False})
+        v_dx = tk.StringVar(value=st["dx"]); v_dy = tk.StringVar(value=st["dy"])
+        v_n = tk.StringVar(value=st["n"])
+        f.row("대상 노드", lambda p: entry(p, v_ids, 16), "예: 1-4, 7")
+        f.row("간격 dx", lambda p: entry(p, v_dx, 8), "m")
+        f.row("간격 dy", lambda p: entry(p, v_dy, 8), "m")
+        f.row("복사 횟수", lambda p: entry(p, v_n, 8), "회")
+        v_el = tk.BooleanVar(value=st["elems"]); v_ex = tk.BooleanVar(value=st["extras"])
+        v_ln = tk.BooleanVar(value=st["link"])
+        cf = tk.Frame(body, bg=BG2); cf.pack(fill="x", padx=4)
+        check(cf, "대상 노드 사이의 부재도 복사", v_el).pack(anchor="w")
+        check(cf, "지점·하중도 복사", v_ex).pack(anchor="w")
+        check(cf, "원본 ↔ 복사 노드를 부재로 연결 (기둥 세우기 등)", v_ln).pack(anchor="w")
+
+        def run(move):
+            try:
+                ids = fm.parse_ids(v_ids.get())
+            except ValueError:
+                messagebox.showwarning("노드 복사", "대상 노드 번호를 확인하세요. (예: 1-4, 7)", parent=self.win)
+                return
+            dx, dy = parse_float(v_dx.get()), parse_float(v_dy.get())
+            try:
+                n = int(float(v_n.get()))
+            except ValueError:
+                n = 0
+            if dx is None or dy is None or (not move and not 1 <= n <= 100):
+                messagebox.showwarning("노드 복사", "간격·횟수를 확인하세요. (횟수 1~100)", parent=self.win)
+                return
+            st.update(dx=v_dx.get(), dy=v_dy.get(), n=v_n.get(), elems=bool(v_el.get()),
+                      extras=bool(v_ex.get()), link=bool(v_ln.get()))
+            self.copy_nodes_cmd(ids, dx, dy, n, bool(v_el.get()), bool(v_ex.get()),
+                                bool(v_ln.get()), move=move)
+        self._btn_row(body, [("⧉ 복사", lambda: run(False), GRN), ("➜ 이동", lambda: run(True), BG3)])
+
     # ════════════════════════════════════════════════════════
     #  다중 선택
     # ════════════════════════════════════════════════════════
@@ -313,24 +432,46 @@ class InputTabMixin:
             section_title(body, f"노드 {nn}개 — 지점", C_SUP)
             f = Form(body)
             vs = tk.StringVar(value="")
+            v_sfix = tk.StringVar(value="")
             f.row("지점 타입", lambda p: combo(p, vs, ["없음"] + self._names("sup_types")))
+            f.row("회전 고정률", lambda p: entry(p, v_sfix, 8), "0~1 (빈칸=타입값)")
 
             def apply_sup():
                 if not vs.get():
                     return
-                self.assign_support(sorted(self.sel_nodes), self._id_of(vs.get()))
+                sid = self._id_of(vs.get())
+                if sid is not None and v_sfix.get().strip():
+                    fx = parse_float(v_sfix.get())
+                    if fx is None or not 0 <= fx <= 1:
+                        messagebox.showwarning("입력", "고정률은 0~1 입니다.", parent=self.win); return
+                    sid = self._resolve_support(sid, fx)
+                self.assign_support(sorted(self.sel_nodes), sid)
             self._btn_row(body, [("지점 적용", apply_sup, ACC)])
         if ne:
             section_title(body, f"부재 {ne}개 — 일괄 지정 (빈칸 = 유지)", CYN)
             f = Form(body)
             v_name = tk.StringVar(); v_mat = tk.StringVar(); v_sec = tk.StringVar(); v_rel = tk.StringVar()
+            v_fi = tk.StringVar(); v_fj = tk.StringVar()
             f.row("부재명", lambda p: entry(p, v_name, 14))
             f.row("재료", lambda p: combo(p, v_mat, [""] + self._names("materials")))
             f.row("단면", lambda p: combo(p, v_sec, [""] + self._names("sections")))
-            f.row("단부해제", lambda p: combo(p, v_rel, [""] + [l for _, l in fm.RELEASE_PRESETS]))
+            cb_rel = f.row("단부조건", lambda p: combo(p, v_rel, [""] + self._names("rel_types")))
+            f.row("i단 고정률", lambda p: entry(p, v_fi, 8), "0=힌지 ~ 1=강접")
+            f.row("j단 고정률", lambda p: entry(p, v_fj, 8), "0=힌지 ~ 1=강접")
+
+            def on_rel(_=None):
+                rt = m["rel_types"].get(self._id_of(v_rel.get()))
+                if rt:
+                    v_fi.set(f"{rt['fi']:g}"); v_fj.set(f"{rt['fj']:g}")
+            cb_rel.bind("<<ComboboxSelected>>", on_rel)
 
             def apply_el():
                 eids = sorted(self.sel_elems)
+                for v in (v_fi, v_fj):
+                    x = parse_float(v.get())
+                    if v.get().strip() and (x is None or not 0 <= x <= 1):
+                        messagebox.showwarning("입력", "단부 고정률은 0~1 사이로 입력하세요.", parent=self.win)
+                        return
                 self.push_undo()
                 for i in eids:
                     el = m["elems"][i]
@@ -340,11 +481,13 @@ class InputTabMixin:
                         el["mat"] = self._id_of(v_mat.get())
                     if self._id_of(v_sec.get()):
                         el["sec"] = self._id_of(v_sec.get())
-                    if v_rel.get():
-                        code = {l: c for c, l in fm.RELEASE_PRESETS}[v_rel.get()]
-                        el["rel_i"] = code in ("i", "ij"); el["rel_j"] = code in ("j", "ij")
+                    fm.set_end_fix(el, parse_float(v_fi.get()), parse_float(v_fj.get()))
                 self.changed(f"부재 {len(eids)}개 일괄 수정")
             self._btn_row(body, [("부재 적용", apply_el, ACC)])
+        nodes = set(self.sel_nodes)
+        for i in self.sel_elems:
+            nodes.update((m["elems"][i]["ni"], m["elems"][i]["nj"]))
+        self._copy_section(body, sorted(nodes))
         self._btn_row(body, [("선택 항목 삭제", self.delete_selected, RED)])
 
     # ════════════════════════════════════════════════════════
@@ -424,16 +567,16 @@ class InputTabMixin:
         check(cf, "Dx 구속", vd["dx"]).pack(side="left")
         check(cf, "Dy 구속", vd["dy"]).pack(side="left", padx=10)
         check(cf, "Rz 구속", vd["rz"]).pack(side="left")
-        section_title(body, "회전 구속률 / 스프링", C_SEL)
+        section_title(body, "회전 고정률 / 스프링", C_SEL)
         f2 = Form(body)
-        vf = tk.StringVar(value=f"{float(st.get('fix', 0) or 0):g}")
-        ef = f2.row("회전 구속률", lambda p: entry(p, vf, 10), "% (0=핀, 100=고정)")
+        vf = tk.StringVar(value=f"{fm.clamp01(st.get('fix', 0) or 0):g}")
+        ef = f2.row("회전 고정률", lambda p: entry(p, vf, 10), "0=핀 ~ 1=고정")
         vk = {k: tk.StringVar(value=f"{float(st.get(k, 0) or 0):g}") for k in ("kx", "ky", "kr")}
         f2.row("kx 스프링", lambda p: entry(p, vk["kx"], 10), "kN/m")
         f2.row("ky 스프링", lambda p: entry(p, vk["ky"], 10), "kN/m")
         f2.row("kr 회전스프링", lambda p: entry(p, vk["kr"], 10), "kN·m/rad")
-        tk.Label(body, text="구속률 γ: kr = γ/(1-γ)·Σ(3EI/L) (연결 부재 기준)\n"
-                            "Rz 구속을 체크하면 구속률은 무시됩니다.",
+        tk.Label(body, text="고정률 r: kr = r/(1-r)·Σ(3EI/L) (연결 부재 기준)\n"
+                            "Rz 구속을 체크하면 고정률은 무시됩니다 (= 1).",
                  font=FONT_S, bg=BG2, fg=TX3, justify="left").pack(anchor="w", padx=4, pady=4)
 
         def on_rz(*_):
@@ -442,8 +585,8 @@ class InputTabMixin:
 
         def apply():
             fix = parse_float(vf.get(), 0.0)
-            if not (0 <= fix <= 100):
-                messagebox.showwarning("입력", "구속률은 0~100% 입니다.", parent=self.win); return
+            if not (0 <= fix <= 1):
+                messagebox.showwarning("입력", "고정률은 0~1 사이로 입력하세요.", parent=self.win); return
             self.push_undo()
             st.update(name=v_name.get().strip() or st["name"],
                       dx=int(vd["dx"].get()), dy=int(vd["dy"].get()), rz=int(vd["rz"].get()),
@@ -455,6 +598,38 @@ class InputTabMixin:
             if self.sel_nodes:
                 self.assign_support(sorted(self.sel_nodes), sid)
         self._btn_row(body, [("적용", apply, ACC), ("선택 노드에 지정", assign_sel, BG3)])
+
+    def _ed_reltype(self, body, rid):
+        m = self.model
+        rt = m["rel_types"][rid]
+        users = sum(1 for e in m["elems"].values() if fm.rel_type_of(m, e) == rid)
+        self._head(f"단부조건  {rt['name']}", C_SEL)
+        section_title(body, f"단부 고정률 (사용 부재 {users}개)", C_SEL)
+        f = Form(body)
+        v_name = tk.StringVar(value=rt["name"])
+        v_fi = tk.StringVar(value=f"{rt['fi']:g}"); v_fj = tk.StringVar(value=f"{rt['fj']:g}")
+        f.row("이름", lambda p: entry(p, v_name, 16))
+        f.row("i단 고정률", lambda p: entry(p, v_fi, 8), "0=힌지 ~ 1=강접")
+        f.row("j단 고정률", lambda p: entry(p, v_fj, 8), "0=힌지 ~ 1=강접")
+        tk.Label(body, text="부재 단부 회전스프링 k = 3EI·r / (L(1-r))\n"
+                            "트리에서 이 항목을 부재로 끌어다 놓으면 적용됩니다.",
+                 font=FONT_S, bg=BG2, fg=TX3, justify="left").pack(anchor="w", padx=4, pady=4)
+
+        def apply():
+            fi, fj = parse_float(v_fi.get()), parse_float(v_fj.get())
+            if fi is None or fj is None or not (0 <= fi <= 1 and 0 <= fj <= 1):
+                messagebox.showwarning("입력", "고정률은 0~1 사이로 입력하세요.", parent=self.win); return
+            old = (rt["fi"], rt["fj"])
+            self.push_undo()
+            # 이 타입을 쓰던 부재도 함께 변경
+            for e in m["elems"].values():
+                if abs(fm.end_fix(e)[0] - old[0]) < 1e-9 and abs(fm.end_fix(e)[1] - old[1]) < 1e-9:
+                    fm.set_end_fix(e, fi, fj)
+            rt.update(name=v_name.get().strip() or rt["name"], fi=fi, fj=fj)
+            self.edit_target = ("RL", rid)
+            self.changed(f"단부조건 '{rt['name']}' 수정")
+        self._btn_row(body, [("적용", apply, ACC),
+                             ("선택 부재에 지정", lambda: self.assign_release(sorted(self.sel_elems), rid), BG3)])
 
     def _ed_case(self, body, cid):
         m = self.model

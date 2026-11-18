@@ -33,17 +33,63 @@ LOAD_DIRS = [
 LOAD_DIR_LABEL = dict(LOAD_DIRS)
 LOAD_DIR_CODE = {v: k for k, v in LOAD_DIRS}
 
-RELEASE_PRESETS = [
-    ("none", "해제 없음 (강접)"),
-    ("i", "i단 힌지"),
-    ("j", "j단 힌지"),
-    ("ij", "양단 힌지"),
-]
+# ── 부재 단부 고정률 ──────────────────────────────────────────
+#  fix_i / fix_j : 0 = 힌지(완전 해제), 1 = 강접, 0~1 = 반강접
+#  (Monforton-Wu 고정도: r = 1/(1+3EI/(kL))  →  k = 3EI·r / (L·(1-r)))
+DEFAULT_REL_TYPES = {
+    1: {"name": "강접", "fi": 1.0, "fj": 1.0},
+    2: {"name": "i단 힌지", "fi": 0.0, "fj": 1.0},
+    3: {"name": "j단 힌지", "fi": 1.0, "fj": 0.0},
+    4: {"name": "양단 힌지", "fi": 0.0, "fj": 0.0},
+    5: {"name": "양단 반강접 0.5", "fi": 0.5, "fj": 0.5},
+}
 
 
-def release_code(e):
-    return {(False, False): "none", (True, False): "i",
-            (False, True): "j", (True, True): "ij"}[(bool(e.get("rel_i")), bool(e.get("rel_j")))]
+def clamp01(v):
+    try:
+        v = float(v)
+    except Exception:
+        return 1.0
+    return min(1.0, max(0.0, v))
+
+
+def end_fix(e):
+    """부재 → (i단 고정률, j단 고정률)"""
+    return clamp01(e.get("fix_i", 1.0)), clamp01(e.get("fix_j", 1.0))
+
+
+def set_end_fix(e, fi=None, fj=None):
+    if fi is not None:
+        e["fix_i"] = round(clamp01(fi), 6)
+    if fj is not None:
+        e["fix_j"] = round(clamp01(fj), 6)
+
+
+def is_rigid(e):
+    fi, fj = end_fix(e)
+    return fi >= 1.0 and fj >= 1.0
+
+
+def rel_type_of(m, e):
+    """부재 단부 고정률과 같은 단부조건 타입 id (없으면 None)"""
+    fi, fj = end_fix(e)
+    for rid, rt in m.get("rel_types", {}).items():
+        if abs(clamp01(rt.get("fi", 1)) - fi) < 1e-9 and abs(clamp01(rt.get("fj", 1)) - fj) < 1e-9:
+            return rid
+    return None
+
+
+def fix_text(v):
+    v = clamp01(v)
+    if v <= 0:
+        return "힌지"
+    if v >= 1:
+        return "강접"
+    return f"{v:g}"
+
+
+def end_desc(fi, fj):
+    return f"i: {fix_text(fi)} / j: {fix_text(fj)}"
 
 
 SECTION_SHAPES = [
@@ -146,8 +192,8 @@ def support_desc(st):
     s.append("Dy" if st.get("dy") else "-")
     if st.get("rz"):
         s.append("Rz")
-    elif float(st.get("fix", 0) or 0) > 0:
-        s.append(f"Rz {float(st['fix']):g}%")
+    elif 0 < clamp01(st.get("fix", 0) or 0) < 1:
+        s.append(f"Rz 고정률 {clamp01(st['fix']):g}")
     else:
         s.append("-")
     sp = []
@@ -160,8 +206,8 @@ def support_desc(st):
 def support_kind(st):
     """그리기용 지점 형상 분류"""
     dx, dy, rz = bool(st.get("dx")), bool(st.get("dy")), bool(st.get("rz"))
-    fix = float(st.get("fix", 0) or 0)
-    if dx and dy and rz:
+    fix = clamp01(st.get("fix", 0) or 0)
+    if dx and dy and (rz or fix >= 1):
         return "fix"
     if dx and dy and fix > 0:
         return "semi"
@@ -207,10 +253,11 @@ def new_model():
                 "kx": 0, "ky": 0, "kr": 0},
             3: {"name": "롤러", "dx": 0, "dy": 1, "rz": 0, "fix": 0,
                 "kx": 0, "ky": 0, "kr": 0},
-            4: {"name": "반고정 50%", "dx": 1, "dy": 1, "rz": 0, "fix": 50,
+            4: {"name": "반고정 0.5", "dx": 1, "dy": 1, "rz": 0, "fix": 0.5,
                 "kx": 0, "ky": 0, "kr": 0},
         },
         "supports": {},          # {node_id: sup_type_id}
+        "rel_types": copy.deepcopy(DEFAULT_REL_TYPES),   # 부재 단부조건 타입
         "cases": {
             1: {"name": "DL", "selfweight": 1.0},
             2: {"name": "LL", "selfweight": 0.0},
@@ -226,7 +273,7 @@ def new_model():
 
 
 _INT_KEY_DICTS = ("nodes", "elems", "materials", "sections",
-                  "sup_types", "cases", "combos")
+                  "sup_types", "cases", "combos", "rel_types")
 
 
 def normalize(m):
@@ -239,11 +286,21 @@ def normalize(m):
     for k in _INT_KEY_DICTS:
         m[k] = {int(i): v for i, v in m.get(k, {}).items()}
     m["supports"] = {int(n): int(s) for n, s in m.get("supports", {}).items()}
+    for st in m["sup_types"].values():
+        f = float(st.get("fix", 0) or 0)
+        st["fix"] = f / 100.0 if f > 1 else f          # 구버전: % → 0~1
     for c in m["combos"].values():
         c["factors"] = {int(i): float(f) for i, f in c.get("factors", {}).items()}
     for e in m["elems"].values():
         e["ni"] = int(e["ni"]); e["nj"] = int(e["nj"])
-        e.setdefault("name", ""); e.setdefault("rel_i", False); e.setdefault("rel_j", False)
+        e.setdefault("name", "")
+        # 구버전 rel_i/rel_j(힌지 여부) → 고정률
+        if "fix_i" not in e:
+            e["fix_i"] = 0.0 if e.get("rel_i") else 1.0
+        if "fix_j" not in e:
+            e["fix_j"] = 0.0 if e.get("rel_j") else 1.0
+        e.pop("rel_i", None); e.pop("rel_j", None)
+        set_end_fix(e, e["fix_i"], e["fix_j"])
         e["mat"] = int(e.get("mat", 1)); e["sec"] = int(e.get("sec", 1))
     for ld in m["nloads"]:
         ld["case"] = int(ld["case"]); ld["node"] = int(ld["node"])
@@ -302,7 +359,7 @@ def add_elem(m, ni, nj, mat=None, sec=None, name=""):
     m["elems"][eid] = {"ni": ni, "nj": nj, "name": name,
                        "mat": mat or d.get("mat", 1),
                        "sec": sec or d.get("sec", 1),
-                       "rel_i": False, "rel_j": False}
+                       "fix_i": 1.0, "fix_j": 1.0}
     return eid
 
 
@@ -348,8 +405,8 @@ def split_elem(m, eid, ratio):
     nid = add_node(m, x, y)
     nj_old = e["nj"]
     e2 = dict(e)
-    e2["ni"] = nid; e2["nj"] = nj_old; e2["rel_i"] = False
-    e["nj"] = nid; e["rel_j"] = False
+    e2["ni"] = nid; e2["nj"] = nj_old; e2["fix_i"] = 1.0
+    e["nj"] = nid; e["fix_j"] = 1.0
     eid2 = next_id(m["elems"])
     m["elems"][eid2] = e2
     L1, L2 = L * ratio, L * (1 - ratio)
@@ -415,3 +472,113 @@ def generate_frame(m, spans, heights, sec_beam=None, sec_col=None,
         for i in range(len(xs)):
             m["supports"][grid[(i, 0)]] = sup
     return grid
+
+
+# ═══════════════════════════════════════════════════════════════
+#  노드 복사 / 이동
+# ═══════════════════════════════════════════════════════════════
+def parse_ids(text):
+    """'1-4, 7, 9~10' → [1, 2, 3, 4, 7, 9, 10]"""
+    out = []
+    for tok in str(text).replace(" ", "").replace("~", "-").split(","):
+        if not tok:
+            continue
+        if "-" in tok[1:]:
+            a, b = tok.split("-", 1)
+            a, b = int(a), int(b)
+            out += list(range(min(a, b), max(a, b) + 1))
+        else:
+            out.append(int(tok))
+    return sorted(set(out))
+
+
+def ids_text(ids):
+    """[1,2,3,4,7] → '1-4, 7'"""
+    ids = sorted(set(ids))
+    out, i = [], 0
+    while i < len(ids):
+        j = i
+        while j + 1 < len(ids) and ids[j + 1] == ids[j] + 1:
+            j += 1
+        out.append(f"{ids[i]}-{ids[j]}" if j - i >= 2 else
+                   ", ".join(str(v) for v in ids[i:j + 1]))
+        i = j + 1
+    return ", ".join(out)
+
+
+def copy_nodes(m, nids, dx, dy, times=1, elems=True, extras=False, link=False):
+    """노드를 (dx, dy) 간격으로 times 번 복사.
+    elems  : 두 노드가 모두 대상인 부재도 복사 (단면·재료·단부조건 포함)
+    extras : 지점·절점하중·부재하중도 복사
+    link   : 원본(이전) 노드와 복사 노드를 부재로 연결 (기본 재료·단면)
+    반환: (새 노드 id 집합, 새 부재 id 집합)"""
+    nids = [n for n in nids if n in m["nodes"]]
+    src_e = [eid for eid, e in m["elems"].items()
+             if e["ni"] in nids and e["nj"] in nids] if elems else []
+    new_n, new_e = set(), set()
+    prev = {n: n for n in nids}
+    for k in range(1, int(times) + 1):
+        cur = {}
+        for n in nids:
+            p = m["nodes"][n]
+            cur[n] = add_node(m, p["x"] + dx * k, p["y"] + dy * k)
+            new_n.add(cur[n])
+            if extras:
+                if n in m["supports"]:
+                    m["supports"][cur[n]] = m["supports"][n]
+                for ld in [l for l in m["nloads"] if l["node"] == n]:
+                    nl = dict(ld); nl["node"] = cur[n]; nl["id"] = next_load_id(m)
+                    m["nloads"].append(nl)
+        for eid in src_e:
+            e = m["elems"][eid]
+            existed = set(m["elems"])
+            ne = add_elem(m, cur[e["ni"]], cur[e["nj"]], mat=e["mat"], sec=e["sec"],
+                          name=e.get("name", ""))
+            if ne is None or ne in existed:
+                continue
+            set_end_fix(m["elems"][ne], *end_fix(e))
+            new_e.add(ne)
+            if extras:
+                for ld in [l for l in m["eloads"] if l["elem"] == eid]:
+                    nl = dict(ld); nl["elem"] = ne; nl["id"] = next_load_id(m)
+                    m["eloads"].append(nl)
+        if link:
+            for n in nids:
+                existed = set(m["elems"])
+                mat, sec = _parallel_props(m, n, dx, dy)
+                ne = add_elem(m, prev[n], cur[n], mat=mat, sec=sec)
+                if ne is not None and ne not in existed:
+                    new_e.add(ne)
+        prev = cur
+    return new_n, new_e
+
+
+def _parallel_props(m, nid, dx, dy):
+    """nid 에 연결된 부재 중 (dx, dy) 방향과 나란한 부재의 (재료, 단면).
+    예: 기둥 위 노드를 위로 복사·연결하면 아래 기둥 단면을 그대로 사용. 없으면 (None, None)"""
+    L0 = math.hypot(dx, dy)
+    if L0 < 1e-12:
+        return None, None
+    for e in m["elems"].values():
+        if nid not in (e["ni"], e["nj"]):
+            continue
+        a, b = m["nodes"][e["ni"]], m["nodes"][e["nj"]]
+        ex, ey = b["x"] - a["x"], b["y"] - a["y"]
+        L = math.hypot(ex, ey)
+        if L > 1e-12 and abs(abs(ex * dx + ey * dy) / (L * L0) - 1.0) < 1e-6:
+            return e["mat"], e["sec"]
+    return None, None
+
+
+def move_nodes(m, nids, dx, dy):
+    """노드 이동. 이동 후 다른 노드와 겹치면 오류 메시지 반환."""
+    nids = set(n for n in nids if n in m["nodes"])
+    for n in nids:
+        p = m["nodes"][n]
+        other = find_node_at(m, p["x"] + dx, p["y"] + dy)
+        if other is not None and other not in nids:
+            return f"N{n} 이동 위치에 노드 N{other} 가 이미 있습니다."
+    for n in nids:
+        p = m["nodes"][n]
+        p["x"] = round(p["x"] + dx, 6); p["y"] = round(p["y"] + dy, 6)
+    return None

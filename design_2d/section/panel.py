@@ -575,9 +575,10 @@ class SectionAnalysisPanel(DrawMixin, TreeTabMixin, InputTabMixin,
                                  command=lambda s=mid: self.assign_elem(targets, mat=s))
             menu.add_cascade(label="재료 지정", menu=sub2)
             sub3 = tk.Menu(menu, tearoff=0, bg=BG3, fg=TXT, activebackground=ACC, font=FONT)
-            for code, lbl in fm.RELEASE_PRESETS:
-                sub3.add_command(label=lbl, command=lambda c=code: self.assign_release(targets, c))
-            menu.add_cascade(label="단부 해제(힌지)", menu=sub3)
+            for rid, rt in m["rel_types"].items():
+                sub3.add_command(label=f"{rt['name']}   ({fm.end_desc(rt['fi'], rt['fj'])})",
+                                 command=lambda r=rid: self.assign_release(targets, r))
+            menu.add_cascade(label="단부조건 (힌지·반강접)", menu=sub3)
             menu.add_command(label="부재하중 입력…", command=lambda: self._goto_load("dist"))
             menu.add_separator()
             menu.add_command(label="부재 2등분", command=lambda: self.split_selected(2))
@@ -651,7 +652,7 @@ class SectionAnalysisPanel(DrawMixin, TreeTabMixin, InputTabMixin,
         if self.edit_target:
             k, i = self.edit_target
             d = {"MAT": "materials", "SEC": "sections", "ST": "sup_types",
-                 "CASE": "cases", "CO": "combos"}.get(k)
+                 "CASE": "cases", "CO": "combos", "RL": "rel_types"}.get(k)
             if d and i not in self.model[d]:
                 self.edit_target = None
 
@@ -717,16 +718,41 @@ class SectionAnalysisPanel(DrawMixin, TreeTabMixin, InputTabMixin,
             what.append(f"재료 '{self.model['materials'][mat]['name']}'")
         self.changed(f"{', '.join(what) or '속성'} → 부재 {len(eids)}개")
 
-    def assign_release(self, eids, code):
+    def assign_release(self, eids, rid):
         eids = [i for i in eids if i in self.model["elems"]]
-        if not eids:
+        rt = self.model["rel_types"].get(rid)
+        if not eids or not rt:
             return
         self.push_undo()
         for i in eids:
-            e = self.model["elems"][i]
-            e["rel_i"] = code in ("i", "ij")
-            e["rel_j"] = code in ("j", "ij")
-        self.changed(f"단부해제 '{dict(fm.RELEASE_PRESETS)[code]}' → 부재 {len(eids)}개")
+            fm.set_end_fix(self.model["elems"][i], rt["fi"], rt["fj"])
+        self.changed(f"단부조건 '{rt['name']}' ({fm.end_desc(rt['fi'], rt['fj'])}) → 부재 {len(eids)}개")
+
+    def copy_nodes_cmd(self, nids, dx, dy, times=1, elems=True, extras=False,
+                       link=False, move=False):
+        """노드 복사/이동 (입력 탭에서 호출)"""
+        nids = [n for n in nids if n in self.model["nodes"]]
+        if not nids:
+            messagebox.showwarning("노드 복사", "대상 노드가 없습니다.", parent=self.win)
+            return False
+        if abs(dx) < 1e-12 and abs(dy) < 1e-12:
+            messagebox.showwarning("노드 복사", "dx, dy 가 모두 0 입니다.", parent=self.win)
+            return False
+        self.push_undo()
+        if move:
+            err = fm.move_nodes(self.model, nids, dx, dy)
+            if err:
+                self.undo_stack.pop(); self._refresh_undo_btns()
+                messagebox.showwarning("노드 이동", err, parent=self.win)
+                return False
+            self.sel_nodes = set(nids); self.sel_elems = set()
+            self.changed(f"노드 {len(nids)}개 이동 ({dx:g}, {dy:g})")
+        else:
+            nn, ne = fm.copy_nodes(self.model, nids, dx, dy, times, elems, extras, link)
+            self.sel_nodes, self.sel_elems = set(nn), set(ne)
+            self.changed(f"노드 {len(nids)}개 × {times}회 복사 → 새 노드 {len(nn)}개, 새 부재 {len(ne)}개")
+        self.redraw()
+        return True
 
     def delete_selected(self):
         if not (self.sel_nodes or self.sel_elems):
@@ -759,7 +785,8 @@ class SectionAnalysisPanel(DrawMixin, TreeTabMixin, InputTabMixin,
         for eid in self.sel_elems:
             e = self.model["elems"][eid]
             e["ni"], e["nj"] = e["nj"], e["ni"]
-            e["rel_i"], e["rel_j"] = e["rel_j"], e["rel_i"]
+            fi, fj = fm.end_fix(e)
+            fm.set_end_fix(e, fj, fi)
             L = fm.elem_length(self.model, eid)
             for ld in self.model["eloads"]:
                 if ld["elem"] != eid:

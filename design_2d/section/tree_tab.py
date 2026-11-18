@@ -21,7 +21,7 @@ from tkinter import ttk, messagebox
 from . import model as fm
 from .theme import *
 
-DRAG_KINDS = {"MAT": "elem", "SEC": "elem", "RL": "elem", "ST": "node"}
+DRAG_KINDS = {"MAT": "elem", "SEC": "elem", "RL": "elem", "ST": "node"}   # 드래그 가능 항목 → 놓을 대상
 DEFAULT_OPEN = {"G_struct", "G_props", "G_mat", "G_sec", "G_bnd", "G_sup",
                 "G_rel", "G_loads", "G_cases", "G_combos"}
 
@@ -42,6 +42,7 @@ class TreeTabMixin:
         menu.add_command(label="재료", command=lambda: self.tree_add("MAT"))
         menu.add_command(label="단면", command=lambda: self.tree_add("SEC"))
         menu.add_command(label="지점 타입", command=lambda: self.tree_add("ST"))
+        menu.add_command(label="단부조건 (고정률)", command=lambda: self.tree_add("RL"))
         menu.add_separator()
         menu.add_command(label="하중케이스", command=lambda: self.tree_add("CASE"))
         menu.add_command(label="하중조합", command=lambda: self.tree_add("CO"))
@@ -76,8 +77,9 @@ class TreeTabMixin:
         t.bind("<Button-3>", self._tree_menu)
         t.bind("<Delete>", lambda e: (self.tree_delete(), "break")[1])
 
-        tk.Label(f, text="💡 하늘색 항목(재료·단면·지점·단부해제)을 끌어서 캔버스의\n"
-                         "    부재/노드에 놓으면 지정됩니다. (선택된 여러 개에 일괄 적용)",
+        tk.Label(f, text="💡 하늘색 항목(재료·단면·지점·단부조건)을 끌어서 캔버스의\n"
+                         "    부재/노드에 놓으면 지정됩니다.\n"
+                         "    먼저 선택해 두면 캔버스 아무 곳에 놓아도 선택 항목 전체에 적용",
                  font=FONT_S, bg=BG2, fg=TX3, justify="left", anchor="w").pack(
             fill="x", padx=8, pady=6)
         self._drag = None
@@ -110,8 +112,7 @@ class TreeTabMixin:
         for eid, e in m["elems"].items():
             sec = m["sections"].get(e["sec"], {})
             nm = e.get("name") or ""
-            rel = fm.release_code(e)
-            rel_t = "" if rel == "none" else f"  ◦{rel}"
+            rel_t = "" if fm.is_rigid(e) else f"  ◦{fm.end_desc(*fm.end_fix(e))}"
             ins("G_elems", f"E_{eid}",
                 f"E{eid} {nm}  [{sec.get('name', '?')}]  N{e['ni']}→N{e['nj']}  "
                 f"{fm.elem_length(m, eid):.2f}m{rel_t}")
@@ -141,14 +142,27 @@ class TreeTabMixin:
                 len(nodes), ("drag",))
             for n in sorted(nodes):
                 ins(f"ST_{sid}", f"SUP_{n}", f"N{n}", "", ("dim",))
-        nrel = sum(1 for e in m["elems"].values() if fm.release_code(e) != "none")
-        ins("G_bnd", "G_rel", "◦  End Releases", nrel, ("sub",))
-        for code, lbl in fm.RELEASE_PRESETS:
-            els = [i for i, e in m["elems"].items() if fm.release_code(e) == code]
-            ins("G_rel", f"RL_{code}", lbl, len(els), ("drag",))
-            if code != "none":
+        nrel = sum(1 for e in m["elems"].values() if not fm.is_rigid(e))
+        ins("G_bnd", "G_rel", "◦  End Releases (고정률)", nrel, ("sub",))
+        by_type = {}
+        other = []
+        for i, e in m["elems"].items():
+            rid = fm.rel_type_of(m, e)
+            if rid is None:
+                other.append(i)
+            else:
+                by_type.setdefault(rid, []).append(i)
+        for rid, rt in m["rel_types"].items():
+            els = by_type.get(rid, [])
+            ins("G_rel", f"RL_{rid}", f"{rt['name']}   ({fm.end_desc(rt['fi'], rt['fj'])})",
+                len(els), ("drag",))
+            if not (rt["fi"] >= 1 and rt["fj"] >= 1):
                 for i in els:
-                    ins(f"RL_{code}", f"RE_{i}", f"E{i}", "", ("dim",))
+                    ins(f"RL_{rid}", f"RE_{i}", f"E{i}", "", ("dim",))
+        if other:
+            ins("G_rel", "RLX", "개별 고정률", len(other), ("dim",))
+            for i in other:
+                ins("RLX", f"RE_{i}", f"E{i}   ({fm.end_desc(*fm.end_fix(m['elems'][i]))})", "", ("dim",))
 
         ins("", "G_loads", "⬇  Loads", "", ("grp",))
         ins("G_loads", "G_cases", "▧  Load Cases", len(m["cases"]), ("sub",))
@@ -215,7 +229,7 @@ class TreeTabMixin:
                 nodes.add(int(v))
             elif k == "E" or k == "RE":
                 elems.add(int(v))
-            elif k in ("MAT", "SEC", "ST", "CASE", "CO"):
+            elif k in ("MAT", "SEC", "ST", "CASE", "CO", "RL"):
                 target = (k, int(v))
             elif k in ("NL", "EL"):
                 target = (k, int(v))
@@ -259,6 +273,9 @@ class TreeTabMixin:
             i = fm.next_id(m["sup_types"])
             m["sup_types"][i] = {"name": f"지점{i}", "dx": 1, "dy": 1, "rz": 0, "fix": 0,
                                  "kx": 0, "ky": 0, "kr": 0}
+        elif kind == "RL":
+            i = fm.next_id(m["rel_types"])
+            m["rel_types"][i] = {"name": f"반강접 {i}", "fi": 0.5, "fj": 0.5}
         elif kind == "CASE":
             i = fm.next_id(m["cases"])
             m["cases"][i] = {"name": f"LC{i}", "selfweight": 0.0}
@@ -270,8 +287,7 @@ class TreeTabMixin:
         self.edit_target = (kind, i)
         self.show_editor()
         self.nb.select(self.tab_input)
-        prefix = {"MAT": "MAT", "SEC": "SEC", "ST": "ST", "CASE": "CASE", "CO": "CO"}[kind]
-        iid = f"{prefix}_{i}"
+        iid = f"{kind}_{i}"
         if self.tree.exists(iid):
             self._tree_set_sel([iid]); self.tree.see(iid)
 
@@ -307,12 +323,14 @@ class TreeTabMixin:
             i = int(v)
             m["sup_types"].pop(i, None)
             m["supports"] = {n: s for n, s in m["supports"].items() if s != i}
+        for v in groups.get("RL", []):
+            m["rel_types"].pop(int(v), None)          # 부재의 고정률 값은 그대로 유지
         for v in groups.get("SUP", []):
             m["supports"].pop(int(v), None)
         for v in groups.get("RE", []):
             e = m["elems"].get(int(v))
             if e:
-                e["rel_i"] = e["rel_j"] = False
+                fm.set_end_fix(e, 1.0, 1.0)
         for v in groups.get("CASE", []):
             i = int(v)
             if len(m["cases"]) <= 1:
@@ -349,12 +367,20 @@ class TreeTabMixin:
         k = iid.partition("_")[0] if iid else ""
         add_map = {"G_mat": "MAT", "MAT": "MAT", "G_sec": "SEC", "SEC": "SEC",
                    "G_sup": "ST", "ST": "ST", "G_cases": "CASE", "CASE": "CASE",
-                   "G_combos": "CO", "CO": "CO"}
+                   "G_combos": "CO", "CO": "CO", "G_rel": "RL", "RL": "RL"}
         kind = add_map.get(iid) or add_map.get(k)
         if kind:
-            lbl = {"MAT": "재료", "SEC": "단면", "ST": "지점 타입", "CASE": "하중케이스", "CO": "하중조합"}[kind]
+            lbl = {"MAT": "재료", "SEC": "단면", "ST": "지점 타입", "CASE": "하중케이스",
+                   "CO": "하중조합", "RL": "단부조건"}[kind]
             menu.add_command(label=f"＋ {lbl} 추가", command=lambda: self.tree_add(kind))
-        if k in ("MAT", "SEC", "ST", "CASE", "CO", "NL", "EL", "N", "E"):
+        if k in DRAG_KINDS:
+            need = DRAG_KINDS[k]
+            n_sel = len(self.sel_nodes if need == "node" else self.sel_elems)
+            what = "노드" if need == "node" else "부재"
+            menu.add_command(label=f"⇢ 선택한 {what} {n_sel}개에 적용",
+                             state="normal" if n_sel else "disabled",
+                             command=lambda: self.apply_tree_item(iid))
+        if k in ("MAT", "SEC", "ST", "CASE", "CO", "RL", "NL", "EL", "N", "E"):
             menu.add_command(label="✎ 편집", command=self.tree_edit)
         if k == "SEC":
             menu.add_command(label="새 부재 기본 단면으로", command=lambda: self._set_default("sec", int(iid[4:])))
@@ -364,7 +390,7 @@ class TreeTabMixin:
             menu.add_command(label="활성 하중케이스로", command=lambda: self.set_active_case(int(iid[5:])))
         if k == "SEC" or k == "MAT" or k == "ST":
             menu.add_command(label="사용 중인 부재/노드 선택", command=lambda: self._select_users(iid))
-        if k and not iid.startswith("G_") and k != "RL":
+        if k and not iid.startswith("G_") and k != "RLX":
             menu.add_separator()
             menu.add_command(label="🗑 삭제", command=self.tree_delete)
         if menu.index("end") is not None:
@@ -413,8 +439,12 @@ class TreeTabMixin:
             except tk.TclError:
                 pass
             text = self.tree.item(d["iid"], "text").split("(")[0].strip()
-            tgt = "부재" if DRAG_KINDS[d["kind"]] == "elem" else "노드"
-            tk.Label(tw, text=f"  {text}  →  {tgt}에 놓기  ", font=FONT_B, bg=ACC,
+            need = DRAG_KINDS[d["kind"]]
+            tgt = "부재" if need == "elem" else "노드"
+            n_sel = len(self.sel_elems if need == "elem" else self.sel_nodes)
+            hint = (f"선택 {tgt} {n_sel}개 (캔버스 아무 곳에 놓기)" if n_sel
+                    else f"{tgt}에 놓기")
+            tk.Label(tw, text=f"  {text}  →  {hint}  ", font=FONT_B, bg=ACC,
                      fg=WHI, padx=4, pady=3).pack()
             self.tree.config(cursor="hand2")
         if self._drag_win:
@@ -423,8 +453,11 @@ class TreeTabMixin:
         if tgt != self.drop_hover:
             self.drop_hover = tgt
             self.redraw()
-            if tgt:
+            if tgt and tgt[1] is not None:
                 self.st_info.config(text="놓으면 지정: " + self._describe(tgt))
+            elif tgt:
+                n = len(self.sel_nodes if tgt[0] == "node" else self.sel_elems)
+                self.st_info.config(text=f"놓으면 선택된 {'노드' if tgt[0] == 'node' else '부재'} {n}개에 지정")
         return "break"
 
     def _drop_target(self, xr, yr, kind):
@@ -435,9 +468,13 @@ class TreeTabMixin:
         cy = yr - self.canvas.winfo_rooty()
         if DRAG_KINDS[kind] == "node":
             n = self.hit_node(cx, cy, tol=16)
-            return ("node", n) if n is not None else None
+            if n is not None:
+                return ("node", n)
+            return ("node", None) if self.sel_nodes else None     # 빈 곳 → 선택 노드 전체
         el = self.hit_elem(cx, cy, tol=12)
-        return ("elem", el) if el is not None else None
+        if el is not None:
+            return ("elem", el)
+        return ("elem", None) if self.sel_elems else None          # 빈 곳 → 선택 부재 전체
 
     def _tree_release(self, e):
         d = self._drag
@@ -455,18 +492,33 @@ class TreeTabMixin:
             self.msg("놓을 위치에 부재/노드가 없습니다.", ORG)
             return
         kind, i = tgt
-        _, _, v = d["iid"].partition("_")
-        if kind == "node":
-            targets = sorted(self.sel_nodes) if i in self.sel_nodes else [i]
+        sel = self.sel_nodes if kind == "node" else self.sel_elems
+        targets = sorted(sel) if (i is None or i in sel) else [i]
+        self._apply_item(d["iid"], targets)
+
+    def apply_tree_item(self, iid):
+        """트리 항목(재료·단면·지점·단부조건)을 현재 선택에 적용"""
+        k = iid.partition("_")[0]
+        need = DRAG_KINDS.get(k)
+        if not need:
+            return
+        targets = sorted(self.sel_nodes if need == "node" else self.sel_elems)
+        if not targets:
+            self.msg(f"먼저 캔버스에서 {'노드' if need == 'node' else '부재'}를 선택하세요.", ORG)
+            return
+        self._apply_item(iid, targets)
+
+    def _apply_item(self, iid, targets):
+        k, _, v = iid.partition("_")
+        if DRAG_KINDS[k] == "node":
+            targets = [t for t in targets if t in self.model["nodes"]]
             self.assign_support(targets, int(v))
+        elif k == "SEC":
+            self.assign_elem(targets, sec=int(v))
+        elif k == "MAT":
+            self.assign_elem(targets, mat=int(v))
         else:
-            targets = sorted(self.sel_elems) if i in self.sel_elems else [i]
-            if d["kind"] == "SEC":
-                self.assign_elem(targets, sec=int(v))
-            elif d["kind"] == "MAT":
-                self.assign_elem(targets, mat=int(v))
-            else:
-                self.assign_release(targets, v)
+            self.assign_release(targets, int(v))
 
 
 # ── 표시 문자열 ─────────────────────────────────────────────
