@@ -29,7 +29,7 @@ SEC_DEFAULT = {"tn1": "3", "tn2": "0", "tb": "D22", "tb2": "D22", "bn1": "3", "b
                "sn": "0", "sb": "D13", "vl": "2", "vb": "D10", "vs": "0", "mn": "0", "mp": "100", "vu": "100", "tu": "0"}
 DEFAULTS = {"name": "B1", "type": TYPE_RECT, "b": "400", "h": "600", "cc": "40", "fck": "24", "fy": "400", "fys": "400",
             "phi_f": "0.85", "phi_v": "0.75", "expo": "그 외 환경 (κcr=210)", "n_sec": "1", "end3": END_DISC,
-            "opt_diff": "0", "n1max": "0"}
+            "opt_diff": "0", "n1max": "0", "splice": "전수이음"}
 for _k in (1, 2, 3):
     for _key, _v in SEC_DEFAULT.items():
         DEFAULTS[f"{_k}_{_key}"] = _v
@@ -82,7 +82,7 @@ def effective_bars(vals, k):
 
 
 def max_in_layer(vals, bar, vb):
-    """1단 최대 개수: 입력값(>0) 또는 순간격 max(25, db) 로 들어가는 개수"""
+    """1단 최대 개수: 입력값(>0) 또는 배근형태(전수·반수이음, 이음없음)로 한 단에 들어가는 개수"""
     try:
         n = int(float(vals.get("n1max", 0)))
     except (TypeError, ValueError):
@@ -94,12 +94,13 @@ def max_in_layer(vals, bar, vb):
     except (TypeError, ValueError):
         return 99
     db, ds = B.BARS.get(bar, B.BARS["D22"])[0], B.BARS.get(vb, B.BARS["D10"])[0]
-    clear = max(25.0, db)
-    return max(int((b - 2 * (cc + ds) + clear) // (db + clear)), 2)
+    splice = vals.get("splice") if vals.get("splice") in B.SPLICES else "전수이음"
+    return max(B.max_bars(b, cc, ds, db, splice), 2)
 
 
 def inputs_from_values(vals):
-    inp = {"name": str(vals.get("name", "")).strip(), "kcr": S.EXPOSURES.get(vals.get("expo"), 210.0)}
+    inp = {"name": str(vals.get("name", "")).strip(), "kcr": S.EXPOSURES.get(vals.get("expo"), 210.0),
+           "splice": vals.get("splice") if vals.get("splice") in B.SPLICES else "전수이음"}
     for k in ("b", "h", "cc", "fck", "fy", "fys", "phi_f", "phi_v"):
         inp[k] = _num(vals, k)
     n = n_sections(vals)
@@ -164,6 +165,11 @@ class BeamLiteWindow(MemberWindow):
         self._field(g, 0, "휨 φf :", "phi_f", "", width=6)
         self._field(g, 1, "전단 φv :", "phi_v", "", width=6)
         self._field(g, 2, "노출 :", "expo", "", widget=self._cmb(g, "expo", list(S.EXPOSURES), 13, "readonly"))
+        g = self._group(row, "배근형태")
+        g.pack(side="left", fill="y", padx=(8, 0))
+        self._cmb(g, "splice", list(B.SPLICES), 8, "readonly").grid(row=0, column=0, sticky="w")
+        self.lbl_nmax = self._lbl(g, "", fg=T.MUTED, justify="left")
+        self.lbl_nmax.grid(row=1, column=0, sticky="w", pady=(4, 0))
         # Simple / Detail 전환 (계산 버튼 옆)
         self.detail = False
         self.btn_detail = tk.Button(self.top_bar, text="Detail ▸", command=self.toggle_detail, font=(T.FAM, 9, "bold"),
@@ -183,7 +189,7 @@ class BeamLiteWindow(MemberWindow):
                        offvalue="0", font=self.f_b, bg=T.SURFACE, fg=T.NAVY, command=self._on_opt).pack(side="left")
         self._lbl(opt, "   1단 주근 최대").pack(side="left")
         self._ent(opt, "n1max", 3).pack(side="left", padx=3)
-        self._lbl(opt, "개 (0=자동, + 버튼이 넘으면 2단)", fg=T.MUTED).pack(side="left")
+        self._lbl(opt, "개 (0 = 배근형태로 자동, 넘으면 2단)", fg=T.MUTED).pack(side="left")
         tip = tk.Frame(p, bg=T.SURFACE)
         tip.pack(fill="x", padx=10)
         self._lbl(tip, "방향키로 칸 이동 · 콤보는 Space 로 목록 · 3단면 마지막 머리글 클릭 = 연속/불연속 전환",
@@ -194,7 +200,7 @@ class BeamLiteWindow(MemberWindow):
         self.lbl_why = tk.Label(p, text="", font=self.f_s, bg=T.SURFACE, fg=NGC, justify="left", anchor="nw")
         self.lbl_why.pack(anchor="nw", fill="x", padx=12, pady=(0, 6))
 
-        for k in ("b", "h", "cc", "fck", "fy", "fys", "phi_f", "phi_v", "expo"):
+        for k in ("b", "h", "cc", "fck", "fy", "fys", "phi_f", "phi_v", "expo", "splice", "n1max"):
             self.v[k].trace_add("write", lambda *_: self._auto())
         for k in range(1, 4):
             for key in SEC_KEYS:
@@ -519,6 +525,18 @@ class BeamLiteWindow(MemberWindow):
             return
         b, h = res["b"], res["h"]
         self._why = {}
+        try:
+            vals = self.current_values()
+            parts = []
+            for k in range(1, len(res["sections"]) + 1):
+                tb, _, bb, _ = effective_bars(vals, k)
+                for bar in dict.fromkeys((tb, bb)):
+                    t = f"{bar}:{max_in_layer(vals, bar, vals.get(f'{k}_vb', 'D10'))}"
+                    if t not in parts:
+                        parts.append(t)
+            self.lbl_nmax.config(text="1단 최대\n" + "  ".join(parts[:3]))
+        except (tk.TclError, AttributeError):
+            pass
         for k, s in enumerate(res["sections"], 1):
             sec, sh = s["sec"], s["shear"]
             flex = {f["positive"]: f for f in s["flex"]}
@@ -548,7 +566,7 @@ class BeamLiteWindow(MemberWindow):
                 as_ = sum(l_[2] for l_ in lay)
                 yc = sum(l_[1] * l_[2] for l_ in lay) / as_
                 d = (h - yc) if upper else yc
-                fit = not any(w.startswith("상부" if upper else "하부") and "순간격" in w for w in s["warn"])
+                fit = not any(w.startswith("상부" if upper else "하부") and "한 단 최대" in w for w in s["warn"])
                 self._set(k, side, f"{'OK' if fit else 'NG'}({as_ / (b * d) * 100:.3f}%)", fit)
             self._set(k, "side", f"{2 * sec['sn'] * B.BARS[sec['sb']][1]:.0f} mm²" if sec["sn"] else "", None)
             # 주철근 간격 (인장측 1단)

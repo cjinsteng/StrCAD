@@ -109,6 +109,27 @@ def analyze(layers, b, h, fck, fy, positive, pf):
             "eps_min": S.strain_limits(fy)[2], "eps_lim": S.strain_limits(fy)[1]}
 
 
+SPLICES = {"전수이음": 1.0, "반수이음": 0.5, "이음없음": 0.0}      # 같은 단면에서 겹침이음되는 철근 비율
+
+
+def layer_width(n, db, splice):
+    """한 단에 n 개를 놓는 데 필요한 폭 [mm] — 겹침이음 철근은 옆에 나란히(접촉이음) 놓인다고 보고
+    철근 폭 n·db + 이음 철근 폭 ceil(n·비율)·db + 순간격 (n-1)·max(25, db)"""
+    if n <= 0:
+        return 0.0
+    n_sp = math.ceil(n * SPLICES.get(splice, 1.0) - 1e-9)
+    return n * db + n_sp * db + (n - 1) * max(25.0, db)
+
+
+def max_bars(b, cc, ds, db, splice):
+    """한 단 최대 철근 개수"""
+    avail = b - 2.0 * (cc + ds)
+    n = 1
+    while n < 60 and layer_width(n + 1, db, splice) <= avail + 1e-6:
+        n += 1
+    return n
+
+
 def bar_spacing(n, db, b, cc, ds):
     """1단 철근 중심간격 · 순간격"""
     if n < 2:
@@ -132,13 +153,16 @@ def check_section(sec, label, com):
     as_bot = sum(a for t, _, a, _, _ in lay if t.startswith("bot"))
     res.update(as_top=as_top, as_bot=as_bot, rho_st=(as_top + as_bot) / (b * h))
 
-    # 철근 배치 (순간격)
+    # 철근 배치 (배근형태: 전수이음 / 반수이음 / 이음없음)
+    splice = com.get("splice", "전수이음")
+    avail = b - 2.0 * (cc + ds)
     for side, n, bar in (("상부", sec["tn1"], sec["tb"]), ("하부", sec["bn1"], sec["bb"]),
                          ("상부 2단", sec["tn2"], sec.get("tb2", sec["tb"])), ("하부 2단", sec["bn2"], sec.get("bb2", sec["bb"]))):
         db = BARS[bar][0]
-        _, clear = bar_spacing(n, db, b, cc, ds)
-        if clear is not None and clear < max(25.0, db) - 1e-6:
-            res["warn"].append(f"{side} {n:g}-{bar}: 순간격 {clear:.0f} mm < max(25, db) = {max(25.0, db):.0f} mm — 한 단에 들어가지 않습니다.")
+        need = layer_width(int(n), db, splice)
+        if n >= 2 and need > avail + 1e-6:
+            nmax = max_bars(b, cc, ds, db, splice)
+            res["warn"].append(f"{side} {n:g}-{bar}: {splice} 기준 필요 폭 {need:.0f} > {avail:.0f} mm — 한 단 최대 {nmax}개")
             res["ok"] = False
 
     # 휨 (Mu(-): 상부 인장, Mu(+): 하부 인장)
@@ -381,6 +405,8 @@ def build_report(r):
         "(중립축 아래로 내려간 압축측 2단 철근의 인장 기여는 무시).  측면철근은 휨 계산에서 제외(비틀림 Al 에만 반영)",
         "ρmax(복근) = 0.85·η·β1·fck/fy·εcu/(εcu+εt,min) + Σρ'·fs'/fy  (εt = εt,min 상태의 압축철근 응력)",
         "2단 철근은 1단과 순간격 max(25 mm, db) 로 배치.  스터럽 바깥면까지 순피복 Cc",
+        f"한 단 배근 폭: {r['inp'].get('splice', '전수이음')} 기준 — n·db + (이음 철근 수)·db + (n−1)·max(25, db)"
+        "  (겹침이음 철근은 나란히 접촉 배치로 가정)",
         "전단: KDS 14 20 22 식 (4.2-3),  ρw = 인장철근비(큰 휨모멘트 쪽),  Vu·d/Mu ≤ 1.0,  Mu = 0 이면 1.0",
         "스터럽: 간격 입력 0 = 소요 간격 자동(10 mm 단위 내림),  입력값이 있으면 그 간격으로 검토",
         "비틀림: θ = 45°,  Ao = 0.85·Aoh,  횡방향 소요량은 (Av + 2At)/s 로 전단과 합산",
@@ -398,6 +424,7 @@ def build_simple(r):
     rep.t(f"B × H = {r['b']:g} × {r['h']:g} mm,   Cc = {r['cc']:g} mm", 1)
     rep.t(f"φf = {r['phi_f']:.2f},  φv = {r['phi_v']:.2f},  κcr = {r['kcr']:g}", 1)
     rep.t("휨 해석 :  복근보 (변형률 적합, 압축철근 고려)", 1)
+    rep.t("배근형태 :  " + r["inp"].get("splice", "전수이음") + "  (한 단 철근 개수 기준)", 1)
     rep.t("단면 :  " + " · ".join(s["label"] for s in r["sections"]), 1)
 
     secs = r["sections"]
