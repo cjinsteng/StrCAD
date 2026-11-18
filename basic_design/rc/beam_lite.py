@@ -5,8 +5,11 @@ RC Beam — Lite : 직사각형 보 단면 검토 창
   · 단면 1~3개: 전단면 / 단부·중앙부 / 연속단부·중앙부·불연속단부(머리글 클릭 → 연속단부로 전환)
   · 입력 표: 단면별 열에 모멘트·전단·비틀림·상하부 배근(1·2단)·측면철근·띠철근을 입력하면
              옆 칸에 OK/NG(비율)가 바로 표시된다
-  · 옵션: 배근 열(단)마다 다른 철근 사용 / 상-하부 동일 철근 적용
-  · 배근 복사: 그대로 복사(단부 복사) / 상·하부 바꿔 복사
+  · 철근 직경: 기본은 한 단면의 주근이 모두 같은 직경, '다른 철근 사용' 체크 시 단마다 따로
+  · 주근 개수: 숫자 입력 또는 +/− 버튼 (1단 개수 제한을 넘으면 2단으로)
+  · 방향키로 입력칸 이동
+  · 배근 복사: 상·하부 배근 변경 / 단부 배근 복사
+  · 결과: Simple(표, 기본) / Detail(풀이)
   (부재 목록 · 저장 · A4 출력은 공통 틀 member_app.MemberWindow)
 """
 import tkinter as tk
@@ -26,7 +29,7 @@ SEC_DEFAULT = {"tn1": "3", "tn2": "0", "tb": "D22", "tb2": "D22", "bn1": "3", "b
                "sn": "0", "sb": "D13", "vl": "2", "vb": "D10", "vs": "0", "mn": "0", "mp": "100", "vu": "100", "tu": "0"}
 DEFAULTS = {"name": "B1", "type": TYPE_RECT, "b": "400", "h": "600", "cc": "40", "fck": "24", "fy": "400", "fys": "400",
             "phi_f": "0.85", "phi_v": "0.75", "expo": "그 외 환경 (κcr=210)", "n_sec": "1", "end3": END_DISC,
-            "opt_diff": "0", "opt_same": "0"}
+            "opt_diff": "0", "n1max": "0"}
 for _k in (1, 2, 3):
     for _key, _v in SEC_DEFAULT.items():
         DEFAULTS[f"{_k}_{_key}"] = _v
@@ -69,17 +72,30 @@ def sec_labels(vals):
 
 
 def effective_bars(vals, k):
-    """옵션을 반영한 실제 철근 (tb, tb2, bb, bb2)"""
-    diff = str(vals.get("opt_diff", "0")) == "1"
-    same = str(vals.get("opt_same", "0")) == "1"
-
+    """옵션을 반영한 실제 철근 (tb, tb2, bb, bb2) — 기본: 모두 상부 1단 직경, '다른 철근 사용' 이면 각각"""
     def g(key):
         return vals.get(f"{k}_{key}", SEC_DEFAULT[key])
+    if str(vals.get("opt_diff", "0")) == "1":
+        return g("tb"), g("tb2"), g("bb"), g("bb2")
     tb = g("tb")
-    tb2 = g("tb2") if diff else tb
-    bb = tb if same else g("bb")
-    bb2 = (tb2 if same else g("bb2")) if diff else bb
-    return tb, tb2, bb, bb2
+    return tb, tb, tb, tb
+
+
+def max_in_layer(vals, bar, vb):
+    """1단 최대 개수: 입력값(>0) 또는 순간격 max(25, db) 로 들어가는 개수"""
+    try:
+        n = int(float(vals.get("n1max", 0)))
+    except (TypeError, ValueError):
+        n = 0
+    if n > 0:
+        return n
+    try:
+        b, cc = float(vals.get("b")), float(vals.get("cc"))
+    except (TypeError, ValueError):
+        return 99
+    db, ds = B.BARS.get(bar, B.BARS["D22"])[0], B.BARS.get(vb, B.BARS["D10"])[0]
+    clear = max(25.0, db)
+    return max(int((b - 2 * (cc + ds) + clear) // (db + clear)), 2)
 
 
 def inputs_from_values(vals):
@@ -118,8 +134,8 @@ class BeamLiteWindow(MemberWindow):
     FOOTER = "StrCAD  ·  Basic Design  │  RC Beam Lite"
     DEFAULTS = DEFAULTS
     InputError = B.BeamInputError
-    INPUT_WIDTH = 660
-    WIN_SIZE = "1860x950"
+    INPUT_WIDTH = 610
+    WIN_SIZE = "1800x950"
 
     # ── 입력 패널 ────────────────────────────────────────────
     def build_inputs(self, p):
@@ -147,7 +163,12 @@ class BeamLiteWindow(MemberWindow):
         g.pack(side="left", fill="y", padx=(8, 0))
         self._field(g, 0, "휨 φf :", "phi_f", "", width=6)
         self._field(g, 1, "전단 φv :", "phi_v", "", width=6)
-        self._field(g, 2, "노출 :", "expo", "", widget=self._cmb(g, "expo", list(S.EXPOSURES), 17, "readonly"))
+        self._field(g, 2, "노출 :", "expo", "", widget=self._cmb(g, "expo", list(S.EXPOSURES), 13, "readonly"))
+        # Simple / Detail 전환 (계산 버튼 옆)
+        self.detail = False
+        self.btn_detail = tk.Button(self.top_bar, text="Detail ▸", command=self.toggle_detail, font=(T.FAM, 9, "bold"),
+                                    bg="white", fg=T.NAVY, relief="groove", cursor="hand2", padx=10, pady=6)
+        self.btn_detail.pack(side="right", padx=(0, 6))
 
         g = self._group(p, "단면 구성")
         g.pack(fill="x", padx=10, pady=2)
@@ -158,13 +179,18 @@ class BeamLiteWindow(MemberWindow):
 
         opt = tk.Frame(p, bg=T.SURFACE)
         opt.pack(fill="x", padx=10, pady=(4, 0))
-        for key, txt in (("opt_diff", "배근 열마다 다른 철근 사용"), ("opt_same", "상-하부 동일 철근 적용")):
-            tk.Checkbutton(opt, text=txt, variable=self.v[key], onvalue="1", offvalue="0", font=self.f_b, bg=T.SURFACE,
-                           fg=T.NAVY, command=self._on_opt).pack(side="left", padx=(0, 12))
-        self._lbl(opt, "※ 3단면: 마지막 머리글 클릭 → 연속/불연속 전환", fg=T.MUTED).pack(side="right")
+        tk.Checkbutton(opt, text="다른 철근 사용 (단마다 직경 지정)", variable=self.v["opt_diff"], onvalue="1",
+                       offvalue="0", font=self.f_b, bg=T.SURFACE, fg=T.NAVY, command=self._on_opt).pack(side="left")
+        self._lbl(opt, "   1단 주근 최대").pack(side="left")
+        self._ent(opt, "n1max", 3).pack(side="left", padx=3)
+        self._lbl(opt, "개 (0=자동, + 버튼이 넘으면 2단)", fg=T.MUTED).pack(side="left")
+        tip = tk.Frame(p, bg=T.SURFACE)
+        tip.pack(fill="x", padx=10)
+        self._lbl(tip, "방향키로 칸 이동 · 콤보는 Space 로 목록 · 3단면 마지막 머리글 클릭 = 연속/불연속 전환",
+                  fg=T.MUTED).pack(side="left")
 
-        self.g_grid = tk.Frame(p, bg=LINE)               # 1px 간격 = 표 선
-        self.g_grid.pack(fill="x", padx=10, pady=4)
+        self.g_grid = tk.Frame(p, bg=LINE)               # 1px 간격 = 표 선 (단면 열 폭 고정)
+        self.g_grid.pack(anchor="nw", padx=10, pady=4)
 
         for k in ("b", "h", "cc", "fck", "fy", "fys", "phi_f", "phi_v", "expo"):
             self.v[k].trace_add("write", lambda *_: self._auto())
@@ -190,16 +216,63 @@ class BeamLiteWindow(MemberWindow):
 
     # ── 입력 표 ──────────────────────────────────────────────
     def _cell(self, r, c, widget_fn=None, text="", cs=1, rs=1, bg=CELL, fg=T.INK, font=None, anchor="center", w=None):
-        """표 칸 하나 (1px 간격으로 선 표현)"""
+        """표 칸 하나 (1px 간격으로 선 표현).  입력 위젯은 방향키 이동 목록에 등록"""
         fr = tk.Frame(self.g_grid, bg=bg)
         fr.grid(row=r, column=c, columnspan=cs, rowspan=rs, sticky="nsew", padx=(0, 1), pady=(0, 1))
         if widget_fn is not None:
             wdg = widget_fn(fr)
             wdg.pack(fill="both", expand=True, padx=1, pady=1)
+            nav = getattr(wdg, "nav_target", wdg)
+            if isinstance(nav, (tk.Entry, ttk.Combobox)):
+                self.nav[(r, c)] = nav
+                self.nav_span[(r, c)] = cs
+                nav.bind("<Up>", lambda e, p=(r, c): self._nav(p, 0, -1, e))
+                nav.bind("<Down>", lambda e, p=(r, c): self._nav(p, 0, 1, e))
+                nav.bind("<Left>", lambda e, p=(r, c): self._nav(p, -1, 0, e))
+                nav.bind("<Right>", lambda e, p=(r, c): self._nav(p, 1, 0, e))
             return wdg
         lb = tk.Label(fr, text=text, bg=bg, fg=fg, font=font or self.f_s, anchor=anchor, width=w)
         lb.pack(fill="both", expand=True, padx=2, pady=1)
         return lb
+
+    def _nav(self, pos, dx, dy, e):
+        """방향키로 다음 입력칸으로 (Entry 의 ←/→ 는 커서가 끝에 있거나 전체 선택일 때만)"""
+        w = e.widget
+        if isinstance(w, tk.Entry) and not isinstance(w, ttk.Combobox) and dx:
+            try:
+                sel = w.selection_present()
+                i, n = w.index("insert"), len(w.get())
+            except tk.TclError:
+                sel, i, n = True, 0, 0
+            if not sel and ((dx < 0 and i > 0) or (dx > 0 and i < n)):
+                return None
+        r0, c0 = pos
+        a0, b0 = c0, c0 + self.nav_span.get(pos, 1) - 1          # 현재 칸이 차지하는 열 범위
+
+        def gap(c, cs):
+            a, b_ = c, c + cs - 1
+            return max(a - b0, a0 - b_, 0)
+        cands = []
+        for (r, c), wd in self.nav.items():
+            try:
+                if not wd.winfo_exists() or str(wd.cget("state")) == "disabled":
+                    continue
+            except tk.TclError:
+                continue
+            cs = self.nav_span.get((r, c), 1)
+            if dx and r == r0 and (c - c0) * dx > 0:
+                cands.append((abs(c - c0), 0, wd))
+            elif dy and (r - r0) * dy > 0:
+                cands.append((gap(c, cs), abs(r - r0), wd))
+        if not cands:
+            return "break"
+        cands.sort(key=lambda t: (t[0], t[1]) if dx else (t[0] > 1, t[1], t[0]))
+        nxt = cands[0][2]
+        nxt.focus_set()
+        if isinstance(nxt, tk.Entry) and not isinstance(nxt, ttk.Combobox):
+            nxt.select_range(0, "end")
+            nxt.icursor("end")
+        return "break"
 
     def _e(self, key, width, just="right"):
         def make(parent):
@@ -211,111 +284,139 @@ class BeamLiteWindow(MemberWindow):
 
     def _c(self, key, values, width):
         def make(parent):
-            return ttk.Combobox(parent, textvariable=self.v[key], values=values, width=width, state="readonly",
-                                font=self.f_s)
+            c = ttk.Combobox(parent, textvariable=self.v[key], values=values, width=width, state="readonly",
+                             font=self.f_s)
+            c.bind("<Alt-Down>", lambda _: c.tk.call("ttk::combobox::Post", c))
+            c.bind("<space>", lambda _: c.tk.call("ttk::combobox::Post", c))
+            return c
         return make
+
+    def _pm(self, k, side, step):
+        """+/− 버튼: + 는 1단부터 채우고 제한을 넘으면 2단,  − 는 2단부터 뺀다"""
+        def make(parent):
+            return tk.Button(parent, text="+" if step > 0 else "−", font=(T.FAM, 8, "bold"), width=2, bd=0,
+                             relief="flat", bg="#E8EEF8" if step > 0 else "#F3F4F6", fg=T.NAVY, cursor="hand2",
+                             activebackground="#FDE7D0", padx=0, pady=0, takefocus=0,
+                             command=lambda: self.bar_step(k, side, step))
+        return make
+
+    def bar_step(self, k, side, step):
+        vals = self.current_values()
+        n1k, n2k = (f"{k}_tn1", f"{k}_tn2") if side == "top" else (f"{k}_bn1", f"{k}_bn2")
+        n1, n2 = int(_safe(vals[n1k])), int(_safe(vals[n2k]))
+        tb, tb2, bb, bb2 = effective_bars(vals, k)
+        lim = max_in_layer(vals, tb if side == "top" else bb, vals.get(f"{k}_vb", "D10"))
+        if step > 0:
+            if n1 < lim:
+                n1 += 1
+            elif n2 < lim:
+                n2 += 1
+        else:
+            if n2 > 0:
+                n2 -= 1
+            elif n1 > 0:
+                n1 -= 1
+        self._busy = True
+        try:
+            self.v[n1k].set(str(n1))
+            self.v[n2k].set(str(n2))
+        finally:
+            self._busy = False
+        self.calc(silent=True)
 
     def _build_grid(self):
         g = self.g_grid
         for w in g.winfo_children():
             w.destroy()
         self.res_lbl = {}
+        self.nav, self.nav_span = {}, {}
         vals = self.current_values()
         n = n_sections(vals)
         labels = sec_labels(vals)
         diff = vals.get("opt_diff") == "1"
-        same = vals.get("opt_same") == "1"
 
-        def base(k):                     # 열: 0 행이름, 1 단 번호, 단면마다 4열 (개수 | - | 철근 | 결과)
-            return 2 + (k - 1) * 4
-        for c in range(14):
-            g.grid_columnconfigure(c, weight=0)
-        for k in range(1, n + 1):
-            g.grid_columnconfigure(base(k) + 3, weight=1)
+        def base(k):                     # 열: 0 행이름, 1 단 번호, 단면마다 5열 (± | 개수 | - | 철근 | 결과)
+            return 2 + (k - 1) * 5
         r = 0
         self._cell(r, 0, text="", cs=2, bg=HEAD)
         for k in range(1, n + 1):
-            lbl = self._cell(r, base(k), text=labels[k - 1], cs=4, bg=HEAD, fg="white", font=self.f_sb)
+            lbl = self._cell(r, base(k), text=labels[k - 1], cs=5, bg=HEAD, fg="white", font=self.f_sb)
             if n == 3 and k == 3:
                 lbl.config(cursor="hand2", text=f"{labels[2]}  ⇄")
                 lbl.bind("<Button-1>", lambda _: self._toggle_end3())
         # 단면력 행
         r += 1
-        for key, title, unit in (("mn", "상부 모멘트", "kN·m"), ("mp", "하부 모멘트", "kN·m"), ("vu", "전단", "kN"),
-                                 ("tu", "비틀림", "kN·m")):
+        for key, title, unit in (("mn", "상부 M", "kN·m"), ("mp", "하부 M", "kN·m"), ("vu", "전단 V", "kN"),
+                                 ("tu", "비틀림 T", "kN·m")):
             self._cell(r, 0, text=f"{title} ({unit})", cs=2, bg=ROWH, anchor="w")
             for k in range(1, n + 1):
-                self._cell(r, base(k), self._e(f"{k}_{key}", 8), cs=3)
-                self.res_lbl[(k, key)] = self._cell(r, base(k) + 3, text="-", w=11)
+                self._cell(r, base(k), self._e(f"{k}_{key}", 6), cs=4)
+                self.res_lbl[(k, key)] = self._cell(r, base(k) + 4, text="-", w=9)
             r += 1
-        # 배근 행 (상부 1·2단, 하부 2·1단)
-        for side, rows in (("상부 배근", (("tn1", "tb", "1"), ("tn2", "tb2", "2"))),
-                           ("하부 배근", (("bn2", "bb2", "2"), ("bn1", "bb", "1")))):
+        # 배근 행 (상부 1·2단, 하부 2·1단) — + 는 위 줄, − 는 아래 줄
+        for side, key_side, rows in (("상부 배근", "top", (("tn1", "tb", "1"), ("tn2", "tb2", "2"))),
+                                     ("하부 배근", "bot", (("bn2", "bb2", "2"), ("bn1", "bb", "1")))):
             self._cell(r, 0, text=side, rs=2, bg=ROWH, anchor="w")
             for i, (nk, bk, no) in enumerate(rows):
                 self._cell(r + i, 1, text=no, bg=ROWH, w=2)
                 for k in range(1, n + 1):
-                    self._cell(r + i, base(k), self._e(f"{k}_{nk}", 3, "center"))
-                    self._cell(r + i, base(k) + 1, text="-", w=1)
-                    cmb = self._cell(r + i, base(k) + 2, self._c(f"{k}_{bk}", B.BAR_LIST, 4))
-                    if (bk in ("tb2", "bb2") and not diff) or (bk in ("bb", "bb2") and same):
+                    self._cell(r + i, base(k), self._pm(k, key_side, +1 if i == 0 else -1))
+                    self._cell(r + i, base(k) + 1, self._e(f"{k}_{nk}", 3, "center"))
+                    self._cell(r + i, base(k) + 2, text="-", w=1)
+                    cmb = self._cell(r + i, base(k) + 3, self._c(f"{k}_{bk}", B.BAR_LIST, 4))
+                    if bk != "tb" and not diff:
                         cmb.config(state="disabled")
             for k in range(1, n + 1):
-                self.res_lbl[(k, "top" if side == "상부 배근" else "bot")] = self._cell(r, base(k) + 3, text="-", rs=2, w=11)
+                self.res_lbl[(k, key_side)] = self._cell(r, base(k) + 4, text="-", rs=2, w=9)
             r += 2
         # 측면철근
-        self._cell(r, 0, text="측면철근 (한쪽)", cs=2, bg=ROWH, anchor="w")
+        self._cell(r, 0, text="측면근(한쪽)", cs=2, bg=ROWH, anchor="w")
         for k in range(1, n + 1):
-            self._cell(r, base(k), self._e(f"{k}_sn", 3, "center"))
-            self._cell(r, base(k) + 1, text="-", w=1)
-            self._cell(r, base(k) + 2, self._c(f"{k}_sb", B.BAR_LIST, 4))
-            self.res_lbl[(k, "side")] = self._cell(r, base(k) + 3, text="", w=11)
+            self._cell(r, base(k), text="", w=2)
+            self._cell(r, base(k) + 1, self._e(f"{k}_sn", 3, "center"))
+            self._cell(r, base(k) + 2, text="-", w=1)
+            self._cell(r, base(k) + 3, self._c(f"{k}_sb", B.BAR_LIST, 4))
+            self.res_lbl[(k, "side")] = self._cell(r, base(k) + 4, text="", w=9)
         r += 1
         # 띠철근
-        self._cell(r, 0, text="띠철근 (mm)", cs=2, bg=ROWH, anchor="w")
+        self._cell(r, 0, text="띠철근 @0=자동", cs=2, bg=ROWH, anchor="w")
         for k in range(1, n + 1):
-            self._cell(r, base(k), self._e(f"{k}_vl", 3, "center"))
-            self._cell(r, base(k) + 1, text="-", w=1)
-            self._cell(r, base(k) + 2, self._c(f"{k}_vb", B.STIRRUP_LIST, 4))
+            self._cell(r, base(k), text="", w=2)
+            self._cell(r, base(k) + 1, self._e(f"{k}_vl", 3, "center"))
+            self._cell(r, base(k) + 2, text="-", w=1)
+            self._cell(r, base(k) + 3, self._c(f"{k}_vb", B.STIRRUP_LIST, 4))
 
             def stir(parent, kk=k):
                 f = tk.Frame(parent, bg=CELL)
                 tk.Label(f, text="@", font=self.f_s, bg=CELL, fg=T.INK).pack(side="left")
-                e = tk.Entry(f, textvariable=self.v[f"{kk}_vs"], width=6, font=self.f_s, fg=T.INPUT_FG, bg="white",
+                e = tk.Entry(f, textvariable=self.v[f"{kk}_vs"], width=5, font=self.f_s, fg=T.INPUT_FG, bg="white",
                              relief="flat", bd=0, justify="right", highlightthickness=0)
                 e.bind("<FocusIn>", lambda _: e.select_range(0, "end"))
                 e.pack(side="left", fill="x", expand=True)
-                tk.Label(f, text="(0=자동)", font=(T.FAM, 7), bg=CELL, fg=T.MUTED).pack(side="left")
+                f.nav_target = e
                 return f
-            self._cell(r, base(k) + 3, stir)
+            self._cell(r, base(k) + 4, stir)
         r += 1
         # 판정 행
-        for key, title in (("sp_main", "주철근 간격 (mm)"), ("sp_stir", "전단철근 간격 (mm)"), ("comment", "Comment")):
+        for key, title in (("sp_main", "주근 간격"), ("sp_stir", "띠철근 간격"), ("comment", "Comment")):
             self._cell(r, 0, text=title, cs=2, bg=ROWH, anchor="w")
             for k in range(1, n + 1):
-                self.res_lbl[(k, key)] = self._cell(r, base(k), text="-", cs=4,
+                self.res_lbl[(k, key)] = self._cell(r, base(k), text="-", cs=5,
                                                     bg="#F3F4F6" if key != "comment" else "#ECFDF5",
                                                     anchor="center" if key != "comment" else "w")
             r += 1
-        # 배근 복사
+        # 배근 복사: 상·하부 배근 변경 / 단부 배근 복사 (첫 단부는 변경만)
         self._cell(r, 0, text="배근 복사", cs=2, bg=ROWH, anchor="w")
         for k in range(1, n + 1):
-            def mb(parent, kk=k):
-                b = tk.Menubutton(parent, text="복사 ▾", font=self.f_s, bg="white", relief="flat", cursor="hand2",
-                                  activebackground="#FDE7D0")
-                m = tk.Menu(b, tearoff=0, font=self.f_n)
-                for j in range(1, n + 1):
-                    if j == kk:
-                        continue
-                    m.add_command(label=f"← {j}. {labels[j - 1]}  그대로 복사 (단부 복사)",
-                                  command=lambda jj=j: self.copy_rebar(jj, kk, False))
-                    m.add_command(label=f"← {j}. {labels[j - 1]}  상·하부 바꿔 복사",
-                                  command=lambda jj=j: self.copy_rebar(jj, kk, True))
-                    m.add_separator()
-                m.add_command(label="이 단면 상·하부 배근 바꾸기", command=lambda: self.copy_rebar(kk, kk, True))
-                b.config(menu=m)
-                return b
-            self._cell(r, base(k), mb, cs=4)
+            def btns(parent, kk=k):
+                f = tk.Frame(parent, bg=CELL)
+                tk.Button(f, text="상하부 변경", font=(T.FAM, 7), relief="groove", bg="white", cursor="hand2", padx=3,
+                          pady=0, takefocus=0, command=lambda: self.copy_rebar(kk, kk, True)).pack(side="left", padx=1)
+                if kk > 1:
+                    tk.Button(f, text="단부 복사", font=(T.FAM, 7), relief="groove", bg="white", cursor="hand2", padx=3,
+                              pady=0, takefocus=0, command=lambda: self.copy_rebar(1, kk, False)).pack(side="left", padx=1)
+                return f
+            self._cell(r, base(k), btns, cs=5)
         if self.result is not None:
             self.on_result(self.result)
 
@@ -342,6 +443,13 @@ class BeamLiteWindow(MemberWindow):
     def _on_opt(self):
         self._sync_bars()
         self._build_grid()
+        self.calc(silent=True)
+
+    def toggle_detail(self):
+        """결과 보기 전환: Simple(표) ⇄ Detail(풀이)"""
+        self.detail = not self.detail
+        self.btn_detail.config(text="◂ Simple" if self.detail else "Detail ▸",
+                               bg="#FDE7D0" if self.detail else "white")
         self.calc(silent=True)
 
     def _sync_bars(self):
@@ -463,11 +571,29 @@ class BeamLiteWindow(MemberWindow):
                 self._set(k, "sp_stir", f"S:{sec['vs']:g}({'OK' if sh['s_ok'] else 'NG'})   소요 @{sh['s_req']}", sh["s_ok"])
             else:
                 self._set(k, "sp_stir", f"S:{sh['s_req']} (자동)" + ("" if sh["need_av"] else "  보강 불필요"), True)
-            if s["warn"]:
-                w0 = s["warn"][0]
-                self._set(k, "comment", w0[:34] + ("…" if len(w0) > 34 else ""), False)
+            why = []
+            for f in s["flex"]:
+                side = "하부" if f["positive"] else "상부"
+                if f["none"]:
+                    why.append(f"{side} 철근 없음")
+                    continue
+                if not f["ok_str"]:
+                    why.append(f"{side} 휨강도")
+                if not f["ok_eps"]:
+                    why.append(f"{side} 과다배근")
+                if not f["min_ok"]:
+                    why.append(f"{side} 최소휨강도")
+                if not f["crack_ok"]:
+                    why.append(f"{side} 주근간격(균열)")
+            if not ok_v:
+                why.append("전단강도")
+            if sh.get("s_req") is not None and not sh["s_ok"]:
+                why.append("띠철근 간격")
+            if s["ok"]:
+                self._set(k, "comment", "O.K.", True)
             else:
-                self._set(k, "comment", "O.K." if s["ok"] else "N.G.", s["ok"])
+                txt = "N.G.: " + ", ".join(why) if why else (s["warn"][0] if s["warn"] else "N.G.")
+                self._set(k, "comment", txt[:40] + ("…" if len(txt) > 40 else ""), False)
 
     # ── 계산 ─────────────────────────────────────────────────
     def kind_text(self, vals):
@@ -482,6 +608,10 @@ class BeamLiteWindow(MemberWindow):
                 merged[f"{k}_bb2"] = merged[f"{k}_bb"]
         if merged["end3"] not in (END_DISC, END_CONT):
             merged["end3"] = END_DISC
+        if "opt_diff" not in vals:                   # 이전 파일: 단마다 직경이 다르면 '다른 철근 사용'
+            for k in range(1, 4):
+                if len({merged[f"{k}_{x}"] for x in ("tb", "tb2", "bb", "bb2")}) > 1:
+                    merged["opt_diff"] = "1"
         return merged
 
     def compute(self, vals):
@@ -490,7 +620,8 @@ class BeamLiteWindow(MemberWindow):
         bad = [s["label"] for s in res["sections"] if not s["ok"]]
         status = (f"{nm}  ·  {res['b']:g} × {res['h']:g} mm  ·  단면 {len(res['sections'])}개  ─  "
                   + ("설계 결과 O.K." if not bad else f"N.G. : {', '.join(bad)} — 계산서의 빨간 항목을 확인하세요."))
-        return {"report": B.build_report(res), "sketch": B.sketch(res), "box": B.sketch_box(res), "ok": res["ok"],
+        rep = B.build_report(res) if getattr(self, "detail", False) else B.build_simple(res)
+        return {"report": rep, "sketch": B.sketch(res), "box": B.sketch_box(res), "ok": res["ok"],
                 "status": status, "res": res}
 
 

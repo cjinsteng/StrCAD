@@ -145,14 +145,19 @@ class MemberWindow:
         except tk.TclError:
             pass
 
-        left = tk.Frame(main, bg=T.SURFACE, width=self.INPUT_WIDTH)
-        left.pack(side="left", fill="y")
-        left.pack_propagate(False)
-        tk.Frame(main, bg=T.LINE, width=1).pack(side="left", fill="y")
+        # 입력 | 계산서 — 경계를 끌어 입력창 폭 조절 (좁히면 입력창이 스크롤된다)
+        self.pane2 = pane2 = tk.PanedWindow(main, orient="horizontal", sashwidth=6, sashrelief="flat", bd=0,
+                                            bg=T.LINE, opaqueresize=True)
+        pane2.pack(fill="both", expand=True)
+        left = tk.Frame(pane2, bg=T.SURFACE)
+        right = tk.Frame(pane2, bg=T.PANEL)
+        pane2.add(left, minsize=300, width=self.INPUT_WIDTH)
+        pane2.add(right, minsize=360, stretch="always")
+        try:
+            pane2.paneconfigure(left, stretch="never")
+        except tk.TclError:
+            pass
         self._build_left_common(left)
-
-        right = tk.Frame(main, bg=T.PANEL)
-        right.pack(side="left", fill="both", expand=True)
         self.cv = cv = tk.Canvas(right, bg=T.PANEL, highlightthickness=0)
         vs = ttk.Scrollbar(right, orient="vertical", command=cv.yview)
         hs = ttk.Scrollbar(right, orient="horizontal", command=cv.xview)
@@ -179,10 +184,50 @@ class MemberWindow:
                       activebackground=T.ORANGE_D, activeforeground="white", relief="flat", cursor="hand2",
                       padx=20, pady=8)
         b.pack(side="right")
-        body = tk.Frame(p, bg=T.SURFACE)
-        body.pack(fill="both", expand=True)
+        self.top_bar = top
         tk.Label(p, text="Enter / F5 : 계산    Ctrl+S : 저장    Ctrl+O : 열기    Ctrl+P : 출력", font=(T.FAM, 8),
-                 bg=T.SURFACE, fg=T.MUTED).pack(side="bottom", pady=8)
+                 bg=T.SURFACE, fg=T.MUTED).pack(side="bottom", pady=6)
+        # 입력 영역: 창보다 크면 스크롤
+        box = tk.Frame(p, bg=T.SURFACE)
+        box.pack(fill="both", expand=True)
+        cv = tk.Canvas(box, bg=T.SURFACE, highlightthickness=0, bd=0)
+        vs = ttk.Scrollbar(box, orient="vertical", command=cv.yview)
+        hs = ttk.Scrollbar(box, orient="horizontal", command=cv.xview)
+        cv.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
+        body = tk.Frame(cv, bg=T.SURFACE)
+        win_id = cv.create_window(0, 0, window=body, anchor="nw")
+        self.in_cv, self._in_vs, self._in_hs = cv, vs, hs
+
+        def relayout(_=None):
+            cv.update_idletasks()
+            rw, rh = body.winfo_reqwidth(), body.winfo_reqheight()
+            cw, ch = max(cv.winfo_width(), 1), max(cv.winfo_height(), 1)
+            cv.itemconfigure(win_id, width=max(rw, cw), height=max(rh, ch))
+            cv.configure(scrollregion=(0, 0, max(rw, cw), max(rh, ch)))
+            for bar, need, side, fill in ((vs, rh > ch + 1, "right", "y"), (hs, rw > cw + 1, "bottom", "x")):
+                if need and not bar.winfo_ismapped():
+                    bar.pack(side=side, fill=fill, before=cv)
+                elif not need and bar.winfo_ismapped():
+                    bar.pack_forget()
+        cv.pack(side="left", fill="both", expand=True)
+        body.bind("<Configure>", relayout)
+        cv.bind("<Configure>", relayout)
+
+        def wheel(e, k=None):
+            if not vs.winfo_ismapped():
+                return
+            cv.yview_scroll(k if k is not None else (-1 if e.delta > 0 else 1), "units")
+
+        def bind_wheel(_):
+            cv.bind_all("<MouseWheel>", wheel)
+            cv.bind_all("<Button-4>", lambda e: wheel(e, -1))
+            cv.bind_all("<Button-5>", lambda e: wheel(e, 1))
+
+        def unbind_wheel(_):
+            for ev in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                cv.unbind_all(ev)
+        box.bind("<Enter>", bind_wheel)
+        box.bind("<Leave>", unbind_wheel)
         self.build_inputs(body)
 
     # ── 공용 위젯 도우미 ─────────────────────────────────────

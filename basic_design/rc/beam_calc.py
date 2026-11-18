@@ -159,6 +159,22 @@ def check_section(sec, label, com):
         f["ok"] = ok_eps and ok_str and min_ok and crack_ok
         res["flex"].append(f)
         res["ok"] &= f["ok"]
+    # 표시용: 양방향 강도·철근비 (모멘트가 0 이어도)
+    eta, beta1, ecu = S.stress_block(fck)
+    _, _, emin = S.strain_limits(fy)
+    rho_max = 0.85 * eta * beta1 * fck / fy * ecu / (ecu + emin)
+    res["cap"] = {}
+    for positive in (False, True):
+        an = analyze(lay, b, h, fck, fy, positive, pf)
+        if an is None:
+            res["cap"][positive] = None
+            continue
+        rn = 1.2 * mcr * 1e6 / (pf * b * an["d"] ** 2)
+        fc_ = 0.85 * eta * fck
+        disc = 1.0 - 2.0 * rn / fc_
+        rho_min = fc_ / fy * (1.0 - math.sqrt(disc)) if disc > 0 else float("nan")
+        res["cap"][positive] = dict(an, rho=an["as_t"] / (b * an["d"]), rho_max=rho_max, rho_min=rho_min,
+                                    beta1=beta1)
     # 표시용: 상·하부 1단 철근 중심간격 · 균열 최대간격
     fs = 2.0 / 3.0 * fy
     smax_c = min(375.0 * kcr / fs - 2.5 * (cc + ds), 300.0 * kcr / fs)
@@ -238,6 +254,7 @@ def check_section(sec, label, com):
         res["warn"].append("전단철근이 필요한데 스터럽 다리 수가 0 입니다.")
     else:
         s_calc = av / req_all
+        sh["s_strength"] = s_calc
         s_req = S._floor10(min(s_calc, s_max))
         sh["s_calc"] = s_calc
         sh["s_req"] = s_req if s_req >= 50 else None
@@ -360,6 +377,148 @@ def build_report(r):
         "비틀림: θ = 45°,  Ao = 0.85·Aoh,  횡방향 소요량은 (Av + 2At)/s 로 전단과 합산",
     ):
         rep.t("· " + n, 1, "dim")
+    return rep
+
+
+def build_simple(r):
+    """Simple Result — 표 위주 요약"""
+    rep = Report(f"RC Beam — {r['name']}")
+    rep.h("Design Conditions")
+    rep.t(f"Design Code  :  {DESIGN_CODE}", 1)
+    rep.t(f"fck = {r['fck']:g},  fy = {r['fy']:g},  fys = {r['fys']:g} N/mm²", 1)
+    rep.t(f"B × H = {r['b']:g} × {r['h']:g} mm,   Cc = {r['cc']:g} mm", 1)
+    rep.t(f"φf = {r['phi_f']:.2f},  φv = {r['phi_v']:.2f},  κcr = {r['kcr']:g}", 1)
+    rep.t("단면 :  " + " · ".join(s["label"] for s in r["sections"]), 1)
+
+    secs = r["sections"]
+    n = len(secs)
+    head = [["단면", "상부근", "하부근", "스터럽", "Mu/φMn", "Vu/φVn", "Check"]]
+    body = []
+    for s in secs:
+        sec, sh = s["sec"], s["shear"]
+        st = f"{sh['legs']}-{sec['vb']} @{sh['s_use']:g}" if sh.get("s_use") else "-"
+        body.append([(s["label"], "b"), _rebar_text(sec, True), _rebar_text(sec, False), st,
+                     (f"{s['ratio_m']:.3f}", "n" if s["ratio_m"] <= 1 else "ng"),
+                     (f"{s['ratio_v']:.3f}", "n" if s["ratio_v"] <= 1 else "ng"), ("O.K.", "ok") if s["ok"] else ("N.G.", "ng")])
+    rep.h("1. 설계 요약")
+    rep.table(head, body, [110, 120, 120, 160, 100, 100, 80], ["c", "c", "c", "c", "r", "r", "c"])
+
+    # 2. 휨모멘트 강도 검토
+    rep.h("2. 휨모멘트 강도 검토")
+    wl = 110
+    wc = min(110, (848 - wl) // (2 * n))
+    head = [["단면"] + sum([[s["label"], ""] for s in secs], []), ["위치"] + ["상부", "하부"] * n]
+    rows_def = []
+
+    def cell(s, positive, key):
+        c = s["cap"].get(positive)
+        f = next((f for f in s["flex"] if f["positive"] == positive and not f["none"]), None)
+        mu = s["sec"]["mp" if positive else "mn"]
+        if key == "beta1":
+            return f"{r['beta1']:.3f}"
+        if key in ("s", "smax"):
+            if f is None or f["s"] is None:
+                return "-"
+            if key == "s":
+                return (f"{f['s']:.0f}", "n" if f["crack_ok"] else "ng")
+            return f"{f['smax']:.0f}"
+        if c is None:
+            return "-" if key != "ratio" else (("NG", "ng") if mu > 0 else "-")
+        if key == "rho_max":
+            return f"{c['rho_max']:.4f}"
+        if key == "rho":
+            ok = c["rho"] <= c["rho_max"] + 1e-9
+            return (f"{c['rho']:.5f}", "n" if ok else "ng")
+        if key == "rho_min":
+            return "-" if c["rho_min"] != c["rho_min"] else f"{c['rho_min']:.5f}"
+        if key == "eps":
+            return (f"{c['eps_t']:.4f}", "n" if c["eps_t"] >= c["eps_min"] - 1e-9 else "ng")
+        if key == "phi":
+            return f"{c['phi']:.3f}"
+        if key == "phimn":
+            return f"{c['phi_mn']:.1f}"
+        if key == "mu":
+            return f"{mu:.1f}"
+        if key == "ratio":
+            ratio = mu / c["phi_mn"] if c["phi_mn"] > 0 else 0.0
+            ok = ratio <= 1.0 + 1e-9 and (f is None or (f["ok_eps"] and f["min_ok"]))
+            return (f"{ratio:.3f}", "ok" if ok else "ng")
+        return "-"
+    for key, lbl in (("beta1", "β1"), ("s", "s (mm)"), ("smax", "smax (mm)"), ("rho_max", "ρmax"), ("rho", "ρ"),
+                     ("rho_min", "ρmin (1.2Mcr)"), ("eps", "εt"), ("phi", "φ"), ("phimn", "φMn (kN·m)"),
+                     ("mu", "Mu (kN·m)"), ("ratio", "비율 Mu/φMn")):
+        rows_def.append([lbl] + sum([[cell(s, False, key), cell(s, True, key)] for s in secs], []))
+    rep.table(head, rows_def, [wl] + [wc] * (2 * n), ["c"] * (1 + 2 * n))
+
+    # 3. 전단 강도 검토
+    rep.h("3. 전단 강도 검토")
+    wc = min(180, (848 - wl) // n)
+    head = [["단면"] + [s["label"] for s in secs]]
+    rows_def = []
+
+    def scell(s, key):
+        sh, sec = s["shear"], s["sec"]
+        s_use = sh.get("s_use")
+        if key == "vu":
+            return f"{sh['vu']:.1f}"
+        if key == "phi":
+            return f"{r['phi_v']:.3f}"
+        if key == "pvc":
+            return f"{sh['phi_vc']:.1f}"
+        if key == "pvs":
+            return f"{r['phi_v'] * sh['vs_prov']:.1f}"
+        if key == "pvn":
+            return f"{sh['phi_vn']:.1f}"
+        if key == "ratio":
+            ok = sh["phi_vn"] + 1e-9 >= sh["vu"] and sh["ok"]
+            return (f"{s['ratio_v']:.3f}", "ok" if ok else "ng")
+        if key == "smax0":
+            return f"{min(sh['d'] / 2.0, 600.0):.0f}"
+        if key == "sreq":
+            v = sh.get("s_strength")
+            return "-" if not sh["need_av"] or v is None else f"{v:.0f}"
+        if key == "smax":
+            return f"{sh['s_max']:.0f}"
+        if key == "s":
+            return "-" if not s_use else f"{s_use:g}" + (" (자동)" if not sec["vs"] else "")
+        if key == "s_smax":
+            if not s_use:
+                return "-"
+            v = s_use / sh["s_max"]
+            return (f"{v:.3f}", "ok" if v <= 1 + 1e-9 else "ng")
+        if key == "s_sreq":
+            v = sh.get("s_strength")
+            if not s_use or not sh["need_av"] or not v:
+                return "-"
+            return (f"{s_use / v:.3f}", "ok" if s_use <= v + 1e-9 else "ng")
+        return "-"
+    for key, lbl in (("vu", "Vu (kN)"), ("phi", "φ"), ("pvc", "φVc (kN)"), ("pvs", "φVs (kN)"), ("pvn", "φVn (kN)"),
+                     ("ratio", "Vu / φVn"), ("smax0", "smax,0 (mm)  d/2·600"), ("sreq", "sreq (mm)  강도·최소"),
+                     ("smax", "smax (mm)"), ("s", "s (mm)"), ("s_smax", "s / smax"), ("s_sreq", "s / sreq")):
+        rows_def.append([lbl] + [scell(s, key) for s in secs])
+    rep.table(head, rows_def, [170] + [wc] * n, ["l"] + ["c"] * n)
+
+    tors = [s for s in secs if s["shear"]["tor"]]
+    if tors:
+        rep.h("4. 비틀림 검토")
+        head = [["단면", "Tu (kN·m)", "Tth (kN·m)", "판정", "At/s (mm²/mm)", "Al 소요 (mm²)", "단면 검토"]]
+        body = []
+        for s in tors:
+            t = s["shear"]["tor"]
+            if not t["need"]:
+                body.append([s["label"], f"{t['tu']:.2f}", f"{t['tth']:.2f}", ("무시", "ok"), "-", "-", "-"])
+            else:
+                body.append([s["label"], f"{t['tu']:.2f}", f"{t['tth']:.2f}", ("설계", "warn"), f"{t['at_s']:.3f}",
+                             (f"{t['al_req']:.0f}", "n" if t["al_side"] >= t["al_req"] else "warn"),
+                             ("O.K.", "ok") if t["sec_ok"] else ("N.G.", "ng")])
+        rep.table(head, body, [110, 100, 100, 80, 130, 130, 110], ["c"] * 7)
+
+    warns = [(s["label"], w) for s in secs for w in s["warn"]]
+    if warns:
+        rep.h("검토 사항")
+        for lbl, w in warns:
+            rep.t(f"※ [{lbl}] {w}", 1, "warn")
+    rep.t("· 풀이 과정은 [Detail] 을 누르면 볼 수 있습니다.", 1, "dim")
     return rep
 
 
