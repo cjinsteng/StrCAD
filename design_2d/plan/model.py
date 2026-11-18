@@ -365,9 +365,34 @@ def add_line(m, ni, nj, kind="none", sec=None, mat=None, name=""):
     return out
 
 
+def expand_poly(m, nodes):
+    """다각형 변 위에 놓인 기존 노드를 꼭짓점 목록에 끼워 넣는다.
+    (예: 모서리 4개로 만든 면의 변 중간에 보를 나누는 노드가 있는 경우)"""
+    out = []
+    n = len(nodes)
+    for i in range(n):
+        a, b = nodes[i], nodes[(i + 1) % n]
+        out.append(a)
+        pa, pb = m["nodes"][a], m["nodes"][b]
+        dx, dy = pb["x"] - pa["x"], pb["y"] - pa["y"]
+        L2 = dx * dx + dy * dy
+        if L2 < 1e-18:
+            continue
+        mids = []
+        for k, p in m["nodes"].items():
+            if k in (a, b) or k in nodes:
+                continue
+            t = ((p["x"] - pa["x"]) * dx + (p["y"] - pa["y"]) * dy) / L2
+            if 1e-9 < t < 1 - 1e-9:
+                if math.hypot(pa["x"] + t * dx - p["x"], pa["y"] + t * dy - p["y"]) < 1e-6:
+                    mids.append((t, k))
+        out += [k for _, k in sorted(mids)]
+    return out
+
+
 def add_area(m, nodes, kind="none", slab=None, name=""):
     """면 추가 (반시계 방향으로 정렬). 같은 꼭짓점 집합이 있으면 기존 id."""
-    nodes = [int(n) for n in nodes]
+    nodes = expand_poly(m, [int(n) for n in nodes])
     if len(nodes) < 3 or len(set(nodes)) != len(nodes):
         return None
     if poly_area(poly_xy(m, nodes)) < 0:
