@@ -39,11 +39,13 @@ def layers_of(sec, b, h, cc):
     """철근 층 목록 [(위치 'top1'|'top2'|'bot1'|'bot2', 상단에서 깊이 mm, 단면적 mm², 개수, 지름)]"""
     ds = BARS[sec["vb"]][0]
     out = []
-    for side, n1, n2, bar in (("top", sec["tn1"], sec["tn2"], sec["tb"]), ("bot", sec["bn1"], sec["bn2"], sec["bb"])):
-        db, ab = BARS[bar]
-        y1 = cc + ds + db / 2.0
-        y2 = y1 + db + max(25.0, db)                 # 2단: 순간격 max(25, db)
-        for tag, n, y in ((side + "1", n1, y1), (side + "2", n2, y2)):
+    for side, n1, n2, b1, b2 in (("top", sec["tn1"], sec["tn2"], sec["tb"], sec.get("tb2", sec["tb"])),
+                                 ("bot", sec["bn1"], sec["bn2"], sec["bb"], sec.get("bb2", sec["bb"]))):
+        d1, a1 = BARS[b1]
+        d2, a2 = BARS[b2]
+        y1 = cc + ds + d1 / 2.0
+        y2 = y1 + d1 / 2.0 + max(25.0, d1, d2) + d2 / 2.0      # 2단: 순간격 max(25, db)
+        for tag, n, y, db, ab in ((side + "1", n1, y1, d1, a1), (side + "2", n2, y2, d2, a2)):
             if n > 0:
                 out.append((tag, y if side == "top" else h - y, n * ab, n, db))
     return out
@@ -122,7 +124,7 @@ def check_section(sec, label, com):
 
     # 철근 배치 (순간격)
     for side, n, bar in (("상부", sec["tn1"], sec["tb"]), ("하부", sec["bn1"], sec["bb"]),
-                         ("상부 2단", sec["tn2"], sec["tb"]), ("하부 2단", sec["bn2"], sec["bb"])):
+                         ("상부 2단", sec["tn2"], sec.get("tb2", sec["tb"])), ("하부 2단", sec["bn2"], sec.get("bb2", sec["bb"]))):
         db = BARS[bar][0]
         _, clear = bar_spacing(n, db, b, cc, ds)
         if clear is not None and clear < max(25.0, db) - 1e-6:
@@ -157,6 +159,11 @@ def check_section(sec, label, com):
         f["ok"] = ok_eps and ok_str and min_ok and crack_ok
         res["flex"].append(f)
         res["ok"] &= f["ok"]
+    # 표시용: 상·하부 1단 철근 중심간격 · 균열 최대간격
+    fs = 2.0 / 3.0 * fy
+    smax_c = min(375.0 * kcr / fs - 2.5 * (cc + ds), 300.0 * kcr / fs)
+    res["spacing"] = {"top": bar_spacing(sec["tn1"], BARS[sec["tb"]][0], b, cc, ds)[0],
+                      "bot": bar_spacing(sec["bn1"], BARS[sec["bb"]][0], b, cc, ds)[0], "smax": smax_c}
 
     # 전단 · 비틀림
     vu, tu = sec["vu"], sec["tu"]
@@ -274,7 +281,7 @@ def calc_beam(inp):
     secs = inp["sections"]
     if not 1 <= len(secs) <= 3:
         raise BeamInputError("단면은 1 ~ 3개입니다.")
-    labels = SEC_LABELS[len(secs)]
+    labels = inp.get("labels") or SEC_LABELS[len(secs)]
     out = []
     for lbl, sec in zip(labels, secs):
         for k in ("tn1", "tn2", "bn1", "bn2", "sn", "vl"):
@@ -287,6 +294,9 @@ def calc_beam(inp):
         for k in ("mn", "mp", "vu", "tu", "vs"):
             if sec[k] < 0:
                 raise BeamInputError(f"[{lbl}] 단면력·간격은 0 이상으로 입력하세요 (Mu(-), Mu(+) 는 크기).")
+        for k in ("tb", "bb", "tb2", "bb2", "sb", "vb"):
+            if sec.get(k, "D10") not in BARS:
+                raise BeamInputError(f"[{lbl}] 철근 '{sec.get(k)}' 을(를) 알 수 없습니다.")
         need = cc + BARS[sec["vb"]][0] + BARS[sec["tb"]][0] + BARS[sec["bb"]][0] + cc
         if h <= need + 20 or b <= 2 * (cc + BARS[sec["vb"]][0]) + 20:
             raise BeamInputError(f"[{lbl}] 단면에 비해 피복·철근이 너무 큽니다.")
@@ -303,10 +313,15 @@ def _okng(ok):
 
 
 def _rebar_text(sec, upper):
-    n1, n2, bar = (sec["tn1"], sec["tn2"], sec["tb"]) if upper else (sec["bn1"], sec["bn2"], sec["bb"])
+    if upper:
+        n1, n2, b1, b2 = sec["tn1"], sec["tn2"], sec["tb"], sec.get("tb2", sec["tb"])
+    else:
+        n1, n2, b1, b2 = sec["bn1"], sec["bn2"], sec["bb"], sec.get("bb2", sec["bb"])
     if n1 == 0:
         return "-"
-    return f"{n1:g}/{n2:g} - {bar}" if n2 else f"{n1:g} - {bar}"
+    if not n2:
+        return f"{n1:g} - {b1}"
+    return f"{n1:g}/{n2:g} - {b1}" if b1 == b2 else f"{n1:g}-{b1} + {n2:g}-{b2}"
 
 
 def build_report(r):
@@ -327,7 +342,7 @@ def build_report(r):
     body = []
     for s in r["sections"]:
         sec, sh = s["sec"], s["shear"]
-        st = f"{sh['legs']}-{sec['vb']} @{sh['s_use']}" if sh.get("s_use") else "-"
+        st = f"{sh['legs']}-{sec['vb']} @{sh['s_use']:g}" if sh.get("s_use") else "-"
         body.append([(s["label"], "b"), _rebar_text(sec, True), _rebar_text(sec, False), st,
                      (f"{s['ratio_m']:.3f}", "n" if s["ratio_m"] <= 1 else "ng"),
                      (f"{s['ratio_v']:.3f}", "n" if s["ratio_v"] <= 1 else "ng"), ("O.K.", "ok") if s["ok"] else ("N.G.", "ng")])
@@ -465,7 +480,7 @@ def _draw_section(cv, F, s, r, cx, top, w_max, h_max, dims):
     cv.create_text(cx, top - 12, text=s["label"], font=F["b"], fill=T.NAVY)
     sh = s["shear"]
     lines = [f"상 {_rebar_text(sec, True)}", f"하 {_rebar_text(sec, False)}",
-             f"St {sh['legs']}-{sec['vb']}" + (f"@{sh['s_use']}" if sh.get("s_use") else "")]
+             f"St {sh['legs']}-{sec['vb']}" + (f"@{sh['s_use']:g}" if sh.get("s_use") else "")]
     for k, ln in enumerate(lines):
         cv.create_text(cx, y0 + ph + 12 + k * 13, text=ln, font=F["s"], fill=T.INK if s["ok"] else T.NG)
     if dims:
