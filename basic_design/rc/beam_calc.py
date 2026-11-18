@@ -71,6 +71,8 @@ def analyze(layers, b, h, fck, fy, positive, pf):
         for tag, y, ar in lay:
             eps = ecu * (c - y) / c
             fs = max(-fy, min(fy, ES * eps))
+            if y < h / 2.0:
+                fs = max(fs, 0.0)                        # 압축측 철근은 압축철근으로만 (중립축 아래로 내려가도 인장 무시)
             if fs > 0 and y < a:
                 fs -= fc                                 # 철근 자리의 콘크리트 공제
             out.append((tag, y, ar * fs))
@@ -92,10 +94,18 @@ def analyze(layers, b, h, fck, fy, positive, pf):
     phi = S.phi_of(eps_t, fy, pf)
     ey = fy / ES
     cb = ecu / (ecu + ey) * dt
+    # 복근보 최대 철근비: ρmax = ρmax(단철근) + Σρ'·fs'/fy   (εt = εt,min 일 때의 압축철근 응력)
+    emin = S.strain_limits(fy)[2]
+    c_lim = ecu / (ecu + emin) * dt
+    comp = [(y, a_) for tag, y, a_ in lay if y < h / 2.0]
+    rho_c = sum(a_ for _, a_ in comp) / (b * d)
+    rho_ce = sum(a_ * max(0.0, min(fy, ES * ecu * (c_lim - y) / c_lim)) / fy for y, a_ in comp) / (b * d)
+    rho_max = 0.85 * eta * beta1 * fck / fy * ecu / (ecu + emin) * dt / d + rho_ce
     ts = sum(f for _, _, f in fl if f < 0)
     cs = sum(f for _, _, f in fl if f > 0)
     return {"c": c, "a": a, "cb": cb, "eps_t": eps_t, "phi": phi, "mn": mn / 1e6, "phi_mn": phi * mn / 1e6,
             "d": d, "dt": dt, "as_t": as_t, "cc": cf / 1000.0, "ts": ts / 1000.0, "cs": cs / 1000.0,
+            "rho_c": rho_c, "rho_max": rho_max,
             "eps_min": S.strain_limits(fy)[2], "eps_lim": S.strain_limits(fy)[1]}
 
 
@@ -161,8 +171,6 @@ def check_section(sec, label, com):
         res["ok"] &= f["ok"]
     # 표시용: 양방향 강도·철근비 (모멘트가 0 이어도)
     eta, beta1, ecu = S.stress_block(fck)
-    _, _, emin = S.strain_limits(fy)
-    rho_max = 0.85 * eta * beta1 * fck / fy * ecu / (ecu + emin)
     res["cap"] = {}
     for positive in (False, True):
         an = analyze(lay, b, h, fck, fy, positive, pf)
@@ -173,8 +181,7 @@ def check_section(sec, label, com):
         fc_ = 0.85 * eta * fck
         disc = 1.0 - 2.0 * rn / fc_
         rho_min = fc_ / fy * (1.0 - math.sqrt(disc)) if disc > 0 else float("nan")
-        res["cap"][positive] = dict(an, rho=an["as_t"] / (b * an["d"]), rho_max=rho_max, rho_min=rho_min,
-                                    beta1=beta1)
+        res["cap"][positive] = dict(an, rho=an["as_t"] / (b * an["d"]), rho_min=rho_min, beta1=beta1)
     # 표시용: 상·하부 1단 철근 중심간격 · 균열 최대간격
     fs = 2.0 / 3.0 * fy
     smax_c = min(375.0 * kcr / fs - 2.5 * (cc + ds), 300.0 * kcr / fs)
@@ -370,7 +377,9 @@ def build_report(r):
 
     rep.h("Notes")
     for n in (
-        "단면 해석: 변형률 적합(εcu, 등가직사각형 응력블록), 상·하부근 모두 고려.  측면철근은 휨 계산에서 제외(비틀림 Al 에만 반영)",
+        "휨: 복근보 해석 — 변형률 적합(εcu, 등가직사각형 응력블록), 압축측 철근은 압축철근으로만 고려"
+        "(중립축 아래로 내려간 압축측 2단 철근의 인장 기여는 무시).  측면철근은 휨 계산에서 제외(비틀림 Al 에만 반영)",
+        "ρmax(복근) = 0.85·η·β1·fck/fy·εcu/(εcu+εt,min) + Σρ'·fs'/fy  (εt = εt,min 상태의 압축철근 응력)",
         "2단 철근은 1단과 순간격 max(25 mm, db) 로 배치.  스터럽 바깥면까지 순피복 Cc",
         "전단: KDS 14 20 22 식 (4.2-3),  ρw = 인장철근비(큰 휨모멘트 쪽),  Vu·d/Mu ≤ 1.0,  Mu = 0 이면 1.0",
         "스터럽: 간격 입력 0 = 소요 간격 자동(10 mm 단위 내림),  입력값이 있으면 그 간격으로 검토",
@@ -388,6 +397,7 @@ def build_simple(r):
     rep.t(f"fck = {r['fck']:g},  fy = {r['fy']:g},  fys = {r['fys']:g} N/mm²", 1)
     rep.t(f"B × H = {r['b']:g} × {r['h']:g} mm,   Cc = {r['cc']:g} mm", 1)
     rep.t(f"φf = {r['phi_f']:.2f},  φv = {r['phi_v']:.2f},  κcr = {r['kcr']:g}", 1)
+    rep.t("휨 해석 :  복근보 (변형률 적합, 압축철근 고려)", 1)
     rep.t("단면 :  " + " · ".join(s["label"] for s in r["sections"]), 1)
 
     secs = r["sections"]
@@ -426,6 +436,8 @@ def build_simple(r):
             return "-" if key != "ratio" else (("NG", "ng") if mu > 0 else "-")
         if key == "rho_max":
             return f"{c['rho_max']:.4f}"
+        if key == "rho_c":
+            return f"{c['rho_c']:.5f}"
         if key == "rho":
             ok = c["rho"] <= c["rho_max"] + 1e-9
             return (f"{c['rho']:.5f}", "n" if ok else "ng")
@@ -444,7 +456,7 @@ def build_simple(r):
             ok = ratio <= 1.0 + 1e-9 and (f is None or (f["ok_eps"] and f["min_ok"]))
             return (f"{ratio:.3f}", "ok" if ok else "ng")
         return "-"
-    for key, lbl in (("beta1", "β1"), ("s", "s (mm)"), ("smax", "smax (mm)"), ("rho_max", "ρmax"), ("rho", "ρ"),
+    for key, lbl in (("beta1", "β1"), ("s", "s (mm)"), ("smax", "smax (mm)"), ("rho_max", "ρmax (복근)"), ("rho", "ρ"), ("rho_c", "ρ' (압축)"),
                      ("rho_min", "ρmin (1.2Mcr)"), ("eps", "εt"), ("phi", "φ"), ("phimn", "φMn (kN·m)"),
                      ("mu", "Mu (kN·m)"), ("ratio", "비율 Mu/φMn")):
         rows_def.append([lbl] + sum([[cell(s, False, key), cell(s, True, key)] for s in secs], []))
