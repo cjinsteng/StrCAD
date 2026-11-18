@@ -191,6 +191,8 @@ class BeamLiteWindow(MemberWindow):
 
         self.g_grid = tk.Frame(p, bg=LINE)               # 1px 간격 = 표 선 (단면 열 폭 고정)
         self.g_grid.pack(anchor="nw", padx=10, pady=4)
+        self.lbl_why = tk.Label(p, text="", font=self.f_s, bg=T.SURFACE, fg=NGC, justify="left", anchor="nw")
+        self.lbl_why.pack(anchor="nw", fill="x", padx=12, pady=(0, 6))
 
         for k in ("b", "h", "cc", "fck", "fy", "fys", "phi_f", "phi_v", "expo"):
             self.v[k].trace_add("write", lambda *_: self._auto())
@@ -397,13 +399,12 @@ class BeamLiteWindow(MemberWindow):
                 return f
             self._cell(r, base(k) + 4, stir)
         r += 1
-        # 판정 행
+        # 판정 행 — 칸은 짧게(폭 고정), 자세한 이유는 표 아래
         for key, title in (("sp_main", "주근 간격"), ("sp_stir", "띠철근 간격"), ("comment", "Comment")):
             self._cell(r, 0, text=title, cs=2, bg=ROWH, anchor="w")
             for k in range(1, n + 1):
-                self.res_lbl[(k, key)] = self._cell(r, base(k), text="-", cs=5,
-                                                    bg="#F3F4F6" if key != "comment" else "#ECFDF5",
-                                                    anchor="center" if key != "comment" else "w")
+                self.res_lbl[(k, key)] = self._cell(r, base(k), text="-", cs=5, w=1,
+                                                    bg="#F3F4F6" if key != "comment" else "#ECFDF5")
             r += 1
         # 배근 복사: 상·하부 배근 변경 / 단부 배근 복사 (첫 단부는 변경만)
         self._cell(r, 0, text="배근 복사", cs=2, bg=ROWH, anchor="w")
@@ -419,6 +420,7 @@ class BeamLiteWindow(MemberWindow):
             self._cell(r, base(k), btns, cs=5)
         if self.result is not None:
             self.on_result(self.result)
+        self.win.after(30, self.fit_input)
 
     # ── 동작 ─────────────────────────────────────────────────
     def copy_rebar(self, src, dst, swap):
@@ -513,8 +515,10 @@ class BeamLiteWindow(MemberWindow):
         if res is None:
             for (k, key) in list(self.res_lbl):
                 self._set(k, key, "입력 오류" if key == "comment" else "-", False if key == "comment" else None)
+            self.lbl_why.config(text="입력 오류 — 아래 상태줄의 내용을 확인하세요.")
             return
         b, h = res["b"], res["h"]
+        self._why = {}
         for k, s in enumerate(res["sections"], 1):
             sec, sh = s["sec"], s["shear"]
             flex = {f["positive"]: f for f in s["flex"]}
@@ -559,41 +563,55 @@ class BeamLiteWindow(MemberWindow):
                 else:
                     parts.append(f"{tag}:{f['s']:.0f}({'OK' if f['crack_ok'] else 'NG'})")
                     ok_all &= f["crack_ok"]
-            tail = f"   최대 {sp['smax']:.0f}"
+            tail = f"  ≤{sp['smax']:.0f}"
             if parts:
                 self._set(k, "sp_main", "  ".join(parts) + tail, ok_all)
             else:
                 self._set(k, "sp_main", "-", None)
             # 전단철근 간격
             if sh.get("s_req") is None:
-                self._set(k, "sp_stir", "S:배치 불가 (NG)", False)
+                self._set(k, "sp_stir", "S:배치불가(NG)", False)
             elif sec["vs"] > 0:
-                self._set(k, "sp_stir", f"S:{sec['vs']:g}({'OK' if sh['s_ok'] else 'NG'})   소요 @{sh['s_req']}", sh["s_ok"])
+                self._set(k, "sp_stir", f"S:{sec['vs']:g}({'OK' if sh['s_ok'] else 'NG'})  소요{sh['s_req']}", sh["s_ok"])
             else:
-                self._set(k, "sp_stir", f"S:{sh['s_req']} (자동)" + ("" if sh["need_av"] else "  보강 불필요"), True)
+                self._set(k, "sp_stir", f"S:{sh['s_req']}(자동)", True)
             why = []
             for f in s["flex"]:
                 side = "하부" if f["positive"] else "상부"
                 if f["none"]:
-                    why.append(f"{side} 철근 없음")
+                    why.append(f"{side} 인장철근이 없습니다")
                     continue
                 if not f["ok_str"]:
-                    why.append(f"{side} 휨강도")
+                    why.append(f"{side} 휨강도 부족 (Mu/φMn = {f['ratio']:.3f})")
                 if not f["ok_eps"]:
-                    why.append(f"{side} 과다배근")
+                    why.append(f"{side} 과다 배근 (εt = {f['eps_t']:.4f} < {f['eps_min']:.4f})")
                 if not f["min_ok"]:
-                    why.append(f"{side} 최소휨강도")
-                if not f["crack_ok"]:
-                    why.append(f"{side} 주근간격(균열)")
+                    why.append(f"{side} 최소 휨강도 미달 (φMn < 1.2Mcr, 4/3Mu)")
+                if not f["crack_ok"] and f["s"] is not None:
+                    why.append(f"{side} 주근 간격 {f['s']:.0f} > 균열제어 최대 {f['smax']:.0f} mm")
             if not ok_v:
-                why.append("전단강도")
-            if sh.get("s_req") is not None and not sh["s_ok"]:
-                why.append("띠철근 간격")
-            if s["ok"]:
-                self._set(k, "comment", "O.K.", True)
+                why.append(f"전단강도 부족 (Vu/φVn = {s['ratio_v']:.3f})")
+            for w in s["warn"]:
+                if w not in why and not any(x in w for x in ("휨강도", "과다")):
+                    why.append(w)
+            if why:
+                self._why[k] = (s["label"], why)
+                self._set(k, "comment", f"N.G. ({'①②③'[k - 1]} 아래 참조)" if not s["ok"] else f"주의 ({'①②③'[k - 1]})",
+                          False if not s["ok"] else None)
             else:
-                txt = "N.G.: " + ", ".join(why) if why else (s["warn"][0] if s["warn"] else "N.G.")
-                self._set(k, "comment", txt[:40] + ("…" if len(txt) > 40 else ""), False)
+                self._set(k, "comment", "O.K." if s["ok"] else "N.G.", s["ok"])
+        self._show_why()
+
+    def _show_why(self):
+        lines = []
+        for k in sorted(self._why):
+            lbl, items = self._why[k]
+            for i, w in enumerate(items):
+                lines.append(f"{'①②③'[k - 1] if i == 0 else '   '} [{lbl}] {w}")
+        try:
+            self.lbl_why.config(text="\n".join(lines), wraplength=max(self.g_grid.winfo_reqwidth(), 300))
+        except tk.TclError:
+            pass
 
     # ── 계산 ─────────────────────────────────────────────────
     def kind_text(self, vals):

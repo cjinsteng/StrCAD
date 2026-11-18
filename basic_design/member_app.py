@@ -75,6 +75,7 @@ class MemberWindow:
         self._update_title()
         self.after_load()
         self._refresh_list()
+        self.win.after(60, self.fit_input)
         win.lift()
         win.focus_force()
 
@@ -210,6 +211,8 @@ class MemberWindow:
                 elif not need and bar.winfo_ismapped():
                     bar.pack_forget()
         cv.pack(side="left", fill="both", expand=True)
+        self._in_body = body
+        self._relayout = relayout
         body.bind("<Configure>", relayout)
         cv.bind("<Configure>", relayout)
 
@@ -229,6 +232,20 @@ class MemberWindow:
         box.bind("<Enter>", bind_wheel)
         box.bind("<Leave>", unbind_wheel)
         self.build_inputs(body)
+
+    def fit_input(self, grow_only=True):
+        """입력 내용이 잘리지 않도록 입력창 폭을 맞춘다 (글꼴·화면 배율에 따라 실제 크기로)"""
+        try:
+            self.win.update_idletasks()
+            need = self._in_body.winfo_reqwidth() + 22
+            cur = self.in_cv.winfo_width() + (self._in_vs.winfo_width() if self._in_vs.winfo_ismapped() else 0)
+            limit = max(self.win.winfo_width() - self.pane.sash_coord(0)[0] - 420, 300)
+            target = min(need, limit)
+            if target > cur + 2 or (not grow_only and abs(target - cur) > 2):
+                x0 = self.pane2.winfo_rootx() - self.pane2.winfo_rootx()
+                self.pane2.sash_place(0, x0 + target, 1)
+        except tk.TclError:
+            pass
 
     # ── 공용 위젯 도우미 ─────────────────────────────────────
     def _group(self, parent, title):
@@ -477,6 +494,7 @@ class MemberWindow:
         self.members[self.cur]["ok"] = out["ok"]
         self._refresh_row()
         self._set_status(out["status"], ok=out["ok"])
+        self.win.after_idle(self._relayout)             # 입력 영역 내용 크기가 바뀌었으면 스크롤 다시 맞춤
         return res
 
     def _calc_all(self):
