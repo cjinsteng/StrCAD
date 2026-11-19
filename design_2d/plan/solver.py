@@ -313,8 +313,11 @@ def analyze(m):
             bb, hh = float(st.get("col_b", 500)) / 1000, float(st.get("col_h", 500)) / 1000
             H = max(float(st.get("col_H", 3.5)), 1e-3)
             n = int(st.get("col_n", 1) or 1)
-            krx += n * 4 * Ec * (bb * hh ** 3 / 12) / H     # X축 회전 → Y방향 휨
-            kry += n * 4 * Ec * (hh * bb ** 3 / 12) / H
+            if float(st.get("col_E", 0) or 0) > 0:
+                Ec = float(st["col_E"]) * 1e3                 # 직접 입력 E (MPa)
+            cf = float(st.get("col_factor", 4.0) or 4.0)      # 강성 계수 (원단 고정 4, Midas 'Scale Factor')
+            krx += n * cf * Ec * (bb * hh ** 3 / 12) / H     # X축 회전 → Y방향 휨
+            kry += n * cf * Ec * (hh * bb ** 3 / 12) / H
         spring[b + 2] += krx
         spring[b + 1] += kry
     if not fixed.any() and not spring.any():
