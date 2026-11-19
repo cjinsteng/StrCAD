@@ -775,12 +775,12 @@ def _selftest(out):
     try:
         import importlib
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_design"))
-        for m in ("accounts", "cad_analysis.app", "cad_analysis.licensing", "cad_analysis.licensing_ui", "design_2d", "basic_design", "basic_design.rc.slab_lite", "basic_design.rc.slab_table_app", "basic_design.rc.slab_pro_app", "basic_design.rc.beam_lite", "basic_design.rc.beam_pro",
+        for m in ("accounts", "cad_analysis.app", "cad_analysis.licensing", "cad_analysis.licensing_ui", "design_2d", "design_2d.section.panel", "design_2d.plan.panel", "basic_design", "basic_design.rc.slab_lite", "basic_design.rc.slab_table_app", "basic_design.rc.slab_pro_app", "basic_design.rc.beam_lite", "basic_design.rc.beam_pro",
                   "olefile", "docx", "hwp_reader", "docx_doc", "docx_table", "docx_pages", "hwp_to_word", "report_core", "report_assistant"):
             try: importlib.import_module(m); lines.append("OK " + m)
             except Exception as e: lines.append(f"FAIL {m} {e!r}")
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "autotable"))
-        for m in ("auto_table", "at_core.app", "at_core.dxf_read", "at_core.dxf_write", "at_core.table_io", "at_core.image_io", "openpyxl"):
+        for m in ("auto_table", "at_core.app", "at_core.dxf_read", "at_core.dxf_write", "at_core.table_io", "at_core.image_io", "at_core.design", "openpyxl"):
             try: importlib.import_module(m); lines.append("OK " + m)
             except Exception as e: lines.append(f"FAIL {m} {e!r}")
         try:
