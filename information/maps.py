@@ -394,9 +394,129 @@ def kds_to_ll(kind, x, y):
 
 
 def kds_inset_value(kind, lat, lon):
-    """울릉도·독도 인셋에 적힌 값 (기본풍속 46 m/s, 지상설하중 10 kN/㎡)."""
+    """울릉도·독도 인셋에 적힌 값 (기본풍속 46 m/s).  읽지 못한 값은 None."""
     m = kds_meta(kind)
     ins = _inset_of(lat, lon)
     if m and ins and ins in (m.get("insets") or {}):
-        return m["insets"][ins][2], f"{ins} (지도 인셋 표기값)"
+        v = m["insets"][ins][2]
+        if v is None:
+            return None, f"{ins} — 지도 인셋 값 확인 필요 (🗺 상세에서 입력)"
+        return v, f"{ins} (지도 인셋 표기값)"
     return None, ""
+
+
+# ─────────────────────────────────────────────────────────────
+#  내장 지도 값 — 직선보간 / 큰 값(인근 등치선 중 큰 값)
+#  data/kds_<kind>_interp.png, _max.png : 그림 픽셀마다 값 × 100 (16bit)
+#  등치선은 그림에서 따낸 선(kds_contours.json) — 선 사이는 거리비로 직선보간
+# ─────────────────────────────────────────────────────────────
+_FIELD = {}
+_CONTOURS = None
+
+
+def _field(kind, which):
+    key = (kind, which)
+    if key not in _FIELD:
+        p = PKG_DIR / f"kds_{kind}_{which}.png"
+        try:
+            from PIL import Image
+            im = Image.open(p)
+            im.load()
+            _FIELD[key] = im
+        except Exception:                            # noqa: BLE001
+            _FIELD[key] = None
+    return _FIELD[key]
+
+
+def kds_contours(kind):
+    """그림에서 따낸 등치선 [(값, [[x,y],...]), ...] — 지도 위 겹쳐 그리기용."""
+    global _CONTOURS
+    if _CONTOURS is None:
+        try:
+            _CONTOURS = json.loads((PKG_DIR / "kds_contours.json").read_text(encoding="utf-8"))
+        except Exception:                            # noqa: BLE001
+            _CONTOURS = {}
+    return _CONTOURS.get(kind) or []
+
+
+def _px_val(im, x, y, bilinear=True):
+    W, H = im.size
+    if not (0 <= x <= W - 1 and 0 <= y <= H - 1):
+        return None
+    if not bilinear:
+        return im.getpixel((int(round(x)), int(round(y)))) / 100.0
+    x0, y0 = int(x), int(y)
+    x1, y1 = min(x0 + 1, W - 1), min(y0 + 1, H - 1)
+    fx, fy = x - x0, y - y0
+    g = im.getpixel
+    v = (g((x0, y0)) * (1 - fx) * (1 - fy) + g((x1, y0)) * fx * (1 - fy) +
+         g((x0, y1)) * (1 - fx) * fy + g((x1, y1)) * fx * fy)
+    return v / 100.0
+
+
+def _ceil_level(v, step, base=0.0, tol=0.02):
+    k = math.floor((v - base) / step + 1e-9)
+    lo = base + k * step
+    return lo if abs(v - lo) <= tol else lo + step
+
+
+def kds_value(kind, lat, lon):
+    """
+    내장 KDS 지도 값.
+    반환 dict: interp(직선보간), max(인근 등치선 중 큰 값 / 올림), design(설계 적용값), note, src, approx
+      · wind : 그림 5.5-1 주2) "등풍속선 사이는 인근 등풍속선 중 큰 값" → design = max
+      · snow : 구역·등치선 → design = max (안전측)
+      · seismic : 등고선 사이 직선보간(design = interp), 큰 값 = 위 등고선(올림) 참고
+    """
+    out = {"kind": kind, "interp": None, "max": None, "design": None, "note": "", "src": "", "approx": True}
+    m = kds_meta(kind) or {}
+    iv, note = kds_inset_value(kind, lat, lon)
+    if _inset_of(lat, lon):
+        if iv is not None:
+            out.update(interp=iv, max=iv, design=iv, note=note, src="그림 인셋")
+        else:
+            out["note"] = note
+        return out
+    cap = KINDS[kind]["caption"]
+    if kind == "seismic":
+        v, how = lookup("seismic", lat, lon)
+        if v is None:
+            out["note"] = how
+            return out
+        hi = _ceil_level(v, m.get("step", 1))
+        out.update(interp=v, max=hi, design=v, src=f"{cap} 내장 격자",
+                   note=f"등고선 사이 직선보간 {v:.2f}%g · 위 등고선(올림) {hi:g}%g")
+        return out
+    pt = kds_to_px(kind, lat, lon)
+    fi, fm = _field(kind, "interp"), _field(kind, "max")
+    if not pt or fi is None or fm is None:
+        out["note"] = "내장 지도 값 없음"
+        return out
+    x, y, _ = pt
+    vi = _px_val(fi, x, y)
+    if vi is None:
+        out["note"] = "지도 범위 밖"
+        return out
+    W, H = fm.size
+    x0, y0 = int(x), int(y)
+    nb = [fm.getpixel((min(max(i, 0), W - 1), min(max(j, 0), H - 1))) / 100.0
+          for i in (x0, x0 + 1) for j in (y0, y0 + 1)]
+    # 픽셀 경계에 등치선이 걸리면 이웃 중 큰 값 (안전측)
+    step = m.get("step", 1)
+    lvl = round(vi / step) * step
+    up = [v for v in nb if v >= vi - 0.02]
+    if abs(vi - lvl) <= 0.03 * step and lvl in nb:
+        vm = lvl                                    # 등치선 위
+    elif up:
+        vm = min(v for v in up if v >= vi - 0.02) if all(v > vi + 0.02 for v in up) else max(up)
+    else:
+        vm = _ceil_level(vi, step)
+    if vm < vi - 0.02:
+        vm = _ceil_level(vi, step)
+    unit = KINDS[kind]["unit"]
+    if abs(vm - vi) < 0.01:
+        txt = f"등치선 {vm:g} 위 또는 바깥 구역 → {vm:g} {unit}"
+    else:
+        txt = f"선형보간 {vi:.2f} · 인근 등치선 중 큰 값 {vm:g} {unit}"
+    out.update(interp=vi, max=vm, design=vm, src=f"{cap} 내장 등치선 (근사)", note=txt)
+    return out

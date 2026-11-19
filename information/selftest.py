@@ -29,8 +29,12 @@ def run():
     check("qH = ½·1.225·VH²", _close(d["qH"], 0.5 * 1.225 * d["VH"] ** 2))
     check("초고층 Iw 1.05", W.iw("2", floors=50) == 1.05)
     r = W.kzt_from_params("escarpment", 60, 150, 100, 10, "C")
-    exp = 1 + 1.4 * (1 - 100 / (1.5 * 300)) * 0.2 / (1 + 3.7 * W.iz(10, "C"))
-    check("Kzt 경사지 풍하측", _close(r["Kzt"], exp))
+    exp = 1 + 1.4 * (1 - 100 / (1.5 * 300)) * (1 - 10 / 150) * 0.2 / (1 + 3.7 * W.iz(10, "C"))
+    check("Kzt 경사지 풍하측 (식 5.5-3, s=(1-|x|/1.5L*)(1-z/Lu))", _close(r["Kzt"], exp))
+    r = W.kzt_from_params("hill", 100, 100, -50, 20, "C", theta_d=0.25)    # φ = 0.5 > 0.3
+    kt = min(1.4 + 3.6 * (0.25 - 0.05), 3.2)
+    exp = 1 + kt * (1 - 50 / (1.5 * 170)) * (1 - 0.6 * 20 / 100) * 0.3 / (1 + 3.7 * W.iz(20, "C"))
+    check("Kzt 언덕 풍상측 φ>0.3 (L*=1.7H, 1-0.6z/H, φ′=0.3)", _close(r["Kzt"], exp))
     check("Kzt 적용범위 밖 = 1", W.kzt_from_params("hill", 50, 200, -2000, 10, "C")["Kzt"] == 1.0)
     prof = [(i * 30.0, 30 + 120 * math.exp(-((i * 30.0 - 396) / 450) ** 2)) for i in range(-100, 70)]
     r = W.analyze_profile(prof, 10, "C")
@@ -112,6 +116,23 @@ def run():
         la, lo = maps.kds_to_ll(k, x, y)
         check(f"지도 핀 왕복 ({k})", abs(la - 36.35) < 1e-6 and abs(lo - 127.38) < 1e-6)
     check("울릉도 인셋 값 (풍속 46)", maps.kds_inset_value("wind", 37.48, 130.9)[0] == 46)
+    w = maps.kds_value("wind", 37.5665, 126.978)
+    check("기본풍속 서울 = 28 (내륙)", w["max"] == 28 and abs(w["interp"] - 28) < 0.3)
+    w = maps.kds_value("wind", 35.1796, 129.0756)
+    check("기본풍속 부산 40~42 사이 → 큰 값 42", w["max"] == 42 and 40 < w["interp"] <= 42)
+    w = maps.kds_value("wind", 33.4996, 126.5312)
+    check("기본풍속 제주 48~50", w["max"] == 50 and 48 <= w["interp"] <= 50)
+    n = maps.kds_value("snow", 36.35, 127.38)
+    check("지상설하중 대전 0.5 (최소)", n["max"] == 0.5)
+    e = maps.kds_value("seismic", 37.5665, 126.978)
+    check("지진 올림 = 위 등고선", e["max"] == math.ceil(e["interp"]))
+
+    print("[노풍도]")
+    from . import exposure as X
+    check("판정 반경 40H·3km 중 작은 값", X.radius_m(50) == 2000 and X.radius_m(100) == 3000 and X.radius_m(50, "max") == 3000)
+    check("방위 구간 N/NE/S", X.sector_of(10) == 0 and X.sector_of(30) == 1 and X.sector_of(200) == 4)
+    check("조도 판정 A/B/C/D", X.classify(0.35, 0.2, 0.05, 0)[0] == "A" and X.classify(0.15, 0, 0, 0)[0] == "B"
+          and X.classify(0.05, 0, 0, 0)[0] == "C" and X.classify(0.0, 0, 0, 0.8)[0] == "D")
     print("결과:", "모두 통과" if ok else "실패 있음")
     return ok
 

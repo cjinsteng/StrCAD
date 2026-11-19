@@ -3,7 +3,7 @@ information/wind.py — 풍하중 설계풍속·속도압·지형계수 (KDS 41 
 
     VH = V0 · Kd · Kzr · Kzt · Iw          (5.5-2)
     qH = ½ · ρ · VH²                        (5.5-1)
-    Kzt = 1 + Kh · L · θ′ / (1 + 3.7·Iz)   (5.5-3)
+    Kzt = 1 + kt · s · φ′ / (1 + 3.7·Iz)   (5.5-3)
 """
 import math
 
@@ -79,12 +79,22 @@ def pressure_profile(v0, cat, height, importance, kzt_at=None, kd=K.KD_DEFAULT, 
 # ─────────────────────────────────────────────────────────────
 def kzt_from_params(kind, H, Lu, x, z, cat, theta_d=None):
     """
+    식 (5.5-3)  Kzt = 1 + kt·s·φ′ / (1 + 3.7·Iz)
+
     kind   : "hill"(언덕·산) / "escarpment"(경사지) / "flat"
-    H      : 정점높이 (m) — 풍상측 지표에서 정점까지
-    Lu     : 정점에서 H/2 지점까지 풍상측 수평거리 (m)
-    x      : 정점에서 건설지점까지 수평거리 (m, 풍상측 −, 풍하측 +)
-    z      : 국지 지표면에서의 높이 (m)
-    theta_d: 풍하측 평균경사 (언덕·산 형상계수용)
+    H      : 언덕·산·경사지의 정점높이 (m)
+    Lu     : 정점 중앙에서 아래로 H/2 인 지점에서 풍상측 경사지 지점까지 수평거리 (m)
+    x      : 정점으로부터의 수평거리 (m, 풍상측 −, 풍하측 +)
+    z      : 국지 지표면으로부터의 높이 (m)
+    theta_d: φd — 정점에서 풍하측 빗변으로 5H 되는 거리까지의 평균경사
+
+      kt = 1.4 (경사지) / 1.4 + 3.6·(φd − 0.05) ≤ 3.2 (언덕·산)
+      φ  = H / (2·Lu),  φ′ = min(φ, 0.3)
+      s  = (1 − |x|/(1.5·L*))·(1 − z/Lu)       φ ≤ 0.3
+           (1 − |x|/(1.5·L*))·(1 − 0.6·z/H)    φ > 0.3
+      L* : 풍상측 Lu (φ > 0.3 이면 1.7H)
+           풍하측 max(Lu, 1.7H) 언덕·산 / max(2Lu, 3.33H) 경사지
+      Iz : 식 (5.5-3.a), z < zb 이면 zb 값
     """
     out = {"kind": kind, "H": H, "Lu": Lu, "x": x, "z": z, "Kzt": 1.0, "in_range": False, "note": ""}
     if kind == "flat" or not H or H <= 0 or not Lu or Lu <= 0:
@@ -97,32 +107,28 @@ def kzt_from_params(kind, H, Lu, x, z, cat, theta_d=None):
     out["range"] = lim
     out["side"] = side
     if abs(x) > lim:
-        out["note"] = f"적용범위 밖 (|x|={abs(x):.0f}m > {lim:.0f}m) — Kzt = 1.0"
+        out["note"] = f"적용범위 밖 (|x|={abs(x):.0f}m > {lim:.0f}m, 표 5.5-4) — Kzt = 1.0"
         return out
     out["in_range"] = True
-    theta_u = H / (2.0 * Lu)
-    theta_p = min(theta_u, K.KZT_THETA_MAX)
+    phi = H / (2.0 * Lu)
+    phi_p = min(phi, K.KZT_THETA_MAX)
     if kind == "escarpment":
-        kh = 1.4
+        kt = 1.4
     else:
-        td = theta_d if theta_d is not None else theta_u
-        kh = min(1.4 + 3.6 * (td - 0.05), 3.2)
-        kh = max(kh, 0.0)
+        td = theta_d if theta_d is not None else phi
+        kt = max(min(1.4 + 3.6 * (td - 0.05), 3.2), 1.4 if td >= 0.05 else 0.0)
     if side == "up":
-        lu_eff = max(Lu, H / (2.0 * K.KZT_THETA_MAX))          # θu > 0.3 이면 Lu = H/0.6
-        loc = 1.0 - abs(x) / (K.KZT_K_UP * lu_eff)
-        lstar = lu_eff
+        lstar = 1.7 * H if phi > K.KZT_THETA_MAX else Lu
     else:
         c1, c2 = K.KZT_LSTAR[kind]
         lstar = max(c1 * Lu, c2 * H)
-        loc = 1.0 - abs(x) / (K.KZT_K_UP * lstar)
-    loc = max(loc, 0.0)
-    if K.KZT_HEIGHT_DECAY_ETA:
-        loc *= math.exp(-K.KZT_HEIGHT_DECAY_ETA * z / Lu)
+    sx = max(1.0 - abs(x) / (1.5 * lstar), 0.0)
+    sz = max(1.0 - (0.6 * z / H if phi > K.KZT_THETA_MAX else z / Lu), 0.0)
+    loc = sx * sz
     i_z = iz(z, cat)
-    kzt = 1.0 + kh * loc * theta_p / (1.0 + 3.7 * i_z)
-    out.update(theta_u=theta_u, theta_p=theta_p, theta_d=theta_d, Kh=kh, L=loc, Lstar=lstar,
-               Iz=i_z, Kzt=kzt, note="")
+    kzt = 1.0 + kt * loc * phi_p / (1.0 + 3.7 * i_z)
+    out.update(theta_u=phi, theta_p=phi_p, theta_d=theta_d, Kh=kt, kt=kt, L=loc, s=loc, sx=sx, sz=sz,
+               Lstar=lstar, Iz=i_z, Kzt=kzt, note="")
     return out
 
 

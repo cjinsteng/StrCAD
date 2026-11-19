@@ -14,6 +14,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from . import boreholes as BH
+from . import exposure as EX
 from . import geo
 from . import kds_data as K
 from . import maps
@@ -58,8 +59,13 @@ class InformationApp(tk.Toplevel):
             _TH.set_icon(self)
         except Exception:                            # noqa: BLE001
             pass
+        self.expo = None                          # 노풍도(8방위) 분석 결과
+        self.auto = {}                            # 내장 지도 자동 값 {kind: kds_value}
+        self._auto_job = None
         self._vars()
         self._build()
+        for k in ("lat", "lon"):
+            self.v[k].trace_add("write", lambda *a: self._schedule_auto())
         self._refresh_db_label()
         self._update_map_status()
         self.protocol("WM_DELETE_WINDOW", self.destroy)
@@ -95,14 +101,15 @@ class InformationApp(tk.Toplevel):
             "sido": S(value=""), "sigungu": S(value=""),
             "facility": S(value=K.FACILITY_TYPES[0][0]), "importance": S(value=K.FACILITY_TYPES[0][1]),
             "floors": S(value="20"), "height": S(value="60"), "B": S(value="30"), "D": S(value="20"),
-            "roughness": S(value="B"), "kd": S(value="1.0"),
+            "roughness": S(value="B"), "rough_mode": S(value="auto"), "kd": S(value="1.0"),
+            "exposure_rule": S(value=self.settings.get("exposure_rule", "kds")),
             "kzt_mode": S(value="auto"), "kzt_manual": S(value="1.0"),
-            "v0_mode": S(value="map"), "v0_manual": S(value=""),
-            "s_mode": S(value="zone"), "s_map_manual": S(value=""),
+            "v0_mode": S(value="max"), "v0_manual": S(value=""),
+            "s_mode": S(value="interp"), "s_map_manual": S(value=""),
             "radius": S(value=str(self.settings.get("radius_m", 500))),
             "amp_mode": S(value=self.settings.get("amp_mode", "max")),
             "site_override": S(value="자동(시추)"),
-            "sg_mode": S(value="map"), "sg_manual": S(value=""),
+            "sg_mode": S(value="max"), "sg_manual": S(value=""),
             "highland": tk.BooleanVar(value=False), "ce": S(value="C"), "heat": S(value="난방"),
             "roof_slope": S(value="0"), "slippery": tk.BooleanVar(value=False), "roof_w": S(value=""),
         }
@@ -143,10 +150,18 @@ class InformationApp(tk.Toplevel):
 
         body = tk.Frame(self, bg=T.BG)
         body.pack(fill="both", expand=True)
-        left = T.ScrollFrame(body, width=340)
+        left = tk.Frame(body, bg=T.BG2, width=392)
         left.pack(side="left", fill="y")
+        left.pack_propagate(False)
         tk.Frame(body, bg=T.BDR, width=1).pack(side="left", fill="y")
-        self._build_inputs(left.inner)
+        self.nb_in = ttk.Notebook(left)
+        self.nb_in.pack(fill="both", expand=True)
+        self.in_tabs = {}
+        for key, txt in (("gen", " 개요 "), ("wind", " 🌬 풍하중 "), ("seis", " 🌐 지진 "), ("snow", " ❄ 설하중 ")):
+            sf = T.ScrollFrame(self.nb_in, width=372)
+            self.nb_in.add(sf, text=txt)
+            self.in_tabs[key] = sf.inner
+        self._build_inputs(self.in_tabs)
 
         self.nb = ttk.Notebook(body)
         self.nb.pack(side="left", fill="both", expand=True)
@@ -177,8 +192,28 @@ class InformationApp(tk.Toplevel):
             tk.Label(f, text=unit, font=T.FONT_S, bg=T.BG2, fg=T.TX3, width=5, anchor="w").pack(side="left", padx=(4, 0))
         return w
 
-    def _build_inputs(self, p):
+    def _radios(self, parent, label, var, opts, cmd=None):
+        rb = tk.Frame(parent, bg=T.BG2)
+        rb.pack(fill="x", padx=12, pady=(2, 0))
+        tk.Label(rb, text=label, width=11, anchor="w", font=T.FONT, bg=T.BG2, fg=T.TX2).pack(side="left", anchor="n")
+        box = tk.Frame(rb, bg=T.BG2)
+        box.pack(side="left", fill="x")
+        for k, (val, txt) in enumerate(opts):
+            tk.Radiobutton(box, text=txt, variable=var, value=val, bg=T.BG2, fg=T.TXT, selectcolor=T.BG4,
+                           activebackground=T.BG2, font=T.FONT, command=cmd).grid(row=k // 2, column=k % 2, sticky="w")
+        return rb
+
+    def _auto_box(self, parent, color):
+        lb = tk.Label(parent, text="", font=T.FONT_M, bg=T.BG3, fg=T.WHI, anchor="w", justify="left",
+                      wraplength=340, padx=8, pady=6)
+        lb.pack(fill="x", padx=12, pady=(4, 2))
+        tk.Frame(parent, bg=color, height=2).pack(fill="x", padx=12)
+        return lb
+
+    def _build_inputs(self, tabs):
         v = self.v
+        # ── 개요 ──
+        p = tabs["gen"]
         T.section(p, "건물 위치", T.C_GEO)
         self._row(p, "프로젝트명", lambda f: T.entry(f, v["project"]))
         self._row(p, "주소", lambda f: T.entry(f, v["address"]))
@@ -190,88 +225,246 @@ class InformationApp(tk.Toplevel):
         self._row(p, "경도", lambda f: T.entry(f, v["lon"]), "°E")
         self._row(p, "시·도", lambda f: T.entry(f, v["sido"]))
         self._row(p, "시·군·구", lambda f: T.entry(f, v["sigungu"]))
-        self.lbl_loc = T.label(p, "", fg=T.TX3, font=T.FONT_S, wraplength=300, justify="left")
+        self.lbl_loc = T.label(p, "", fg=T.TX3, font=T.FONT_S, wraplength=340, justify="left")
         self.lbl_loc.pack(anchor="w", padx=12)
+        lf = tk.Frame(p, bg=T.BG2)
+        lf.pack(fill="x", padx=12, pady=(4, 2))
+        tk.Label(lf, text="지도 보기", width=11, anchor="w", font=T.FONT, bg=T.BG2, fg=T.TX2).pack(side="left")
+        for nm in ("카카오맵", "네이버지도", "구글 위성"):
+            T.btn(lf, nm, lambda n=nm: self._open_link(n), padx=5).pack(side="left", padx=1)
 
         T.section(p, "건물 개요", T.CYN)
-        cb = self._row(p, "시설물 종류", lambda f: T.combo(f, v["facility"], [x[0] for x in K.FACILITY_TYPES], width=26))
+        cb = self._row(p, "시설물 종류", lambda f: T.combo(f, v["facility"], [x[0] for x in K.FACILITY_TYPES], width=28))
         cb.bind("<<ComboboxSelected>>", lambda e: self._facility_changed())
         cb2 = self._row(p, "중요도", lambda f: T.combo(f, v["importance"], list(K.IMPORTANCE), width=6))
         cb2.bind("<<ComboboxSelected>>", lambda e: self._importance_changed())
-        self.lbl_imp = T.label(p, "", fg=T.TX3, font=T.FONT_S, wraplength=300, justify="left")
+        self.lbl_imp = T.label(p, "", fg=T.TX3, font=T.FONT_S, wraplength=340, justify="left")
         self.lbl_imp.pack(anchor="w", padx=12)
         self._row(p, "지상층수", lambda f: T.entry(f, v["floors"]), "층")
         self._row(p, "건물높이 H", lambda f: T.entry(f, v["height"]), "m")
         self._row(p, "폭 B", lambda f: T.entry(f, v["B"]), "m")
         self._row(p, "깊이 D", lambda f: T.entry(f, v["D"]), "m")
+        T.label(p, "  각 하중 탭에서 지도 자동 값을 확인하고 [▶ 분석 실행]", fg=T.TX3, font=T.FONT_S).pack(
+            anchor="w", padx=12, pady=(10, 0))
 
-        T.section(p, "풍하중 조건", T.C_WIND)
-        rb = tk.Frame(p, bg=T.BG2)
-        rb.pack(fill="x", padx=12)
-        tk.Label(rb, text="기본풍속", width=11, anchor="w", font=T.FONT, bg=T.BG2, fg=T.TX2).pack(side="left")
-        for val, txt in (("map", "지도"), ("manual", "직접")):
-            tk.Radiobutton(rb, text=txt, variable=v["v0_mode"], value=val, bg=T.BG2, fg=T.TXT, selectcolor=T.BG4,
-                           activebackground=T.BG2, font=T.FONT).pack(side="left")
-        T.entry(rb, v["v0_manual"], 6).pack(side="left", padx=4)
-        tk.Label(rb, text="m/s", font=T.FONT_S, bg=T.BG2, fg=T.TX3).pack(side="left")
-        T.btn(rb, "🗺", lambda: self.open_kds_map("wind"), padx=4).pack(side="left", padx=(4, 0))
-        self.lbl_map_wind = T.label(p, "", fg=T.TX3, font=T.FONT_S)
-        self.lbl_map_wind.pack(anchor="w", padx=12)
-        cr = self._row(p, "지표면조도", lambda f: T.combo(f, v["roughness"], list("ABCD"), width=6))
-        cr.bind("<<ComboboxSelected>>", lambda e: self._rough_changed())
-        self.lbl_rough = T.label(p, "", fg=T.TX3, font=T.FONT_S, wraplength=300, justify="left")
-        self.lbl_rough.pack(anchor="w", padx=12)
-        self._row(p, "풍향계수 Kd", lambda f: T.entry(f, v["kd"]))
+        # ── 풍하중 ──
+        p = tabs["wind"]
+        T.section(p, "① 기본풍속 V0 (그림 5.5-1)", T.C_WIND)
+        self.lbl_auto_wind = self._auto_box(p, T.C_WIND)
+        self._radios(p, "적용", v["v0_mode"], (("max", "인근 큰 값 (주2)"), ("interp", "선형보간"), ("manual", "직접 입력")))
         rb = tk.Frame(p, bg=T.BG2)
         rb.pack(fill="x", padx=12, pady=2)
-        tk.Label(rb, text="지형계수", width=11, anchor="w", font=T.FONT, bg=T.BG2, fg=T.TX2).pack(side="left")
-        for val, txt in (("auto", "자동(DEM)"), ("flat", "평탄"), ("manual", "직접")):
-            tk.Radiobutton(rb, text=txt, variable=v["kzt_mode"], value=val, bg=T.BG2, fg=T.TXT, selectcolor=T.BG4,
-                           activebackground=T.BG2, font=T.FONT).pack(side="left")
-        T.entry(rb, v["kzt_manual"], 5).pack(side="left", padx=2)
+        tk.Label(rb, text="직접 입력", width=11, anchor="w", font=T.FONT, bg=T.BG2, fg=T.TX2).pack(side="left")
+        T.entry(rb, v["v0_manual"], 7).pack(side="left")
+        tk.Label(rb, text="m/s", font=T.FONT_S, bg=T.BG2, fg=T.TX3).pack(side="left", padx=4)
+        T.btn(rb, "🗺 상세", lambda: self.open_kds_map("wind"), padx=6).pack(side="right")
 
-        T.section(p, "지진 조건", T.C_SEIS)
-        rb = tk.Frame(p, bg=T.BG2)
-        rb.pack(fill="x", padx=12)
-        tk.Label(rb, text="S 산정", width=11, anchor="w", font=T.FONT, bg=T.BG2, fg=T.TX2).pack(side="left")
-        for val, txt in (("zone", "지진구역계수"), ("map", "위험지도")):
-            tk.Radiobutton(rb, text=txt, variable=v["s_mode"], value=val, bg=T.BG2, fg=T.TXT, selectcolor=T.BG4,
-                           activebackground=T.BG2, font=T.FONT).pack(side="left")
+        T.section(p, "② 지표면조도 (노풍도, 5.5.4)", T.C_WIND)
+        self._radios(p, "산정", v["rough_mode"], (("auto", "자동 (8방위 분석)"), ("manual", "직접 지정")))
+        rr = tk.Frame(p, bg=T.BG2)
+        rr.pack(fill="x", padx=12, pady=2)
+        tk.Label(rr, text="판정 반경", width=11, anchor="w", font=T.FONT, bg=T.BG2, fg=T.TX2).pack(side="left")
+        cbr = T.combo(rr, v["exposure_rule"], ["kds", "max"], width=5)
+        cbr.pack(side="left")
+        cbr.bind("<<ComboboxSelected>>", lambda e: self._update_expo_label())
+        self.lbl_rule = T.label(rr, "", fg=T.TX3, font=T.FONT_S)
+        self.lbl_rule.pack(side="left", padx=4)
+        cr = self._row(p, "직접 지정", lambda f: T.combo(f, v["roughness"], list("ABCD"), width=6))
+        cr.bind("<<ComboboxSelected>>", lambda e: self._rough_changed())
+        self.lbl_rough = T.label(p, "", fg=T.TX3, font=T.FONT_S, wraplength=340, justify="left")
+        self.lbl_rough.pack(anchor="w", padx=12)
+        eb = tk.Frame(p, bg=T.BG2)
+        eb.pack(fill="x", padx=12, pady=(4, 0))
+        T.btn(eb, "🧭 노풍도 분석", self._run_exposure, bg=T.ACC, fg=T.WHI).pack(side="left")
+        T.btn(eb, "상세 · 지도", self._show_exposure).pack(side="left", padx=4)
+        self.lbl_expo = self._auto_box(p, T.C_WIND)
+
+        T.section(p, "③ 풍향계수 · 지형계수", T.C_WIND)
+        self._row(p, "풍향계수 Kd", lambda f: T.entry(f, v["kd"]))
+        self._radios(p, "지형계수", v["kzt_mode"], (("auto", "자동 (DEM 단면)"), ("flat", "평탄 1.0"), ("manual", "직접")))
+        self._row(p, "Kzt 직접", lambda f: T.entry(f, v["kzt_manual"]))
+        T.label(p, "  식 (5.5-3) Kzt = 1 + kt·s·φ′/(1+3.7Iz) — 풍하중 결과 탭에서 풍향별 단면 확인",
+                fg=T.TX3, font=T.FONT_S, wraplength=340, justify="left").pack(anchor="w", padx=12)
+
+        # ── 지진 ──
+        p = tabs["seis"]
+        T.section(p, "① 유효지반가속도 S (그림 3.2-1)", T.C_SEIS)
+        self.lbl_auto_seis = self._auto_box(p, T.C_SEIS)
+        self._radios(p, "적용", v["s_mode"], (("interp", "위험지도 직선보간"), ("ceil", "위험지도 올림"),
+                                              ("zone", "지진구역계수 Z×2.0"), ("manual", "직접 입력 (%g)")))
         rs = tk.Frame(p, bg=T.BG2)
         rs.pack(fill="x", padx=12, pady=2)
-        tk.Label(rs, text="위험지도 S", width=11, anchor="w", font=T.FONT, bg=T.BG2, fg=T.TX2).pack(side="left")
+        tk.Label(rs, text="직접 입력", width=11, anchor="w", font=T.FONT, bg=T.BG2, fg=T.TX2).pack(side="left")
         T.entry(rs, v["s_map_manual"], 8).pack(side="left")
         tk.Label(rs, text="%g", font=T.FONT_S, bg=T.BG2, fg=T.TX3).pack(side="left", padx=4)
-        T.btn(rs, "🗺", lambda: self.open_kds_map("seismic"), padx=4).pack(side="left", padx=(4, 0))
-        T.label(p, "  (비우면 내장 지도에서 자동 — 등고선 사이 보간)", fg=T.TX3, font=T.FONT_S).pack(anchor="w", padx=12)
-        self.lbl_map_seis = T.label(p, "", fg=T.TX3, font=T.FONT_S)
-        self.lbl_map_seis.pack(anchor="w", padx=12)
-        self._row(p, "시추 반경", lambda f: T.entry(f, v["radius"]), "m")
+        T.btn(rs, "🗺 상세", lambda: self.open_kds_map("seismic"), padx=6).pack(side="right")
+        T.label(p, "  위험지도 값은 지진구역계수법 S의 80% 이상 (3.2)", fg=T.TX3, font=T.FONT_S).pack(anchor="w", padx=12)
+
+        T.section(p, "② 지반조사 자료 취합 (국토지반정보)", T.C_SEIS)
+        self._row(p, "검색 반경", lambda f: T.entry(f, v["radius"]), "m")
+        bb = tk.Frame(p, bg=T.BG2)
+        bb.pack(fill="x", padx=12, pady=(2, 2))
+        T.btn(bb, "🔎 반경 안 시추자료 취합", self._search_boreholes, bg=T.ACC, fg=T.WHI).pack(side="left")
+        T.btn(bb, "📥 자료 가져오기", self._import_csv).pack(side="left", padx=4)
+        bb2 = tk.Frame(p, bg=T.BG2)
+        bb2.pack(fill="x", padx=12, pady=(0, 2))
+        T.btn(bb2, "국토지반정보 포털", lambda: self._open_url("https://www.geoinfo.or.kr/"), padx=6).pack(side="left")
+        T.btn(bb2, "공공데이터(시추공·지층·SPT)", lambda: self._open_url(
+            "https://www.data.go.kr/tcs/dss/selectDataSetList.do?keyword=%EA%B5%AD%ED%86%A0%EA%B5%90%ED%86%B5%EB%B6%80_%EC%A7%80%EB%B0%98%EC%A0%95%EB%B3%B4"),
+            padx=6).pack(side="left", padx=4)
+        self.lbl_db2 = T.label(p, "", fg=T.TX3, font=T.FONT_S, wraplength=340, justify="left")
+        self.lbl_db2.pack(anchor="w", padx=12)
         self._row(p, "대표증폭계수", lambda f: T.combo(f, v["amp_mode"], ["max", "mean"], width=8))
         T.label(p, "  max = 설계상 가장 불리한 값, mean = 평균 (4.2.3 ①)", fg=T.TX3, font=T.FONT_S).pack(anchor="w", padx=12)
         self._row(p, "지반분류", lambda f: T.combo(f, v["site_override"], ["자동(시추)", "S1", "S2", "S3", "S4", "S5"], width=10))
 
-        T.section(p, "설하중 조건", T.C_SNOW)
+        # ── 설하중 ──
+        p = tabs["snow"]
+        T.section(p, "① 기본지상설하중 Sg (그림 4.2-1)", T.C_SNOW)
+        self.lbl_auto_snow = self._auto_box(p, T.C_SNOW)
+        self._radios(p, "적용", v["sg_mode"], (("max", "인근 큰 값"), ("interp", "선형보간"), ("manual", "직접 입력")))
         rb = tk.Frame(p, bg=T.BG2)
-        rb.pack(fill="x", padx=12)
-        tk.Label(rb, text="지상설하중", width=11, anchor="w", font=T.FONT, bg=T.BG2, fg=T.TX2).pack(side="left")
-        for val, txt in (("map", "지도"), ("manual", "직접")):
-            tk.Radiobutton(rb, text=txt, variable=v["sg_mode"], value=val, bg=T.BG2, fg=T.TXT, selectcolor=T.BG4,
-                           activebackground=T.BG2, font=T.FONT).pack(side="left")
-        T.entry(rb, v["sg_manual"], 6).pack(side="left", padx=4)
-        tk.Label(rb, text="kN/㎡", font=T.FONT_S, bg=T.BG2, fg=T.TX3).pack(side="left")
-        T.btn(rb, "🗺", lambda: self.open_kds_map("snow"), padx=4).pack(side="left", padx=(4, 0))
-        self.lbl_map_snow = T.label(p, "", fg=T.TX3, font=T.FONT_S)
-        self.lbl_map_snow.pack(anchor="w", padx=12)
+        rb.pack(fill="x", padx=12, pady=2)
+        tk.Label(rb, text="직접 입력", width=11, anchor="w", font=T.FONT, bg=T.BG2, fg=T.TX2).pack(side="left")
+        T.entry(rb, v["sg_manual"], 7).pack(side="left")
+        tk.Label(rb, text="kN/㎡", font=T.FONT_S, bg=T.BG2, fg=T.TX3).pack(side="left", padx=4)
+        T.btn(rb, "🗺 상세", lambda: self.open_kds_map("snow"), padx=6).pack(side="right")
         T.check(p, "고지대·산간 (그림값 ×1.5, 4.2.1)", v["highland"]).pack(anchor="w", padx=12)
+        T.section(p, "② 지붕설하중 조건", T.C_SNOW)
         self._row(p, "노출 Ce", lambda f: T.combo(f, v["ce"], list(K.SNOW_CE.keys()), width=6))
         self._row(p, "난방", lambda f: T.combo(f, v["heat"], list(K.SNOW_CT.keys()), width=8))
         self._row(p, "지붕경사", lambda f: T.entry(f, v["roof_slope"]), "°")
         T.check(p, "미끄러운 지붕면", v["slippery"]).pack(anchor="w", padx=12)
         self._row(p, "처마~용마루 W", lambda f: T.entry(f, v["roof_w"]), "m")
-        tk.Frame(p, bg=T.BG2, height=20).pack()
+        for t in tabs.values():
+            tk.Frame(t, bg=T.BG2, height=20).pack()
         self._facility_changed(set_imp=False)
         self._rough_changed()
+        self._update_expo_label()
+        self._refresh_auto()
+
+    # ── 지도 자동 값 (좌표가 바뀌면 바로) ──
+    def _schedule_auto(self):
+        if self._auto_job:
+            try:
+                self.after_cancel(self._auto_job)
+            except tk.TclError:
+                pass
+        self._auto_job = self.after(400, self._refresh_auto)
+
+    def _refresh_auto(self):
+        self._auto_job = None
+        la, lo = _num(self.v["lat"].get()), _num(self.v["lon"].get())
+        if la is None or lo is None or not (32 < la < 39.5 and 124 < lo < 132.5):
+            self.auto = {}
+            msg = "좌표를 넣으면 내장 지도에서 바로 읽습니다."
+            for lb in (self.lbl_auto_wind, self.lbl_auto_seis, self.lbl_auto_snow):
+                lb.config(text=msg, fg=T.TX3)
+            return
+        self.auto = {k: maps.kds_value(k, la, lo) for k in ("wind", "seismic", "snow")}
+        w, e, n = self.auto["wind"], self.auto["seismic"], self.auto["snow"]
+        if w["interp"] is not None:
+            self.lbl_auto_wind.config(fg=T.WHI, text=(
+                f"선형보간  {w['interp']:6.2f} m/s\n인근 큰 값 {w['max']:6.0f} m/s   ← KDS 그림 5.5-1 주2)\n"
+                f"{w['src']}"))
+        else:
+            self.lbl_auto_wind.config(fg=T.C_WARN, text=w["note"] or "자동 값 없음 — 🗺 상세에서 확인")
+        if e["interp"] is not None:
+            self.lbl_auto_seis.config(fg=T.WHI, text=(
+                f"직선보간  {e['interp']:6.2f} %g  →  S = {e['interp'] / 100:.3f} g\n"
+                f"올림      {e['max']:6.0f} %g  →  S = {e['max'] / 100:.3f} g\n{e['src']}"))
+        else:
+            self.lbl_auto_seis.config(fg=T.C_WARN, text=e["note"] or "자동 값 없음 — 🗺 상세에서 확인")
+        if n["interp"] is not None:
+            self.lbl_auto_snow.config(fg=T.WHI, text=(
+                f"선형보간  {n['interp']:5.2f} kN/㎡\n인근 큰 값 {n['max']:5.2f} kN/㎡\n{n['src']}"))
+        else:
+            self.lbl_auto_snow.config(fg=T.C_WARN, text=n["note"] or "자동 값 없음 — 🗺 상세에서 확인")
+        self._update_expo_label()
+
+    def _open_url(self, url):
+        import webbrowser
+        webbrowser.open(url)
+
+    def _open_link(self, name):
+        la, lo = _num(self.v["lat"].get()), _num(self.v["lon"].get())
+        if la is None or lo is None:
+            messagebox.showinfo("지도 보기", "먼저 좌표를 찾으세요.", parent=self)
+            return
+        self._open_url(EX.external_links(la, lo, self.v["project"].get())[name])
+
+    # ── 노풍도 ──
+    def _expo_valid(self, inp=None):
+        inp = inp or self._inputs()
+        e = self.expo
+        if not e or inp["lat"] is None:
+            return False
+        R = EX.radius_m(inp["height"] or 0, inp.get("exposure_rule", "kds"))
+        return (abs(e["lat"] - inp["lat"]) < 1e-4 and abs(e["lon"] - inp["lon"]) < 1e-4
+                and abs(e["R"] - R) < 1.0)
+
+    def _update_expo_label(self):
+        rule = self.v["exposure_rule"].get()
+        H = _num(self.v["height"].get(), 0) or 0
+        R = EX.radius_m(H, rule)
+        self.lbl_rule.config(text=f"{'40H·3km 중 작은 값 (원문)' if rule != 'max' else '40H·3km 중 큰 값'} → {R:,.0f} m")
+        if not hasattr(self, "lbl_expo"):
+            return
+        e = self.expo
+        if not e:
+            self.lbl_expo.config(fg=T.TX3, text="[🧭 노풍도 분석] — 건설지점 주변 8방위 부채꼴의 건물 밀도·층수·수면으로\n"
+                                                "A·B·C·D 판정 (분석 실행 때도 자동으로 합니다)")
+            return
+        rows = e["sectors"]
+        line1 = "  ".join(f"{r['dir']}:{r['cat']}{'★' if r.get('star') else ''}" for r in rows[:4])
+        line2 = "  ".join(f"{r['dir']}:{r['cat']}{'★' if r.get('star') else ''}" for r in rows[4:])
+        stale = "" if self._expo_valid() else "\n⚠ 좌표·높이·반경이 바뀜 — 다시 분석 필요"
+        self.lbl_expo.config(fg=T.WHI if not stale else T.C_WARN, text=(
+            f"{line1}\n{line2}\n설계 적용(가장 불리) : {e['governing']} ({e['governing_dir']}) · R {e['R']:,.0f} m{stale}"))
+
+    def _run_exposure(self, then_show=True):
+        inp = self._inputs()
+        if inp["lat"] is None:
+            messagebox.showinfo("노풍도", "먼저 좌표를 찾으세요.", parent=self)
+            return
+        if not inp["height"]:
+            messagebox.showinfo("노풍도", "건물높이 H 를 입력하세요.", parent=self)
+            return
+        self.settings["exposure_rule"] = inp["exposure_rule"]
+        self.set_status("노풍도 분석 중… (건물 자료·배경 지도 내려받기)", 5)
+
+        def work():
+            try:
+                r = EX.run(inp["lat"], inp["lon"], inp["height"], self.settings,
+                           progress=lambda m: self.set_status(m))
+                self.ui(lambda rr=r: self._expo_done(rr, then_show))
+            except Exception as ex:                  # noqa: BLE001
+                self.ui(lambda m=str(ex): messagebox.showerror("노풍도", f"분석 실패: {m}", parent=self))
+                self.set_status(f"노풍도 분석 실패: {ex}", 0)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _expo_done(self, r, show=True):
+        self.expo = r
+        self._update_expo_label()
+        self.set_status(f"노풍도 분석 완료 — 건물 {r['n_buildings']}동 ({r['source'] or '자료 없음'}), "
+                        f"설계 적용 {r['governing']}", 100)
+        for m in r.get("errors") or []:
+            self.log("[노풍도] " + m)
+        for row in r["sectors"]:
+            self.log("[노풍도] " + EX.explain(row))
+        if show:
+            self._show_exposure()
+
+    def _show_exposure(self):
+        if not self.expo:
+            self._run_exposure(then_show=True)
+            return
+        ExposureWindow(self, self.expo, on_apply=self._expo_applied)
+
+    def _expo_applied(self):
+        EX.update_governing(self.expo)
+        self._update_expo_label()
+        self.log("[노풍도] 방위별 판정 수정: " + ", ".join(f"{r['dir']} {r['cat']}" for r in self.expo["sectors"]))
 
     def _facility_changed(self, set_imp=True):
         for nm, imp, cond in K.FACILITY_TYPES:
@@ -291,14 +484,7 @@ class InformationApp(tk.Toplevel):
         self.lbl_rough.config(text=K.ROUGHNESS_DESC.get(self.v["roughness"].get(), ""))
 
     def _update_map_status(self):
-        for kind, lbl in (("wind", self.lbl_map_wind), ("snow", self.lbl_map_snow), ("seismic", self.lbl_map_seis)):
-            mi = maps.map_info(kind)
-            if mi and mi.get("builtin"):
-                lbl.config(text="  내장 지도로 자동 조회 · 🗺 위치 확인", fg=T.C_OK)
-            elif mi:
-                lbl.config(text=f"  보정한 지도로 자동 조회 ({mi['created']}) · 🗺 위치 확인", fg=T.C_OK)
-            else:
-                lbl.config(text="  🗺 버튼 → 지도 위 건설지점 핀을 보고 값 입력", fg=T.C_WARN)
+        self._refresh_auto()
 
     def open_kds_map(self, kind):
         """내장 KDS 지도에 건설지점 핀 — 값을 읽어 바로 입력."""
@@ -323,7 +509,7 @@ class InformationApp(tk.Toplevel):
                 self.v["sg_mode"].set("manual")
             else:
                 self.v["s_map_manual"].set(f"{val:g}")
-                self.v["s_mode"].set("map")
+                self.v["s_mode"].set("manual")
             self.log(f"[지도] {maps.KINDS[k]['title']} → {val:g} {maps.KINDS[k]['unit']} 입력")
         from .map_tool import KdsMapViewer
         KdsMapViewer(self, kind, (inp["lat"], inp["lon"], inp.get("project") or "건설지점"), on_pick=pick)
@@ -369,10 +555,19 @@ class InformationApp(tk.Toplevel):
         rf = tk.Frame(up, bg=T.BG2)
         rf.pack(side="left", fill="both", expand=True, padx=(12, 0))
         T.section(rf, "풍향별 지형계수 (클릭하면 단면 표시)", T.C_WIND)
-        fr, self.tv_kzt = T.tree(rf, ("풍향", "지형", "H", "Lu", "x", "θ′", "Kh", "L", "Kzt", "비고"),
+        fr, self.tv_kzt = T.tree(rf, ("풍향", "지형", "H", "Lu", "x", "φ′", "kt", "s", "Kzt", "비고"),
                                  (60, 60, 55, 55, 60, 50, 50, 50, 55, 200), height=9)
         fr.pack(fill="both", expand=True)
         self.tv_kzt.bind("<<TreeviewSelect>>", lambda e: self._draw_profile())
+        ef = tk.Frame(p, bg=T.BG2)
+        ef.pack(fill="x", padx=10, pady=(0, 6))
+        hb = tk.Frame(ef, bg=T.BG2)
+        hb.pack(fill="x")
+        T.section(hb, "방위별 지표면조도 · 속도압 (풍상측 45° 부채꼴, ★ 설계 적용)", T.C_WIND)
+        T.btn(hb, "🧭 노풍도 지도", self._show_exposure).pack(side="right", padx=4)
+        fr, self.tv_expo = T.tree(ef, ("방위", "조도", "건물", "건폐%", "10층↑%", "4~9층%", "수면%", "Kzr", "VH", "qH N/㎡", "판정 근거"),
+                                  (55, 40, 50, 55, 60, 60, 50, 55, 55, 70, 380), height=8)
+        fr.pack(fill="x")
         dn = tk.Frame(p, bg=T.BG2)
         dn.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         cf = tk.Frame(dn, bg=T.BG2)
@@ -574,24 +769,47 @@ class InformationApp(tk.Toplevel):
         out = {"ok": False}
         res["wind"] = out
         v0, src = None, ""
+        kv = maps.kds_value("wind", inp["lat"], inp["lon"]) if inp["lat"] is not None else None
+        out["v0_auto"] = kv
         if inp["v0_mode"] == "manual" and inp["v0_manual"]:
             v0, src = inp["v0_manual"], "직접 입력"
+        if v0 is None and kv and kv["interp"] is not None:
+            if inp["v0_mode"] == "interp":
+                v0, src = round(kv["interp"], 2), f"그림 5.5-1 선형보간 ({kv['note']})"
+            else:
+                v0, src = float(kv["max"]), f"그림 5.5-1 인근 등풍속선 중 큰 값 (주2) — {kv['note']}"
         if v0 is None and inp["lat"] is not None:
             val, how = maps.lookup("wind", inp["lat"], inp["lon"])
-            if val is not None:
-                v0, src = float(val), f"그림 5.5-1 지도 ({how})"
-            else:
-                src = how
-        if v0 is None and inp["lat"] is not None:
-            val, how = maps.kds_inset_value("wind", inp["lat"], inp["lon"])
-            if val is not None:
-                v0, src = float(val), "그림 5.5-1 " + how
+            if val is not None and not (maps.map_info("wind") or {}).get("builtin"):
+                v0, src = float(val), f"그림 5.5-1 보정 지도 ({how})"
         if v0 is None and inp["v0_manual"]:
             v0, src = inp["v0_manual"], "직접 입력 (지도 조회 불가)"
         if v0 is None:
-            out["msg"] = "기본풍속 V0 가 없습니다 — 기본풍속 옆 🗺 버튼으로 그림 5.5-1 위 건설지점 핀을 보고 값을 넣으세요."
+            out["msg"] = "기본풍속 V0 가 없습니다 — 풍하중 탭 [🗺 상세]에서 그림 5.5-1 위 건설지점 핀을 보고 값을 넣으세요."
             self.log("[풍하중] " + out["msg"])
             return
+        # 지표면조도
+        expo = None
+        if inp["rough_mode"] == "auto" and inp["lat"] is not None:
+            if not self._expo_valid(inp):
+                self.set_status("노풍도(8방위) 분석 중…", 6)
+                try:
+                    self.settings["exposure_rule"] = inp["exposure_rule"]
+                    r = EX.run(inp["lat"], inp["lon"], inp["height"], self.settings,
+                               progress=lambda m: self.set_status(m))
+                    self.expo = r
+                    self.ui(lambda rr=r: self._expo_done(rr, show=False))
+                except Exception as e:               # noqa: BLE001
+                    self.log(f"[노풍도] 자동 분석 실패 — 직접 지정 값 {inp['roughness']} 사용 ({e})")
+            expo = self.expo if self._expo_valid(inp) else None
+        if expo:
+            inp["roughness"] = expo["governing"]
+            out["rough_src"] = (f"8방위 자동 판정 중 가장 불리 — {expo['governing_dir']} {expo['governing']} "
+                                f"(R={expo['R']:,.0f} m, {expo['source'] or '건물자료 없음'})")
+            out["expo"] = {k: expo[k] for k in ("R", "rule", "source", "governing", "governing_dir", "n_buildings")}
+            out["expo"]["sectors"] = [dict(r) for r in expo["sectors"]]
+        else:
+            out["rough_src"] = "직접 지정" + (" (자동 분석 결과 없음)" if inp["rough_mode"] == "auto" else "")
         cat = inp["roughness"]
         H = inp["height"]
         kzt, kzt_src, terrain = 1.0, "평탄지", None
@@ -630,7 +848,13 @@ class InformationApp(tk.Toplevel):
                                                        r.get("theta_d"))["Kzt"])
             return best
         prof = W.pressure_profile(v0, cat, H, inp["importance"], kzt_at, inp["kd"] or 1.0, inp["floors"])
-        out.update(ok=True, design=d, v0_src=src, kzt_src=kzt_src, terrain=terrain, profile=prof)
+        by_dir = []
+        if expo:
+            for r in expo["sectors"]:
+                dd = W.design_wind(v0, r["cat"], H, inp["importance"], kzt, inp["kd"] or 1.0, inp["floors"])
+                by_dir.append({"dir": r["dir"], "ko": r["ko"], "cat": r["cat"], "star": r.get("star"),
+                               "Kzr": dd["Kzr"], "VH": dd["VH"], "qH": dd["qH"]})
+        out.update(ok=True, design=d, v0_src=src, kzt_src=kzt_src, terrain=terrain, profile=prof, by_dir=by_dir)
         self.log(f"[풍하중] V0={v0} ({src}), Kzt={kzt:.3f} ({kzt_src}), VH={d['VH']:.2f} m/s, qH={d['qH']:.0f} N/㎡")
 
     # ── 지진 ──
@@ -641,19 +865,27 @@ class InformationApp(tk.Toplevel):
         zone, ztxt = SE.seismic_zone(addr, SE.parse_sido(inp["sido"]) if inp["sido"] else "", inp["sigungu"])
         out["zone"], out["zone_txt"] = zone, ztxt
         s_map = None
-        if True:                                     # 위험지도 값은 방식과 관계없이 참고로 조회
-            if inp["s_map_manual"]:
-                s_map = inp["s_map_manual"] / 100.0
-                out["s_map_src"] = "직접 입력"
-            elif inp["lat"] is not None:
-                val, how = maps.lookup("seismic", inp["lat"], inp["lon"])
-                if val is not None:
-                    s_map = float(val) / 100.0
-                    out["s_map_src"] = f"그림 3.2-1 ({how})"
-                else:
-                    out["s_map_src"] = how
+        mode = inp["s_mode"]
+        kv = maps.kds_value("seismic", inp["lat"], inp["lon"]) if inp["lat"] is not None else None
+        out["s_auto"] = kv
+        if mode == "manual" and inp["s_map_manual"]:
+            s_map = inp["s_map_manual"] / 100.0
+            out["s_map_src"] = "직접 입력"
+        elif kv and kv["interp"] is not None:
+            if mode == "ceil":
+                s_map = kv["max"] / 100.0
+                out["s_map_src"] = f"그림 3.2-1 올림 (위 등고선 {kv['max']:g}%g, 직선보간 {kv['interp']:.2f}%g)"
+            else:
+                s_map = kv["interp"] / 100.0
+                out["s_map_src"] = f"그림 3.2-1 등고선 사이 직선보간 {kv['interp']:.2f}%g (올림 {kv['max']:g}%g)"
+        elif inp["s_map_manual"]:
+            s_map = inp["s_map_manual"] / 100.0
+            out["s_map_src"] = "직접 입력 (지도 조회 불가)"
+        else:
+            out["s_map_src"] = (kv or {}).get("note", "좌표 없음")
+        use_map = mode in ("interp", "ceil", "manual") and s_map is not None
         # 시추조사
-        S_for_amp = SE.effective_s(zone, s_map, inp["s_mode"] == "map").get("S") or 0.22
+        S_for_amp = SE.effective_s(zone, s_map, use_map).get("S") or 0.22
         bh = {"radius": inp["radius"] or 500, "holes": [], "n_total": 0}
         if inp["lat"] is not None:
             self.set_status("시추공 반경 검색 중…", 60)
@@ -685,7 +917,7 @@ class InformationApp(tk.Toplevel):
         rep = None
         if amp is None and sm.get("n_ok"):
             rep = next((r for r in bh["holes"] if r.get("site") == site), None)
-        e = SE.evaluate(zone, inp["importance"], site, s_map, inp["s_mode"] == "map",
+        e = SE.evaluate(zone, inp["importance"], site, s_map, use_map,
                         rock_depth=(rep or {}).get("rock_depth"), vs_soil=(rep or {}).get("vs_soil"),
                         rock_found=(rep or {}).get("rock_found", True), amp=amp)
         out["eval"] = e
@@ -700,22 +932,25 @@ class InformationApp(tk.Toplevel):
         out = {"ok": False}
         res["snow"] = out
         sg_map, src = None, ""
+        kv = maps.kds_value("snow", inp["lat"], inp["lon"]) if inp["lat"] is not None else None
+        out["sg_auto"] = kv
         if inp["sg_mode"] == "manual" and inp["sg_manual"]:
             sg_map, src = inp["sg_manual"], "직접 입력"
+        if sg_map is None and kv and kv["interp"] is not None:
+            if inp["sg_mode"] == "interp":
+                sg_map, src = round(kv["interp"], 3), f"그림 4.2-1 선형보간 ({kv['note']})"
+            else:
+                sg_map, src = float(kv["max"]), f"그림 4.2-1 인근 등치선 중 큰 값 ({kv['note']})"
         if sg_map is None and inp["lat"] is not None:
             val, how = maps.lookup("snow", inp["lat"], inp["lon"])
-            if val is not None:
-                sg_map, src = float(val), f"그림 4.2-1 지도 ({how})"
-            else:
-                src = how
-        if sg_map is None and inp["lat"] is not None:
-            val, how = maps.kds_inset_value("snow", inp["lat"], inp["lon"])
-            if val is not None:
-                sg_map, src = float(val), "그림 4.2-1 " + how
+            if val is not None and not (maps.map_info("snow") or {}).get("builtin"):
+                sg_map, src = float(val), f"그림 4.2-1 보정 지도 ({how})"
+            elif kv:
+                src = kv.get("note", "")
         if sg_map is None and inp["sg_manual"]:
             sg_map, src = inp["sg_manual"], "직접 입력 (지도 조회 불가)"
         if sg_map is None:
-            out["msg"] = "기본지상설하중 Sg 가 없습니다 — 지상설하중 옆 🗺 버튼으로 그림 4.2-1 위 건설지점 핀을 보고 값을 넣으세요."
+            out["msg"] = "기본지상설하중 Sg 가 없습니다 — 설하중 탭 [🗺 상세]에서 그림 4.2-1 위 건설지점 핀을 보고 값을 넣으세요."
             self.log("[설하중] " + out["msg"])
             return
         sg, notes = SN.ground_snow(sg_map, inp["highland"])
@@ -754,6 +989,7 @@ class InformationApp(tk.Toplevel):
             body.config(text=w.get("msg", ""), fg=T.C_WARN)
             self._fill(self.tv_wpar, [])
             self._fill(self.tv_kzt, [])
+            self._fill(self.tv_expo, [])
             self._fill(self.tv_q, [])
             self._draw_profile()
             return
@@ -764,7 +1000,7 @@ class InformationApp(tk.Toplevel):
         inp = self.res["inputs"]
         rows = [("기본풍속 V0", f"{d['V0']:.1f} m/s", w["v0_src"]),
                 ("풍향계수 Kd", f"{d['Kd']:.2f}", "5.5.3 (관측자료 없음/외장재 1.0)"),
-                ("지표면조도", inp["roughness"], K.ROUGHNESS_DESC[inp["roughness"]][:30]),
+                ("지표면조도", inp["roughness"], w.get("rough_src") or K.ROUGHNESS_DESC[inp["roughness"]][:30]),
                 ("풍속고도분포계수 Kzr", f"{d['Kzr']:.3f}", f"표 5.5-2, z = H = {inp['height']} m"),
                 ("지형계수 Kzt", f"{d['Kzt']:.3f}", w["kzt_src"]),
                 ("중요도계수 Iw", f"{d['Iw']:.2f}", "표 5.5-5" + (" 초고층" if d["supertall"] else f" 중요도({inp['importance']})")),
@@ -772,6 +1008,16 @@ class InformationApp(tk.Toplevel):
                 ("설계속도압 qH", f"{d['qH']:.1f} N/㎡", "식 (5.5-1) ½ρV², ρ=1.225"),
                 ("난류강도 IH", f"{d['IH']:.3f}", "식 (5.5-3.a)")]
         self._fill(self.tv_wpar, rows)
+        ex = (w.get("expo") or {}).get("sectors") or []
+        bd = {r["dir"]: r for r in w.get("by_dir") or []}
+        self.tv_expo.delete(*self.tv_expo.get_children())
+        for r in ex:
+            b = bd.get(r["dir"], {})
+            self.tv_expo.insert("", "end", values=(
+                f"{r['dir']} {r['ko']}", r["cat"] + (" ★" if r.get("star") else ""), r["n"], f"{r['cov'] * 100:.1f}",
+                f"{r['hi'] * 100:.1f}", f"{r['mid'] * 100:.1f}", f"{r['water'] * 100:.0f}",
+                f"{b.get('Kzr', 0):.3f}", f"{b.get('VH', 0):.2f}", f"{b.get('qH', 0):.0f}",
+                r["why"] + ("" if r["cat"] == r.get("auto", r["cat"]) else f" → 수정 {r['cat']}")))
         self.tv_kzt.delete(*self.tv_kzt.get_children())
         ter = w.get("terrain") or {}
         gov = ter.get("governing")
@@ -879,7 +1125,13 @@ class InformationApp(tk.Toplevel):
         if not w.get("ok"):
             lines.append("• 풍하중: " + w.get("msg", "").replace("\n", " "))
         elif w["design"]["V0"] and "직접" not in w.get("v0_src", ""):
-            lines.append(f"• 기본풍속은 보정한 지도에서 읽은 값입니다 — {w['v0_src']}. 원 지도와 한 번 대조하세요.")
+            lines.append(f"• 기본풍속 — {w['v0_src']}. 내장 등풍속선은 그림에서 따낸 근사선이므로 해안 등 선이 촘촘한 곳은 "
+                         "[🗺 상세]에서 핀 위치를 원 그림과 대조하세요.")
+        if w.get("expo"):
+            e = w["expo"]
+            lines.append(f"• 지표면조도는 8방위 자동 판정 중 가장 불리한 {e['governing']} ({e['governing_dir']})를 적용했습니다 "
+                         f"— 건물 {e['n_buildings']}동, {e['source']}. 수목·농경지·급변 지형(5.5.4 가·나·다)은 "
+                         "[🧭 노풍도 지도]에서 방위별로 고칠 수 있습니다.")
         if w.get("design") and w["design"]["Kzt"] > 1.0:
             lines.append("• 지형계수가 1보다 큽니다. DEM(90m)으로 산정한 값이므로 현장 지형·인접 지형을 확인하세요.")
         s = self.res.get("seismic") or {}
@@ -1094,8 +1346,13 @@ class InformationApp(tk.Toplevel):
     def _refresh_db_label(self):
         try:
             st = self.db.stats()
-            self.lbl_db.config(text=f"시추 DB: 시추공 {st['holes']:,} (좌표 {st['located']:,}) · 지층 {st['with_layers']:,}공 · "
-                                    f"N값 {st['with_spt']:,}공   [{self.db.path.name}]")
+            txt = (f"시추 DB: 시추공 {st['holes']:,} (좌표 {st['located']:,}) · 지층 {st['with_layers']:,}공 · "
+                   f"N값 {st['with_spt']:,}공   [{self.db.path.name}]")
+            self.lbl_db.config(text=txt)
+            if st["holes"] == 0:
+                txt = ("시추 DB 비어 있음 — 공공데이터포털 '국토교통부_지반정보' 시추공·지층·표준관입시험 CSV 를 "
+                       "[📥 자료 가져오기]로 한 번 넣어 두면 반경 검색으로 취합합니다.")
+            self.lbl_db2.config(text=txt)
         except Exception as e:                       # noqa: BLE001
             self.lbl_db.config(text=f"시추 DB 오류: {e}")
 
@@ -1218,9 +1475,10 @@ class InformationApp(tk.Toplevel):
 
     def _vars_reset(self):
         defaults = {"floors": "20", "height": "60", "B": "30", "D": "20", "roughness": "B", "kd": "1.0",
-                    "kzt_mode": "auto", "kzt_manual": "1.0", "v0_mode": "map", "s_mode": "zone",
+                    "kzt_mode": "auto", "kzt_manual": "1.0", "v0_mode": "max", "s_mode": "interp",
+                    "rough_mode": "auto", "exposure_rule": self.settings.get("exposure_rule", "kds"),
                     "radius": str(self.settings.get("radius_m", 500)), "amp_mode": self.settings.get("amp_mode", "max"),
-                    "site_override": "자동(시추)", "sg_mode": "map", "ce": "C", "heat": "난방", "roof_slope": "0",
+                    "site_override": "자동(시추)", "sg_mode": "max", "ce": "C", "heat": "난방", "roof_slope": "0",
                     "facility": K.FACILITY_TYPES[0][0], "importance": K.FACILITY_TYPES[0][1]}
         for k, var in self.v.items():
             if isinstance(var, tk.BooleanVar):
@@ -1230,6 +1488,8 @@ class InformationApp(tk.Toplevel):
         self.res = {}
         self.bh_results = []
         self.file_path = ""
+        self.expo = None
+        self._update_expo_label()
         self._show_all_empty()
 
     def _show_all_empty(self):
@@ -1243,8 +1503,14 @@ class InformationApp(tk.Toplevel):
                                                            initialfile=(self.v["project"].get() or "건물정보") + FILE_EXT)
         if not p:
             return
-        data = {"version": 1, "inputs": {k: (bool(v.get()) if isinstance(v, tk.BooleanVar) else v.get())
+        expo = None
+        if self.expo:
+            expo = {k: self.expo.get(k) for k in ("lat", "lon", "H", "R", "rule", "source", "governing",
+                                                    "governing_dir", "n_buildings")}
+            expo["sectors"] = [dict(r) for r in self.expo["sectors"]]
+        data = {"version": 2, "inputs": {k: (bool(v.get()) if isinstance(v, tk.BooleanVar) else v.get())
                                          for k, v in self.v.items()},
+                "exposure": expo,
                 "report": report.build_text(self._inputs(), self.res) if self.res else ""}
         try:
             with open(p, "w", encoding="utf-8") as f:
@@ -1265,9 +1531,14 @@ class InformationApp(tk.Toplevel):
         except (OSError, ValueError) as e:
             messagebox.showerror("열기", str(e), parent=self)
             return
+        old_modes = {"v0_mode": {"map": "max"}, "sg_mode": {"map": "max"}, "s_mode": {"map": "interp"}}
         for k, val in (data.get("inputs") or {}).items():
             if k in self.v:
-                self.v[k].set(val)
+                self.v[k].set(old_modes.get(k, {}).get(val, val))
+        if "rough_mode" not in (data.get("inputs") or {}):
+            self.v["rough_mode"].set("manual")          # 예전 파일: 지표면조도 직접 지정
+        self.expo = data.get("exposure") or None
+        self._update_expo_label()
         self.file_path = p
         self._facility_changed(set_imp=False)
         self._rough_changed()
@@ -1520,6 +1791,154 @@ class _HoleDialog(tk.Toplevel):
         hole = {"code": code, "name": self.v["name"].get().strip(), "lat": lat, "lon": lon,
                 "elev": _num(self.v["elev"].get()), "depth": _num(self.v["depth"].get()), "source": "직접입력"}
         self.result = (hole, layers, spts)
+        self.destroy()
+
+
+class ExposureWindow(tk.Toplevel):
+    """노풍도 상세 — 8방위 부채꼴 지도 + 방위별 판정·근거 (방위별로 고칠 수 있음)."""
+
+    def __init__(self, app, expo, on_apply=None):
+        super().__init__(app)
+        self.app, self.expo, self.on_apply = app, expo, on_apply
+        self.title("지표면조도(노풍도) — 8방위 판정")
+        self.configure(bg=T.BG)
+        self.geometry("1360x840")
+        self.minsize(1000, 640)
+        T.setup_style(self)
+        self._photo = None
+        self.v_bld = tk.BooleanVar(value=True)
+        self.v_cat = tk.StringVar(value="")
+        self._build()
+        self._fill()
+        self._render()
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def _build(self):
+        bar = tk.Frame(self, bg=T.BG2, height=44)
+        bar.pack(fill="x")
+        e = self.expo
+        tk.Label(bar, text=f"🧭  반경 {e['R']:,.0f} m · {'40H·3km 중 작은 값 (KDS 5.5.4(1)①)' if e.get('rule') != 'max' else '40H·3km 중 큰 값'}",
+                 font=T.FONT_B, bg=T.BG2, fg=T.WHI).pack(side="left", padx=12)
+        T.btn(bar, "적용하고 닫기", self._apply, bg=T.ORANGE, fg=T.WHI).pack(side="right", padx=10, pady=7)
+        T.btn(bar, "🖼 그림 저장", self._save_png).pack(side="right", padx=3)
+        T.btn(bar, "🔄 다시 분석", self._rerun).pack(side="right", padx=3)
+        for nm in ("구글 위성", "네이버지도", "카카오맵"):
+            T.btn(bar, nm, lambda n=nm: self._link(n)).pack(side="right", padx=2)
+        T.check(bar, "건물(층수 색) 표시", self.v_bld, command=self._render).pack(side="right", padx=8)
+        body = tk.Frame(self, bg=T.BG)
+        body.pack(fill="both", expand=True)
+        self.cv = tk.Canvas(body, bg=T.CANV_BG, highlightthickness=0, width=780)
+        self.cv.pack(side="left", fill="both", expand=True)
+        self.cv.bind("<Configure>", lambda ev: self._render())
+        right = tk.Frame(body, bg=T.BG2, width=560)
+        right.pack(side="right", fill="y")
+        right.pack_propagate(False)
+        T.section(right, "방위별 판정 (풍향 = 바람이 불어오는 쪽)", T.C_WIND)
+        fr, self.tv = T.tree(right, ("방위", "자동", "적용", "건물", "건폐%", "10층↑", "4~9층", "수면%"),
+                             (70, 45, 45, 55, 60, 55, 55, 55), height=9)
+        fr.pack(fill="x", padx=10)
+        self.tv.bind("<<TreeviewSelect>>", lambda ev: self._sel())
+        f = tk.Frame(right, bg=T.BG2)
+        f.pack(fill="x", padx=10, pady=6)
+        tk.Label(f, text="선택 방위 조도", font=T.FONT, bg=T.BG2, fg=T.TX2).pack(side="left")
+        cb = T.combo(f, self.v_cat, list("ABCD"), width=5)
+        cb.pack(side="left", padx=6)
+        cb.bind("<<ComboboxSelected>>", lambda ev: self._set_cat())
+        T.btn(f, "자동값으로", self._reset_cat).pack(side="left")
+        T.section(right, "판정 근거", T.C_GEO)
+        self.txt = tk.Text(right, bg=T.BG3, fg=T.TXT, font=T.FONT, relief="flat", wrap="word", padx=8, pady=6, height=14)
+        self.txt.pack(fill="both", expand=True, padx=10)
+        T.section(right, "표 5.5-1 지표면조도구분", T.C_GEO)
+        tk.Label(right, text="\n".join(f"{k}  {v}" for k, v in EX.CAT_DESC.items()), font=T.FONT_S, bg=T.BG2,
+                 fg=T.TX2, justify="left", anchor="w", wraplength=530).pack(fill="x", padx=12, pady=(0, 8))
+
+    def _fill(self):
+        self.tv.delete(*self.tv.get_children())
+        for i, r in enumerate(self.expo["sectors"]):
+            self.tv.insert("", "end", iid=str(i), values=(
+                f"{r['dir']} {r['ko']}", r.get("auto", r["cat"]), r["cat"] + (" ★" if r.get("star") else ""), r["n"],
+                f"{r['cov'] * 100:.1f}", f"{r['hi'] * 100:.1f}", f"{r['mid'] * 100:.1f}", f"{r['water'] * 100:.0f}"))
+        e = self.expo
+        lines = [f"자료: {e.get('source') or '건물 자료 없음'} · 건물 {e.get('n_buildings', 0)}동",
+                 f"설계 적용 (가장 불리한 방위): {e['governing']} — {e['governing_dir']}", ""]
+        lines += [EX.explain(r) for r in e["sectors"]]
+        lines += ["", "판정 기준 (부채꼴 육지면적 대비 건물 바닥면적):",
+                  f"  A: 10층↑ ≥ {EX.TH['A_hi'] * 100:.0f}% 이고 건폐 ≥ {EX.TH['A_cov'] * 100:.0f}%",
+                  f"  B: 건폐 ≥ {EX.TH['B_cov'] * 100:.0f}% 또는 4~9층 ≥ {EX.TH['B_mid'] * 100:.0f}% 또는 10층↑ ≥ {EX.TH['B_hi'] * 100:.0f}%",
+                  f"  C: 건폐 ≥ {EX.TH['C_cov'] * 100:.0f}%, 건물이 거의 없어도 육지는 C (수목·농경지 가정)",
+                  f"  D: 수면 ≥ {EX.TH['water_D'] * 100:.0f}% (해안·수면) — 초원·비행장 등 개활지는 직접 D로",
+                  "  5.5.4 가·나·다 (평탄↔거친 급변 시 중간상태)는 지도를 보고 방위별로 고치세요."]
+        for m in e.get("errors") or []:
+            lines.append("⚠ " + m)
+        if e.get("view") is not None and getattr(e["view"], "note", ""):
+            lines.append("⚠ 배경 지도: " + e["view"].note)
+        self.txt.delete("1.0", "end")
+        self.txt.insert("1.0", "\n".join(lines))
+
+    def _render(self):
+        from PIL import ImageTk
+        self.cv.delete("all")
+        if self.expo.get("view") is None and not self.expo.get("buildings"):
+            self.cv.create_text(20, 20, anchor="nw", fill=T.TXT, font=T.FONT_B,
+                                text="저장된 판정 결과입니다 — 지도를 보려면 [🔄 다시 분석]을 누르세요.")
+            return
+        w, h = max(self.cv.winfo_width(), 400), max(self.cv.winfo_height(), 400)
+        size = min(w, h) - 10
+        try:
+            im = EX.render(self.expo, show_buildings=self.v_bld.get())
+        except Exception as ex:                      # noqa: BLE001
+            self.cv.create_text(20, 20, anchor="nw", fill=T.C_WARN, text=f"그림 오류: {ex}")
+            return
+        self._img = im
+        from PIL import Image
+        self._photo = ImageTk.PhotoImage(im.resize((size, size), Image.LANCZOS))
+        self.cv.create_image(w / 2, h / 2, image=self._photo)
+
+    def _sel(self):
+        s = self.tv.selection()
+        if s:
+            self.v_cat.set(self.expo["sectors"][int(s[0])]["cat"])
+
+    def _set_cat(self):
+        s = self.tv.selection()
+        if not s:
+            return
+        self.expo["sectors"][int(s[0])]["cat"] = self.v_cat.get()
+        EX.update_governing(self.expo)
+        self._fill()
+        self.tv.selection_set(s)
+        self._render()
+
+    def _reset_cat(self):
+        s = self.tv.selection()
+        if not s:
+            return
+        r = self.expo["sectors"][int(s[0])]
+        r["cat"] = r.get("auto", r["cat"])
+        EX.update_governing(self.expo)
+        self._fill()
+        self.tv.selection_set(s)
+        self._render()
+
+    def _link(self, nm):
+        self.app._open_url(EX.external_links(self.expo["lat"], self.expo["lon"], self.app.v["project"].get())[nm])
+
+    def _save_png(self):
+        if not getattr(self, "_img", None):
+            return
+        p = filedialog.asksaveasfilename(parent=self, defaultextension=".png", filetypes=[("PNG", "*.png")],
+                                         initialfile=(self.app.v["project"].get() or "노풍도") + "_노풍도.png")
+        if p:
+            self._img.save(p)
+            self.app.set_status(f"노풍도 그림 저장: {p}")
+
+    def _rerun(self):
+        self.destroy()
+        self.app._run_exposure(then_show=True)
+
+    def _apply(self):
+        if self.on_apply:
+            self.on_apply()
         self.destroy()
 
 

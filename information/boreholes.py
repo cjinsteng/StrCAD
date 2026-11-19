@@ -467,6 +467,40 @@ def summarize(results, S, mode="max"):
     if out["vs_range"]:
         txt.append(f"Vs,soil {out['vs_range'][0]:.0f} ~ {out['vs_range'][1]:.0f} m/s")
     txt.append(f"대표 증폭계수 Fa {fa:.3f}, Fv {fv:.3f} — {label}")
+    # 현재 위치 추정 — 거리 역제곱 가중 (가까운 시추공일수록 크게)
+    idw = site_estimate(ok)
+    if idw:
+        out["idw"] = idw
+        txt.append(f"현재 위치 추정 (거리가중 {idw['n']}공): 기반암 {idw['rock_txt']}, "
+                   f"Vs,soil ≈ {idw['vs']:.0f} m/s → {idw['site']}")
     out["text"] = "\n".join(txt)
     out["predicted"] = worst if mode == "max" else major
     return out
+
+
+def site_estimate(results, power=2.0, min_d=20.0):
+    """
+    반경 안 시추공을 거리 역제곱으로 가중해 건설지점의 기반암 깊이·Vs,soil 을 추정하고 지반분류.
+    기반암을 못 만난 공은 시추 깊이를 하한으로 보고 '이상'으로 표시.
+    """
+    rows = [r for r in results if r.get("vs_soil") and r.get("hole", {}).get("dist") is not None]
+    if not rows:
+        return None
+    ws = [1.0 / max(r["hole"]["dist"], min_d) ** power for r in rows]
+    W = sum(ws)
+    vs = sum(w * r["vs_soil"] for w, r in zip(ws, rows)) / W
+    found = [(w, r) for w, r in zip(ws, rows) if r.get("rock_found") and r.get("rock_depth") is not None]
+    frac_found = sum(w for w, _ in found) / W
+    if found and frac_found >= 0.5:
+        rd = sum(w * r["rock_depth"] for w, r in found) / sum(w for w, _ in found)
+        site = seismic.classify_site(rd, vs, True)
+        rock_txt = f"≈ {rd:.1f} m"
+    else:
+        deep = [r.get("depth") or r.get("rock_depth") or 0 for r in rows]
+        rd = max(deep) if deep else None
+        site = seismic.classify_site(rd or 30.0, vs, False, hole_depth=rd)
+        rock_txt = f"> {rd:.0f} m (미확인)" if rd else "미확인"
+    if isinstance(site, (tuple, list)):
+        site = site[0]
+    return {"n": len(rows), "vs": vs, "rock_depth": rd, "rock_found": frac_found >= 0.5,
+            "site": site, "rock_txt": rock_txt}

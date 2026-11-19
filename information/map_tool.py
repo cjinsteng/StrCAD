@@ -594,8 +594,10 @@ class _CityDialog(tk.Toplevel):
 VIEW_KINDS = [("wind", "🌬 기본풍속 (그림 5.5-1)"), ("snow", "❄ 지상설하중 (그림 4.2-1)"),
               ("seismic", "🌐 국가지진위험지도 (그림 3.2-1)")]
 VIEW_NOTE = {
-    "wind": "등풍속선 사이에 있으면 인근 등풍속선 중 큰 값 (5.5.2 주2). 가장 안쪽 28 m/s 선 안쪽 내륙은 28.",
-    "snow": "등치선 사이는 큰 값으로 읽으세요. 0.5 선 바깥(남서쪽)은 최소 지상설하중 0.5 kN/㎡ (4.2.1(3)).",
+    "wind": "등풍속선 사이에 있으면 인근 등풍속선 중 큰 값 (그림 5.5-1 주2). 가장 안쪽 28 m/s 선 안쪽 내륙은 28. "
+            "색선은 프로그램이 그림에서 따낸 등풍속선 — 원 그림 선과 맞는지 확인하세요.",
+    "snow": "등치선 사이는 큰 값(안전측). 0.5 선 바깥은 최소 지상설하중 0.5 kN/㎡ (4.2.1(3)). "
+            "색선은 프로그램이 따낸 등치선(강원 영동 동심원은 근사).",
     "seismic": "값은 %g (S = 값/100 g). 등고선 사이는 직선보간 — 자동 계산값을 같이 표시합니다. "
                "지진구역계수법 S(=Z×2.0)의 80% 이상이어야 합니다 (3.2).",
 }
@@ -627,6 +629,8 @@ class KdsMapViewer(tk.Toplevel):
                            selectcolor=T.ACC, activebackground=T.BG5, activeforeground=T.WHI, font=T.FONT_B,
                            bd=0, padx=10, pady=4, command=self._load).pack(side="left", padx=(8, 2), pady=7)
         T.btn(bar, "📍 건설지점으로", self._center_pin, bg=T.ORANGE, fg=T.WHI).pack(side="right", padx=10)
+        self.v_lines = tk.BooleanVar(value=True)
+        T.check(bar, "따낸 등치선 겹쳐 보기", self.v_lines, command=self._render).pack(side="right", padx=8)
         T.btn(bar, "−", lambda: self._zoom(1 / 1.3)).pack(side="right", padx=2)
         T.btn(bar, "맞춤", self._fit).pack(side="right", padx=2)
         T.btn(bar, "+", lambda: self._zoom(1.3)).pack(side="right", padx=2)
@@ -695,14 +699,20 @@ class KdsMapViewer(tk.Toplevel):
         self.pin = (x, y)
         self.lbl_site.config(text=f"{self.site[2] if len(self.site) > 2 else '건설지점'}\n위도 {la:.5f}, 경도 {lo:.5f}"
                                   + (f"\n{note}" if note else ""))
-        v, how = maps.kds_inset_value(k, la, lo)
-        if v is None:
-            v, how = maps.lookup(k, la, lo)
-            if v is None:
-                how = "자동 값 없음 — 핀 위치의 등치선을 읽어 아래에 입력하세요"
-        self.lbl_auto.config(text=(f"{v:.2f} {info['unit']}\n" if v is not None else "") + how,
-                             fg=T.WHI if v is not None else T.C_WARN)
-        self.v_val.set("" if v is None else (f"{v:.1f}" if k == "seismic" else f"{v:g}"))
+        r = maps.kds_value(k, la, lo)
+        u = info["unit"]
+        if r["interp"] is not None:
+            if k == "seismic":
+                txt = f"직선보간  {r['interp']:.2f} {u}\n올림(위 등고선)  {r['max']:g} {u}"
+            else:
+                txt = f"선형보간  {r['interp']:.2f} {u}\n인근 큰 값  {r['max']:g} {u}  ← 설계 적용"
+            self.lbl_auto.config(text=txt + f"\n{r['src']}", fg=T.WHI)
+            v = r["design"]
+        else:
+            v = None
+            self.lbl_auto.config(text=(r["note"] or "자동 값 없음") + "\n핀 위치의 등치선을 읽어 아래에 입력하세요",
+                                 fg=T.C_WARN)
+        self.v_val.set("" if v is None else (f"{v:.2f}" if k == "seismic" else f"{v:g}"))
         self._click = None
         self.zoom = 3.0
         self._render()
@@ -725,6 +735,17 @@ class KdsMapViewer(tk.Toplevel):
         self.cv.create_oval(x - 2.5, y - 2.5, x + 2.5, y + 2.5, fill="#dc2626", outline="")
         self.cv.create_text(x + r + 4, y - r - 2, text=self.site[2] if len(self.site) > 2 else "건설지점",
                             fill="#b91c1c", anchor="sw", font=T.FONT_B)
+        if self.v_lines.get() and self.kind.get() in ("wind", "snow"):
+            pal = ["#e11d48", "#16a34a", "#2563eb", "#c026d3", "#0891b2", "#ea580c", "#854d0e", "#7c3aed",
+                   "#db2777", "#0d9488"]
+            for val, pts in maps.kds_contours(self.kind.get()):
+                if len(pts) < 2:
+                    continue
+                c = pal[int(round(val * (1 if self.kind.get() == "wind" else 4))) % len(pal)]
+                flat = [q * z for pt in pts for q in pt]
+                self.cv.create_line(*flat, fill=c, width=2 if z >= 2 else 1, smooth=False)
+                mx, my = pts[len(pts) // 2]
+                self.cv.create_text(mx * z + 4, my * z, text=f"{val:g}", fill=c, anchor="w", font=T.FONT_S)
         if self._click:
             cx, cy = self._click[0] * z, self._click[1] * z
             self.cv.create_oval(cx - 5, cy - 5, cx + 5, cy + 5, outline="#2563eb", width=2)
@@ -755,9 +776,10 @@ class KdsMapViewer(tk.Toplevel):
         from . import geo
         d = geo.haversine(self.site[0], self.site[1], la, lo)
         txt = f"위도 {la:.4f}, 경도 {lo:.4f}\n건설지점에서 {d / 1000:.1f} km"
-        v, _ = maps.lookup(self.kind.get(), la, lo)
-        if v is not None:
-            txt += f"\n지도 값 {v:.2f} {maps.KINDS[self.kind.get()]['unit']}"
+        r = maps.kds_value(self.kind.get(), la, lo)
+        if r["interp"] is not None:
+            u = maps.KINDS[self.kind.get()]["unit"]
+            txt += f"\n선형보간 {r['interp']:.2f} {u} · 큰 값 {r['max']:g} {u}"
         self.lbl_click.config(text=txt, fg=T.TXT)
         self._render()
 

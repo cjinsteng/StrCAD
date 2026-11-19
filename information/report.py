@@ -4,8 +4,7 @@ information/report.py — 분석 결과 글·엑셀 보고서
 import time
 
 from . import kds_data as K
-from . import maps
-from . import wind as W
+from . import wind as W  # noqa: F401
 
 
 def _f(v, fmt="{:.3f}", none="—"):
@@ -35,8 +34,21 @@ def build_text(inp, res):
     a("■ 풍하중 (KDS 41 12 00:2022 5.5)")
     if w.get("ok"):
         d = w["design"]
-        a(f"  기본풍속 V0      = {_f(d['V0'], '{:.1f}')} m/s   ({w.get('v0_src', '')})")
-        a(f"  지표면조도       = {inp.get('roughness')}   Kzr(H) = {_f(d['Kzr'])}")
+        a(f"  기본풍속 V0      = {_f(d['V0'], '{:.2f}')} m/s   ({w.get('v0_src', '')})")
+        kv = w.get("v0_auto") or {}
+        if kv.get("interp") is not None:
+            a(f"    그림 5.5-1 : 선형보간 {kv['interp']:.2f} m/s · 인근 등풍속선 중 큰 값 {kv['max']:g} m/s (주2)")
+        a(f"  지표면조도       = {inp.get('roughness')}   Kzr(H) = {_f(d['Kzr'])}   ({w.get('rough_src', '')})")
+        ex = w.get("expo")
+        if ex:
+            a(f"    판정 반경 R = {ex['R']:,.0f} m ({'40H·3km 중 작은 값' if ex.get('rule') != 'max' else '40H·3km 중 큰 값'}), "
+              f"자료 {ex.get('source', '')}, 건물 {ex.get('n_buildings', 0)}동")
+            bd = {r["dir"]: r for r in w.get("by_dir") or []}
+            for r in ex["sectors"]:
+                b = bd.get(r["dir"], {})
+                a(f"    {r['dir']:>2}({r['ko']}) {r['cat']}{'★' if r.get('star') else ' '}  건폐 {r['cov'] * 100:5.1f}%  "
+                  f"10층↑ {r['hi'] * 100:4.1f}%  4~9층 {r['mid'] * 100:4.1f}%  수면 {r['water'] * 100:3.0f}%  "
+                  f"Kzr {b.get('Kzr', 0):.3f}  qH {b.get('qH', 0):6.0f} N/㎡  — {r['why']}")
         a(f"  풍향계수 Kd      = {_f(d['Kd'], '{:.2f}')}")
         a(f"  지형계수 Kzt     = {_f(d['Kzt'])}   ({w.get('kzt_src', '')})")
         a(f"  중요도계수 Iw    = {_f(d['Iw'], '{:.2f}')}" + ("  (초고층)" if d.get("supertall") else ""))
@@ -46,7 +58,7 @@ def build_text(inp, res):
         if g and g.get("kind") != "flat" and g.get("H"):
             a(f"  지배 풍향 {g.get('dir_ko', '')}: {('언덕·산' if g['kind'] == 'hill' else '경사지')} "
               f"H={g['H']:.1f}m, Lu={g['Lu']:.0f}m, x={g['x']:+.0f}m, θ′={_f(g.get('theta_p'))}, "
-              f"Kh={_f(g.get('Kh'))}, L={_f(g.get('L'))}, Iz={_f(g.get('Iz'))}")
+              f"kt={_f(g.get('Kh'))}, s={_f(g.get('L'))}, Iz={_f(g.get('Iz'))}  — 식 (5.5-3)")
         a("  높이별 속도압")
         for r in w.get("profile", []):
             a(f"    z={r['z']:6.1f}m  Kzr={r['Kzr']:.3f}  Kzt={r['Kzt']:.3f}  Vz={r['Vz']:6.2f}  qz={r['qz']:7.1f} N/㎡")
@@ -85,6 +97,9 @@ def build_text(inp, res):
     if n.get("ok"):
         r = n["roof"]
         a(f"  기본지상설하중 Sg = {_f(r['Sg'], '{:.2f}')} kN/㎡   ({n.get('sg_src', '')})")
+        kv = n.get("sg_auto") or {}
+        if kv.get("interp") is not None:
+            a(f"    그림 4.2-1 : 선형보간 {kv['interp']:.2f} · 인근 큰 값 {kv['max']:g} kN/㎡")
         for t in n.get("sg_notes", []):
             a("    " + t)
         a(f"  Cb={r['Cb']:.1f}, Ce={r['Ce']:.1f}, Ct={r['Ct']:.1f}, Is={r['Is']:.1f}")
@@ -100,11 +115,8 @@ def build_text(inp, res):
     a("■ 확인 필요 (원문 대조)")
     for k, t in K.VERIFY.items():
         a(f"  · {t}")
-    for kind in ("wind", "snow", "seismic"):
-        mi = maps.map_info(kind)
-        a(f"  · 지도 {maps.KINDS[kind]['title']}: " + (
-            "내장 격자 자동 조회" if mi and mi.get("builtin") else
-            f"사용자 보정 격자 {mi['created']}" if mi else "자동 값 없음 — 내장 지도 핀으로 확인 후 입력"))
+    a("  · 지도 값: 그림 5.5-1·4.2-1 은 그림에서 따낸 등치선(근사)으로 선형보간·큰 값을 계산, "
+      "그림 3.2-1 은 등고선 격자 직선보간 — 화면 [🗺 상세]에서 핀 위치 확인")
     return "\n".join(L)
 
 
@@ -137,13 +149,29 @@ def save_xlsx(path, inp, res):
     dirs = (w.get("terrain") or {}).get("directions") or []
     if dirs:
         r0 = len(w.get("profile", [])) + 4
-        head(ws, r0, ["풍향", "지형", "H (m)", "Lu (m)", "x (m)", "θ′", "Kh", "L", "Iz", "Kzt", "비고"])
+        head(ws, r0, ["풍향", "지형", "H (m)", "Lu (m)", "x (m)", "φ′", "kt", "s", "Iz", "Kzt", "비고"])
         for i, d in enumerate(dirs, r0 + 1):
             vals = [d.get("dir_ko"), {"hill": "언덕·산", "escarpment": "경사지"}.get(d.get("kind"), "평탄"),
                     d.get("H"), d.get("Lu"), d.get("x"), d.get("theta_p"), d.get("Kh"), d.get("L"),
                     d.get("Iz"), d.get("Kzt"), d.get("note", "")]
             for j, v in enumerate(vals, 1):
                 ws.cell(row=i, column=j, value=round(v, 4) if isinstance(v, float) else v)
+
+    ex = w.get("expo")
+    if ex:
+        ws = wb.create_sheet("노풍도")
+        head(ws, 1, ["방위", "조도", "자동판정", "건물(동)", "건폐(%)", "10층↑(%)", "4~9층(%)", "수면(%)", "Kzr", "VH (m/s)",
+                     "qH (N/㎡)", "근거"])
+        bd = {r["dir"]: r for r in w.get("by_dir") or []}
+        for i, r in enumerate(ex["sectors"], 2):
+            b = bd.get(r["dir"], {})
+            vals = [f"{r['dir']} {r['ko']}", r["cat"] + ("★" if r.get("star") else ""), r.get("auto"), r["n"],
+                    round(r["cov"] * 100, 2), round(r["hi"] * 100, 2), round(r["mid"] * 100, 2), round(r["water"] * 100, 1),
+                    round(b.get("Kzr", 0), 4), round(b.get("VH", 0), 2), round(b.get("qH", 0), 1), r["why"]]
+            for j, v in enumerate(vals, 1):
+                ws.cell(row=i, column=j, value=v)
+        ws.cell(row=11, column=1, value=f"판정 반경 R = {ex['R']:.0f} m, 자료: {ex.get('source', '')}")
+        ws.column_dimensions["L"].width = 70
 
     s = res.get("seismic") or {}
     ws = wb.create_sheet("시추조사")
