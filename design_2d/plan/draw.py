@@ -328,7 +328,8 @@ class DrawMixin:
                 sp += self.w2c(cx + (x - cx) * 0.86, cy + (y - cy) * 0.86)
             c.create_polygon(sp, fill="", outline=col, dash=(3, 3))
             px, py = self.w2c(cx, cy)
-            c.create_text(px, py + 22 + 13 * k, text=f"⬇ {float(ld['q']):g} kN/m²", fill=col, font=FONT_B)
+            c.create_text(px, py + 22 + 13 * k, fill=col, font=FONT_B,
+                          text=f"⬇ {float(ld['q']):g} kN/m²" + (" +자중" if ld.get("sw") else ""))
         for ld in m["lloads"]:
             if ld["case"] != case or ld["line"] not in m["lines"]:
                 continue
@@ -414,6 +415,8 @@ class DrawMixin:
                         vals.append(N @ vv)
                     f = col(sum(vals) / 4)
                     c.create_polygon(pts, fill=f, outline=f)
+        if self.show_cell_vals.get() and len(mesh.plates):
+            self._draw_cell_values(mesh, v)
         if self.show_values.get() and len(mesh.plates):
             nodes = np.unique(mesh.plates.ravel())
             for k, tag in ((nodes[np.nanargmax(v[nodes])], "MAX"), (nodes[np.nanargmin(v[nodes])], "MIN")):
@@ -421,6 +424,29 @@ class DrawMixin:
                 c.create_oval(x - 5, y - 5, x + 5, y + 5, outline=WHI, width=2)
                 c.create_text(x + 8, y - 10, anchor="w", text=f"{tag} {v[k]:.2f}", fill=WHI,
                               font=FONT_B)
+
+    def _draw_cell_values(self, mesh, v):
+        """메시(요소)마다 값 표시 — 요소 4절점 평균값 (Midas Slab Text 와 같은 방식)"""
+        c = self.canvas
+        X = mesh.xy[mesh.plates]                       # (ne,4,2)
+        cen = X.mean(axis=1)
+        val = v[mesh.plates].mean(axis=1)
+        d1 = X[:, 2] - X[:, 0]; d2 = X[:, 3] - X[:, 1]
+        size = np.sqrt(np.abs(d1[:, 0] * d2[:, 1] - d1[:, 1] * d2[:, 0]) / 2) * self.scale
+        W, H = c.winfo_width(), c.winfo_height()
+        cell = float(np.median(size)) if len(size) else 0
+        if cell < 16:
+            self.msg("메시별 값: 확대하면 표시됩니다 (요소가 너무 작음)", ORG)
+            return
+        nd = 0 if cell < 34 else (1 if cell < 60 else 2)
+        font = ("Malgun Gothic", 7 if cell < 26 else 8)
+        for (x, y), val_ in zip(cen, val):
+            px, py = self.w2c(x, y)
+            if -20 < px < W + 20 and -20 < py < H + 20 and np.isfinite(val_):
+                t = f"{val_:.{nd}f}"
+                if t.lstrip("-").strip("0.") == "":
+                    t = t.lstrip("-")
+                c.create_text(px, py, text=t, fill="#0b0f1a", font=font)
 
     def _draw_beam_diagram(self, res, rt):
         c = self.canvas

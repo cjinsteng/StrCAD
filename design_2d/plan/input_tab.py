@@ -92,6 +92,9 @@ class InputTabMixin:
         f.row("격자 간격", lambda p: entry(p, v["grid"], 8), "m")
         f.row("메시 크기", lambda p: entry(p, v["mesh_size"], 8), "m (정밀: 0.25)")
         f.row("보 비틀림 계수", lambda p: entry(p, v["torsion_factor"], 8), "× GJ (0~1)")
+        NM = {"avg": "요소 외삽 평균 (Midas 방식)", "spr": "SPR 패치 복원"}
+        v_nm = tk.StringVar(value=NM.get(m.get("nodal_method", "avg")))
+        f.row("슬래브 절점값", lambda p: combo(p, v_nm, list(NM.values()), 22))
         d = m["defaults"]
         vd = {k: tk.StringVar(value=self._pick(key, d.get(k))) for k, key in
               (("sec", "sections"), ("slab", "slabs"), ("mat", "materials"))}
@@ -107,6 +110,7 @@ class InputTabMixin:
             self.push_undo()
             m["grid"], m["mesh_size"] = vals["grid"], vals["mesh_size"]
             m["torsion_factor"] = min(1.0, max(0.0, vals["torsion_factor"] or 0.0))
+            m["nodal_method"] = {v_: k for k, v_ in NM.items()}.get(v_nm.get(), "avg")
             for k in vd:
                 d[k] = self._id_of(vd[k].get()) or d.get(k)
             self.changed("설정 적용")
@@ -568,15 +572,20 @@ class InputTabMixin:
         section_title(body, "하중케이스", C_LOAD)
         f = Form(body)
         v_name = tk.StringVar(value=cs["name"]); v_sw = tk.StringVar(value=f"{float(cs.get('selfweight', 0)):g}")
+        v_ss = tk.StringVar(value=f"{float(cs.get('slab_selfweight', 0)):g}")
         f.row("이름", lambda p: entry(p, v_name, 14))
-        f.row("자중 계수", lambda p: entry(p, v_sw, 8), "(0=없음, 1=포함)")
-        tk.Label(body, text="자중 = 슬래브 γ·t + 보 γ·A (보와 슬래브 겹침 미공제)", font=FONT_S,
-                 bg=BG2, fg=TX3).pack(anchor="w", padx=4)
+        f.row("보 자중 계수", lambda p: entry(p, v_sw, 8), "(0=없음, 1=포함)")
+        f.row("슬래브 자중 계수", lambda p: entry(p, v_ss, 8), "(모든 슬래브)")
+        tk.Label(body, text="보 자중 = γ·A,  슬래브 자중 = γ·t\n"
+                            "슬래브 자중은 보통 [하중] 탭 면하중의 '슬래브 자중 포함'으로 면별 입력\n"
+                            "(여기 계수와 함께 쓰면 중복됩니다)", font=FONT_S,
+                 bg=BG2, fg=TX3, justify="left").pack(anchor="w", padx=4)
 
         def apply():
             self.push_undo()
             cs["name"] = v_name.get().strip() or cs["name"]
             cs["selfweight"] = parse_float(v_sw.get(), 0.0)
+            cs["slab_selfweight"] = parse_float(v_ss.get(), 0.0)
             self.edit_target = ("CASE", cid)
             self.changed("하중케이스 수정")
         self._btn_row(body, [("적용", apply, ACC), ("활성 케이스로", lambda: self.set_active_case(cid), BG3)])
@@ -624,12 +633,17 @@ class InputTabMixin:
         for fk, lbl, u in fields:
             vs[fk] = tk.StringVar(value=f"{float(ld.get(fk, 0)):g}")
             f.row(lbl, lambda p, v=vs[fk]: entry(p, v, 10), u)
+        v_sw = tk.BooleanVar(value=bool(ld.get("sw")))
+        if k == "AL":
+            check(body, "슬래브 자중 포함 (q + γ·t)", v_sw).pack(anchor="w", padx=4)
 
         def apply():
             self.push_undo()
             ld["case"] = self._id_of(v_case.get()) or ld["case"]
             for fk, v in vs.items():
                 ld[fk] = parse_float(v.get(), 0.0)
+            if k == "AL":
+                ld["sw"] = bool(v_sw.get())
             self.edit_target = target
             self.changed("하중 수정")
 

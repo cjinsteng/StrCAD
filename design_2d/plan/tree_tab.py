@@ -153,7 +153,8 @@ class TreeTabMixin:
             lds = [("NL", ld) for ld in m["nloads"] if ld["case"] == cid] + \
                   [("LL", ld) for ld in m["lloads"] if ld["case"] == cid] + \
                   [("AL", ld) for ld in m["aloads"] if ld["case"] == cid]
-            sw = f"  (자중×{float(cs.get('selfweight', 0)):g})" if float(cs.get("selfweight", 0) or 0) else ""
+            sw = "".join(f"  ({lbl}×{float(cs.get(k, 0)):g})" for k, lbl in (("selfweight", "보자중"), ("slab_selfweight", "슬래브자중"))
+                         if float(cs.get(k, 0) or 0))
             mark = "  ◀" if cid == self.active_case else ""
             ins("G_cases", f"CASE_{cid}", f"{cs['name']}{sw}{mark}", len(lds), ("load",))
             for k, ld in lds:
@@ -241,7 +242,7 @@ class TreeTabMixin:
         if kind == "MAT":
             i = pm.next_id(m["materials"])
             m["materials"][i] = {"name": f"C{24 + 3 * (i - 1)}", "type": "RC", "fck": 24.0 + 3 * (i - 1),
-                                 "fy": 400.0, "E": 0.0, "gamma": 24.0, "nu": 0.2}
+                                 "fy": 400.0, "E": 0.0, "gamma": 24.0, "nu": 0.167}
         elif kind == "SEC":
             i = pm.next_id(m["sections"])
             m["sections"][i] = {"name": f"G{i}", "shape": "rect", "b": 400, "h": 600}
@@ -254,7 +255,7 @@ class TreeTabMixin:
                                  "kry": 0, "col": 0}
         elif kind == "CASE":
             i = pm.next_id(m["cases"])
-            m["cases"][i] = {"name": f"LC{i}", "selfweight": 0.0}
+            m["cases"][i] = {"name": f"LC{i}", "selfweight": 0.0, "slab_selfweight": 0.0}
         else:
             i = pm.next_id(m["combos"])
             m["combos"][i] = {"name": f"COMB{i}", "factors": {c: 1.0 for c in m["cases"]}}
@@ -473,7 +474,7 @@ def load_text(k, ld):
         w1, w2 = float(ld["w1"]), float(ld["w2"])
         w = f"{w1:g}" if abs(w1 - w2) < 1e-12 else f"{w1:g}~{w2:g}"
         return f"선 L{ld['line']}: w={w} kN/m"
-    return f"면 A{ld['area']}: q={float(ld['q']):g} kN/m²"
+    return f"면 A{ld['area']}: q={float(ld['q']):g} kN/m²" + ("  +슬래브자중" if ld.get("sw") else "")
 
 
 def combo_text(m, co):

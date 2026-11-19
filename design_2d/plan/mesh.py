@@ -574,11 +574,15 @@ class LoadBuilder:
         by_area = {}
         for e, aid in enumerate(mesh.plate_area):
             by_area.setdefault(aid, []).append(e)
-        if sw:
+        sws = float(m["cases"].get(case_id, {}).get("slab_selfweight", 0) or 0)
+
+        def slab_w(aid):
+            sl = m["slabs"][m["areas"][aid]["slab"]]
+            return float(m["materials"].get(sl["mat"], {}).get("gamma", 0)) * float(sl["t"]) / 1000.0
+        if sws:                                    # 케이스 전체 슬래브 자중
             for aid, els in by_area.items():
-                sl = m["slabs"][m["areas"][aid]["slab"]]
-                mat = m["materials"].get(sl["mat"], {})
-                self.plate_pressure(els, sw * float(mat.get("gamma", 0)) * float(sl["t"]) / 1000.0)
+                self.plate_pressure(els, sws * slab_w(aid))
+        if sw:                                     # 보 자중
             for lid, ch in mesh.line_chain.items():
                 ln = m["lines"][lid]
                 A = pm.section_props(m["sections"][ln["sec"]])[0] * 1e-6
@@ -589,6 +593,8 @@ class LoadBuilder:
             if ld["case"] != case_id or ld["area"] not in m["areas"]:
                 continue
             q = float(ld.get("q", 0))
+            if ld.get("sw") and ld["area"] in by_area:
+                q += slab_w(ld["area"])            # 면하중에 슬래브 자중 포함
             if ld["area"] in by_area:
                 self.plate_pressure(by_area[ld["area"]], q)
             else:

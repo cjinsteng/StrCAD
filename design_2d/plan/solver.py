@@ -220,7 +220,7 @@ def _plate_props(m, aid):
     if mat is None:
         raise PlanError(f"슬래브 '{sl['name']}': 재료가 없습니다.")
     E = pm.material_E(mat) * 1e3
-    nu = float(mat.get("nu", 0.2) or 0.2)
+    nu = float(mat.get("nu", 0.167) or 0.0)
     t = float(sl["t"]) / 1000.0
     if t <= 0:
         raise PlanError(f"슬래브 '{sl['name']}': 두께가 0 입니다.")
@@ -265,7 +265,7 @@ def analyze(m):
         if mat is None:
             raise PlanError(f"보 L{lid}: 재료가 없습니다.")
         E = pm.material_E(mat) * 1e3
-        nu = float(mat.get("nu", 0.2) or 0.2)
+        nu = float(mat.get("nu", 0.167) or 0.0)
         G = E / (2 * (1 + nu))
         A, I = pm.section_props(sec)
         if I <= 0:
@@ -388,10 +388,35 @@ def analyze(m):
     for cid, ls in lost.items():
         warnings.append(f"[{m['cases'][cid]['name']}] 전달되지 않은 하중 {ls:.2f} kN "
                         f"(부재와 연결되지 않은 노드·선·면의 하중)")
+    for cid, cs in m["cases"].items():
+        if float(cs.get("slab_selfweight", 0) or 0) and any(
+                ld.get("sw") and ld["case"] == cid for ld in m["aloads"]):
+            warnings.append(f"[{cs['name']}] 슬래브 자중이 중복됩니다 (케이스 슬래브 자중 계수 + 면하중 '자중 포함').")
     if weak.any():
         warnings.append(f"강성이 없는 자유도 {int(weak.sum())}개를 자동 구속했습니다.")
     return {"mesh": mesh, "results": results, "warnings": warnings,
             "ndof": ndof, "nfree": len(free), "applied": applied}
+
+
+# Gauss 4점 값 → 요소 절점값 (쌍선형 외삽) 행렬.  Gauss 순서는 plate_k 와 동일
+_g = 1 / math.sqrt(3)
+_GP_NAT = [(-_g, -_g), (-_g, _g), (_g, -_g), (_g, _g)]
+_EXTRAP = np.linalg.inv(np.array([_N(x, e) for x, e in _GP_NAT]))      # 절점값 = _EXTRAP @ GP값
+
+
+def _avg_nodal(mesh, gp_v):
+    """요소별 Gauss 값을 절점으로 외삽한 뒤 절점 공유 요소끼리 평균 (Midas 'Avg. Nodal' 방식)"""
+    nn = len(mesh.xy)
+    nq = gp_v.shape[2]
+    acc = np.zeros((nn, nq)); cnt = np.zeros(nn)
+    if len(mesh.plates):
+        ev = np.einsum("ag,egq->eaq", _EXTRAP, gp_v)          # (ne, 4 절점, nq)
+        np.add.at(acc, mesh.plates, ev)
+        np.add.at(cnt, mesh.plates, 1)
+    out = np.full((nn, nq), np.nan)
+    ok = cnt > 0
+    out[ok] = acc[ok] / cnt[ok, None]
+    return out
 
 
 def _spr(mesh, gp_xy, gp_v):
@@ -454,9 +479,13 @@ def _post(m, mesh, u, rf, pdata, bdata, sup_nodes, line_sup=None, BE=None):
     keys = ("Mx", "My", "Mxy", "Qx", "Qy")
     pS, pP, pD = pdata
     gp_v = np.einsum("egij,ej->egi", pS, u[pD]) if len(pD) else np.zeros((0, 4, 5))
-    nodal = _spr(mesh, pP, gp_v)
+    if m.get("nodal_method", "avg") == "spr":
+        nodal = _spr(mesh, pP, gp_v)
+    else:
+        nodal = _avg_nodal(mesh, gp_v)
     for i, k in enumerate(keys):
         out[k] = nodal[:, i]
+    out["elem_center"] = gp_v.mean(axis=1) if len(gp_v) else np.zeros((0, 5))   # 요소 중심값 (ne, 5)
     # ── 보 ──
     beams = {}
     for e, ((dofs, K, (kb, Tb, kt, Tt, L)), lid) in enumerate(zip(bdata, mesh.beam_line)):

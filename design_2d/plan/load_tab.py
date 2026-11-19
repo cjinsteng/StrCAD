@@ -23,6 +23,7 @@ class LoadTabMixin:
         self.sel_load_ids = set()
         self.lv = {k: tk.StringVar(value=v) for k, v in (("p", "50"), ("w1", "10"), ("w2", "10"), ("q", "5"))}
         self.lv_replace = tk.BooleanVar(value=False)
+        self.lv_sw = tk.BooleanVar(value=False)        # 면하중: 슬래브 자중 포함 (기본 해제)
         self.load_kind = tk.StringVar(value="area")
 
         top = tk.Frame(f, bg=BG2); top.pack(fill="x", padx=8, pady=(8, 2))
@@ -79,6 +80,7 @@ class LoadTabMixin:
             hint = "보 선 → 보 부재하중 · 슬래브 변/내부 → 슬래브 · 그 외 → 양 끝 노드"
         else:
             f.row("q", lambda p: entry(p, self.lv["q"], 10), "kN/m² (↓ +)")
+            check(self.load_form, "슬래브 자중 포함 (q + γ·t, 슬래브 면만)", self.lv_sw).pack(anchor="w", pady=(2, 0))
             hint = "슬래브 면 → 슬래브에 분포 · 비구조 면 → 둘레 선으로 전달 (2방향/1방향)"
         tk.Label(self.load_form, text=hint, font=FONT_S, bg=BG2, fg=TX3, justify="left",
                  wraplength=320).pack(anchor="w", pady=(4, 0))
@@ -156,7 +158,7 @@ class LoadTabMixin:
         elif k == "line":
             vals = {"w1": g("w1"), "w2": g("w2")}
         else:
-            vals = {"q": g("q")}
+            vals = {"q": g("q"), "sw": bool(self.lv_sw.get())}
         if None in vals.values():
             messagebox.showwarning("하중", "하중 값을 확인하세요.", parent=self.win); return
         _, _, key, ref = KINDS[k]

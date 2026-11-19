@@ -95,12 +95,13 @@ def new_model():
         "grid": 0.5,
         "mesh_size": 0.5,
         "torsion_factor": 1.0,
+        "nodal_method": "avg",     # 슬래브 절점값: avg(요소 외삽 평균, Midas 방식) / spr
         "nodes": {},
         "lines": {},     # {id: {ni, nj, kind:"none"|"beam", sec, mat, name}}
         "areas": {},     # {id: {nodes:[...], kind:"none"|"slab", slab, dist, name}}
         "materials": {
             1: {"name": "C24", "type": "RC", "fck": 24.0, "fy": 400.0, "E": 0.0,
-                "gamma": 24.0, "nu": 0.2},
+                "gamma": 24.0, "nu": 0.167},
             2: {"name": "SS275", "type": "STEEL", "fy": 275.0, "E": 210000.0,
                 "gamma": 78.5, "nu": 0.3},
         },
@@ -121,7 +122,10 @@ def new_model():
         },
         "supports": {},          # 노드 지점 {node: sup_type}
         "line_supports": {},     # 선 지점(벽체) {line: sup_type}
-        "cases": {1: {"name": "DL", "selfweight": 1.0}, 2: {"name": "LL", "selfweight": 0.0}},
+        # selfweight: 보 자중 계수 / slab_selfweight: 케이스 전체 슬래브 자중 계수
+        # (슬래브 자중은 보통 면하중 입력 시 '슬래브 자중 포함' 체크로 넣는다)
+        "cases": {1: {"name": "DL", "selfweight": 1.0, "slab_selfweight": 0.0},
+                  2: {"name": "LL", "selfweight": 0.0, "slab_selfweight": 0.0}},
         "combos": {1: {"name": "1.4D", "factors": {1: 1.4}},
                    2: {"name": "1.2D+1.6L", "factors": {1: 1.2, 2: 1.6}}},
         "nloads": [],    # {id, case, node, p}            (kN, ↓+)
@@ -144,6 +148,9 @@ def normalize(m):
         m[k] = {int(i): v for i, v in m.get(k, {}).items()}
     m["supports"] = {int(n): int(s) for n, s in m.get("supports", {}).items()}
     m["line_supports"] = {int(n): int(s) for n, s in m.get("line_supports", {}).items()}
+    for c in m["cases"].values():
+        if "slab_selfweight" not in c:             # 구버전: 자중 계수 = 슬래브+보
+            c["slab_selfweight"] = float(c.get("selfweight", 0) or 0)
     for c in m["combos"].values():
         c["factors"] = {int(i): float(f) for i, f in c.get("factors", {}).items()}
     for ln in m["lines"].values():
