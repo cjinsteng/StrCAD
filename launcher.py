@@ -780,8 +780,13 @@ def _selftest(out):
             try: importlib.import_module(m); lines.append("OK " + m)
             except Exception as e: lines.append(f"FAIL {m} {e!r}")
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "autotable"))
-        try: importlib.import_module("auto_table"); lines.append("OK auto_table")
-        except Exception as e: lines.append(f"FAIL auto_table {e!r}")
+        for m in ("auto_table", "at_core.app", "at_core.dxf_read", "at_core.dxf_write", "at_core.table_io", "at_core.image_io", "openpyxl"):
+            try: importlib.import_module(m); lines.append("OK " + m)
+            except Exception as e: lines.append(f"FAIL {m} {e!r}")
+        try:
+            from at_core import dxf_write as _DW
+            lines.append(f"{'OK' if os.path.exists(_DW.default_template()) else 'MISSING'} autotable/templates/schedule_form.dxf")
+        except Exception as e: lines.append(f"FAIL autotable template {e!r}")
         from cad_analysis import theme
         for rel in (("cad_analysis", "assets", "icon.ico"), ("mobile", "index.html"), ("mobile", "sketch.js")):
             p = theme.resource(*rel); lines.append(f"{'OK' if os.path.exists(p) else 'MISSING'} {'/'.join(rel)}")
