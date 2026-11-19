@@ -19,10 +19,14 @@ from . import model as M
 from . import sections as S
 
 FORM_W = 24262.63
-X0, X1, YT, YB, LX = 347.0, 21316.0, 16926.0, 231.0, 1247.0
-SUB = 2234.0
-MEM_X = (1247.0, 7949.0, 14652.0)
-BAND = 4174.0
+# 예제 도면에서 잰 정확한 값 (원본과 선·글자가 겹치도록)
+X0, X1, YT, YB, LX = 346.61, 21316.45, 16926.07, 231.07, 1246.61
+SUB = 2234.17
+MEM_X = (LX, LX + 3 * SUB, LX + 6 * SUB)
+BAND = 4173.75
+SEC_BOT = BAND - 900.0           # 단면 칸 아래 끝 (단 위에서)
+SEC_CY = (600.0 + SEC_BOT) / 2 + 50.0   # 보 단면(슬래브 윗면~보 밑) 가운데 = 단 위에서 1986.9 아래
+SEC_DX = 100.0                   # 보 단면 가운데 = 칸 가운데 + 100
 LBL_X = 796.6
 H_LBL, H_VAL, H_NAME = 75.0, 90.0, 120.0
 L_LINE_T, L_LINE_M, L_LINE_E, L_TEXT, L_NAME = "T", "ML", "ELE", "TEXT", "T"
@@ -149,12 +153,17 @@ class Sheet:
                               dxfattribs={"layer": layer, "style": "Standard"})
         t.set_placement(self.P(x, y), align=TextEntityAlignment.MIDDLE_CENTER)
 
-    def section(self, prims, cx, cy, ext, avail_w, avail_h, dimstyle):
-        """단면 요소를 칸 가운데(cx, cy)에 맞춰 그림. 크면 축소 (치수 글자는 실제값)."""
+    def section(self, prims, cx, cy, ext, avail_w, avail_h, dimstyle, anchor=None, scale=None):
+        """단면 요소를 칸 가운데(cx, cy)에 맞춰 그림. 크면 축소 (치수 글자는 실제값).
+        anchor=(lx, ly): 단면 좌표 (lx, ly) 를 (cx, cy) 에 맞춤 (원본 배치 규칙)."""
         xmin, ymin, xmax, ymax = ext
-        s = min(1.0, avail_w / (xmax - xmin), avail_h / (ymax - ymin))
-        bx = cx - (xmin + xmax) / 2 * s
-        by = cy - (ymin + ymax) / 2 * s
+        s = scale if scale is not None else min(1.0, avail_w / (xmax - xmin), avail_h / (ymax - ymin))
+        if anchor:
+            bx = cx - anchor[0] * s
+            by = cy - anchor[1] * s
+        else:
+            bx = cx - (xmin + xmax) / 2 * s
+            by = cy - (ymin + ymax) / 2 * s
         k = self.k
 
         def Q(x, y):
@@ -278,48 +287,139 @@ def _decorate(doc, form, decor, n_sheets, opts, log=print):
 # ═══════════════════════════════════════════════════════════════════
 #  부재별 표
 # ═══════════════════════════════════════════════════════════════════
-def _draw_beam_sheet(sh, members, dimstyle):
+SEC_H0 = BAND - 1500.0           # 기본 단면 그림 칸 높이 2673.75
+SHEET_H = YT - YB                 # 16695
+
+
+def _num(v):
+    try:
+        return float(v or 0)
+    except ValueError:
+        return 0.0
+
+
+def _sec_h(rows, grow=True):
+    """단(3부재)의 단면 칸 높이: 깊은 보는 300 단위로 늘림 (원본: H1950~2750 → 3574)."""
+    if not grow:
+        return SEC_H0
+    need = max([_num(r.get("h")) for r in rows] + [0.0]) + 820.0     # 원본: H2750 → 3574
+    steps = max(0, math.ceil((need - SEC_H0) / 300.0 - 1e-9))
+    return min(SEC_H0 + 300.0 * steps, SHEET_H - 1500.0)
+
+
+def plan_beam_sheets(rows, grow=True):
+    """→ [[(부재들, 단면칸높이), …] 시트별]  (단 높이 = 1500 + 단면칸)
+    원본 도면처럼: 깊은 보 단은 늘리고, 시트에 안 들어가면 같은 시트의 보통 단을 300 줄여서(2374) 맞춤."""
+    small = SEC_H0 - 300.0
+
+    def fits(cur, extra):
+        return sum(1500.0 + h for _, h in cur) + extra <= SHEET_H + 0.5
+
+    def squeeze(cur):
+        """모든 단을 (단면이 들어가는 한) 300 씩 줄인 목록 (원본 시트 4 처럼)."""
+        out = []
+        for bm, h in cur:
+            hh = h - 300.0
+            ok = hh >= small - 0.5 and all(_num(r.get("h")) + 870.0 <= hh + 0.5 for r in bm)
+            out.append((bm, hh if ok else h))
+        return out
+
+    bands = [rows[i:i + 3] for i in range(0, len(rows), 3)]
+    sheets, cur = [], []
+    for bm in bands:
+        h = _sec_h(bm, grow)
+        if cur and not fits(cur, 1500.0 + h):
+            sq = squeeze(cur + [(bm, h)]) if (grow and h <= SEC_H0) else None     # 보통 단을 넣을 때만 줄임
+            if sq is not None and fits(sq, 0.0):
+                cur = sq
+                continue
+            sheets.append(cur)
+            cur = []
+        cur.append((bm, h))
+    while fits(cur, 1500.0 + SEC_H0):                  # 남는 자리는 빈 단으로 (원본처럼 틀만)
+        cur.append(([], SEC_H0))
+    sheets.append(cur)
+    return sheets
+
+
+def _beam_cy(H, sec_h=SEC_H0):
+    """단 위에서 보 단면(슬래브 윗면~보 밑) 가운데까지 거리."""
+    if sec_h <= SEC_H0:
+        return 1986.875                                  # 원본 고정값
+    sb = 600.0 + sec_h
+    cy = max((600.0 + sb) / 2 + 50.0, 600.0 + H / 2 + 650.0)   # 깊은 보: 위 치수가 구분 줄에 안 닿게
+    return min(cy, sb - H / 2 - 60.0)
+
+
+def _beam_scale(B, H, sec_h=SEC_H0):
+    """원본 배치로 칸을 넘지 않게 하는 축척 (보통은 1)."""
+    cy = _beam_cy(H, sec_h)
+    up = cy - 600.0 - 20.0
+    dn = 600.0 + sec_h - cy - 40.0
+    lf = SUB / 2 + SEC_DX - 30.0
+    rt = SUB / 2 - SEC_DX - 30.0
+    return min(1.0, up / (H / 2 + 600.0), dn / (H / 2 + 20.0), lf / (B / 2 + 420.0), rt / (B / 2 + 120.0))
+
+
+def _bar_text(v, total):
+    """2단 배근 글자: total=True 면 '4/2-D19' → '6-D19'."""
+    if not total or not v:
+        return v
+    p = M.parse_rebar(v)
+    if not p or not p["n2"] or "+" in v:
+        return v
+    import re as _re
+    m = _re.fullmatch(r"(\d+)/(\d+)-([A-Z]{0,3})(\d+)", M._clean(v))
+    return f"{p['n1'] + p['n2']}-{m.group(3)}{m.group(4)}" if m else v
+
+
+def _draw_beam_sheet(sh, bands, dimstyle, total=False):
+    """bands: [(부재들 ≤3, 단면칸높이)]"""
     L = sh.line
+    tops = []
+    y = YT
+    for _bm, h in bands:
+        tops.append((y, h))
+        y -= 1500.0 + h
+    ybot = y
     for x in MEM_X:
-        L(x, YT, x, YB, L_LINE_T)
-    for b in range(1, 4):
-        L(X0, YT - b * BAND, X1, YT - b * BAND, L_LINE_T)
-    for b in range(4):
-        Y = YT - b * BAND
+        L(x, YT, x, ybot, L_LINE_T)
+    for (Y, h) in tops[1:]:
+        L(X0, Y, X1, Y, L_LINE_T)
+    if ybot > YB + 1:
+        L(X0, ybot, X1, ybot, L_LINE_T)
+    for (Y, h) in tops:
+        sb = 600.0 + h                                # 단면 칸 아래 끝
+        bh = sb + 900.0
         L(X0, Y - 300, X1, Y - 300, L_LINE_M)
-        L(X0, Y - 3274, X1, Y - 3274, L_LINE_M)
+        L(X0, Y - sb, X1, Y - sb, L_LINE_M)
         L(LX, Y - 600, X1, Y - 600, L_LINE_E)
-        L(X0, Y - 3574, X1, Y - 3574, L_LINE_E)
-        L(X0, Y - 3874, X1, Y - 3874, L_LINE_E)
+        L(X0, Y - sb - 300, X1, Y - sb - 300, L_LINE_E)
+        L(X0, Y - sb - 600, X1, Y - sb - 600, L_LINE_E)
         for mx in MEM_X:
             for j in (1, 2):
-                L(mx + j * SUB, Y - 300, mx + j * SUB, Y - BAND, L_LINE_M)
+                L(mx + j * SUB, Y - 300, mx + j * SUB, Y - bh, L_LINE_M)
         sh.text("부   호", LBL_X, Y - 150, H_LBL)
-        sh.text("단   면", LBL_X, (Y - 300 + Y - 3274) / 2, H_LBL)
-        sh.text("상 부 근", LBL_X, Y - 3424, H_LBL)
-        sh.text("하 부 근", LBL_X, Y - 3724, H_LBL)
-        sh.text("늑   근", LBL_X, Y - 4024, H_LBL)
-    for idx, r in enumerate(members):
-        b, m = divmod(idx, 3)
-        Y = YT - b * BAND
-        mx = MEM_X[m]
-        right = X1 if m == 2 else MEM_X[m + 1]
-        sh.text(r.get("name", ""), (mx + right) / 2, Y - 150, H_NAME, layer=L_NAME)
-        for label, pos, p in M.beam_zones(r):
-            cx = mx + (pos + 0.5) * SUB
-            if pos == 2:
-                cx = (mx + 2 * SUB + right) / 2
-            sh.text(label, cx, Y - 450, H_VAL)
-            sh.text(r.get(p + "top", ""), cx, Y - 3424, H_VAL)
-            sh.text(r.get(p + "bot", ""), cx, Y - 3724, H_VAL)
-            sh.text(r.get(p + "stir", ""), cx, Y - 4024, H_VAL)
-            try:
-                B, H = float(r.get("b") or 0), float(r.get("h") or 0)
-            except ValueError:
-                B = H = 0
-            if B > 0 and H > 0:
-                prims = S.beam_section(B, H, r.get("slab") or 0, r.get(p + "top", ""), r.get(p + "bot", ""), r.get(p + "stir", ""))
-                sh.section(prims, cx, (Y - 600 + Y - 3274) / 2, S.beam_extent(B, H), SUB - 200, 2674 - 150, dimstyle)
+        sh.text("단   면", LBL_X, (Y - 300 + Y - sb) / 2, H_LBL)
+        sh.text("상 부 근", LBL_X, Y - sb - 150, H_LBL)
+        sh.text("하 부 근", LBL_X, Y - sb - 450, H_LBL)
+        sh.text("늑   근", LBL_X, Y - sb - 750, H_LBL)
+    for (bm, h), (Y, _h) in zip(bands, tops):
+        sb = 600.0 + h
+        for m, r in enumerate(bm):
+            mx = MEM_X[m]
+            sh.text(r.get("name", ""), mx + 1.5 * SUB, Y - 150, H_NAME, layer=L_NAME)
+            for label, pos, p in M.beam_zones(r):
+                cx = mx + (pos + 0.5) * SUB
+                sh.text(label, cx, Y - 450, H_VAL)
+                sh.text(_bar_text(r.get(p + "top", ""), total), cx, Y - sb - 150, H_VAL)
+                sh.text(_bar_text(r.get(p + "bot", ""), total), cx, Y - sb - 450, H_VAL)
+                sh.text(r.get(p + "stir", ""), cx, Y - sb - 750, H_VAL)
+                B, H = _num(r.get("b")), _num(r.get("h"))
+                if B > 0 and H > 0:
+                    prims = S.beam_section(B, H, r.get("slab") or 0, r.get(p + "top", ""), r.get(p + "bot", ""), r.get(p + "stir", ""))
+                    sh.section(prims, cx + SEC_DX, Y - _beam_cy(H, h), S.beam_extent(B, H), 0, 0, dimstyle,
+                               anchor=(B / 2, H / 2), scale=_beam_scale(B, H, h))
 
 
 C_ROWS = [("부   호", 300, "name"), ("층", 300, "floor"), ("단   면", 2674, "sec"), ("크   기", 300, "size"),
@@ -442,16 +542,21 @@ def export_dxf(path, mtype, rows, template=None, opts=None, log=print):
     _ensure_layers(doc)
     k = form["w"] / FORM_W
     dimstyle = _dimstyle(doc, k)
-    per = _per_sheet(mtype)
-    n_sheets = max(1, math.ceil(len(rows) / per))
+    if mtype == "beam":
+        plan = plan_beam_sheets(rows, grow=opts.get("deep", "grow") == "grow")
+        n_sheets = len(plan)
+    else:
+        per = _per_sheet(mtype)
+        n_sheets = max(1, math.ceil(len(rows) / per))
     opts.setdefault("title", f"{M.TYPES[mtype]['title']} 일람표")
     _decorate(doc, form, decor, n_sheets, opts, log)
     for i in range(n_sheets):
         sh = Sheet(doc, form, i)
-        part = rows[i * per:(i + 1) * per]
         if mtype == "beam":
-            _draw_beam_sheet(sh, part, dimstyle)
-        elif mtype == "column":
+            _draw_beam_sheet(sh, plan[i], dimstyle, total=opts.get("layer_text", "total") == "total")
+            continue
+        part = rows[i * per:(i + 1) * per]
+        if mtype == "column":
             _draw_column_sheet(sh, part, dimstyle)
         else:
             _draw_table_sheet(sh, mtype, part)

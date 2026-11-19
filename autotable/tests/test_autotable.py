@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 from at_core import model as M  # noqa: E402
 from at_core import table_io as TI  # noqa: E402
 from at_core.dxf_read import import_dxf  # noqa: E402
-from at_core.dxf_write import default_template, export_dxf  # noqa: E402
+from at_core.dxf_write import default_template, export_dxf, plan_beam_sheets  # noqa: E402
 
 BEAMS = [
     dict(name="-1G1", b="350", h="650", slab="200", kind="양단/중앙", e_top="-", e_bot="2-D19", e_stir="D10@250",
@@ -67,7 +67,7 @@ def test_beam_dxf_roundtrip():
         n = export_dxf(p, "beam", rows, opts={"drawing_no": "S-201", "notes": ["1. 테스트"]}, log=lambda *a: None)
         assert n == 2
         res, warn, meta = import_dxf(p, log=lambda *a: None)
-        _cmp("beam", rows, res["beam"], skip=("note",))
+        _cmp("beam", rows, res["beam"], skip=("note", "drawn"))
         assert meta["drawing_no"] == "S-201"
         assert meta["notes"] == ["1. 테스트"]
 
@@ -120,6 +120,64 @@ def test_midas_long():
     rows = TI.apply_mapping(g, h, mp, "beam", lf)
     assert rows[0]["kind"] == "양단/중앙" and rows[0]["m_bot"] == "4-D22" and rows[0]["e_stir"] == "2-D10@150"
     assert rows[1]["kind"] == "전단면"
+
+
+MGT = """*REBAR-BEAM    ; Modify Beam Rebar Data
+; iSEC, iSUBSEC, SBARNAME, DT, DB, CRACK, iDEFLEC, SIDEBAR, iSIDENUM, STIRNAME, SKINNAME, bSAMETOPBOT, bSAMEIMJ, bSAMELAYER ; line 1
+  201,    0, D10, 0.0762, 0.0762, 0, 0, , 0, , , YES, YES, YES
+       0, 6, 2, D25, D25,   0, 5, 0, D25, D25,   0.15, 2, 0
+       0, 5, 0, D25, D25,   0, 6, 2, D25, D25,   0.2, 2, 0
+       0, 6, 2, D25, D25,   0, 5, 0, D25, D25,   0.15, 2, 0
+  205,    0, D10, 0.0762, 0.0762, 0, 0, , 0, , , YES, YES, YES
+       0, 4, 2, D25, D22,   0, 4, 2, D25, D25,   0.15, 3, 0
+       0, 4, 2, D25, D22,   0, 4, 2, D25, D25,   0.15, 3, 0
+       0, 4, 2, D25, D22,   0, 4, 2, D25, D25,   0.15, 3, 0
+"""
+
+
+def test_midas_mgt():
+    assert TI.is_mgt(MGT)
+    rows, warn = TI.parse_mgt(MGT)
+    a, b = rows
+    assert (a["name"], a["kind"], a["e_top"], a["e_bot"], a["e_stir"]) == ("201", "양단/중앙", "6/2-D25", "5-D25", "D10@150")
+    assert (a["m_top"], a["m_bot"], a["m_stir"]) == ("5-D25", "6/2-D25", "D10@200")
+    assert (b["kind"], b["e_top"], b["e_stir"]) == ("전단면", "4-D25/2-D22", "3-D10@150")
+    assert M.parse_rebar(b["e_top"])["total"] == 6
+    sec = "*UNIT\n   KN, M, KJ, C\n*SECTION\n   201, DBUSER, 2G1, CC, 0, 0, 0, 0, 0, 0, YES, NO, SB, 2, 0.7, 0.4, 0, 0\n"
+    rows, _ = TI.parse_mgt(sec + MGT)
+    assert (rows[0]["name"], rows[0]["b"], rows[0]["h"]) == ("2G1", "400", "700")
+
+
+def test_drawn_layers():
+    """글자 6-D19 + 그림 4/2 → 4/2-D19, 다르면 표시."""
+    r = _full("beam", [dict(name="G1", kind="양단/중앙", e_bot="2-D19", m_bot="6-D19")])[0]
+    r["drawn"] = M.drawn_format({"e_bot": (2, 0), "m_bot": (4, 2)})
+    assert M.apply_drawn(r) == [] and r["m_bot"] == "4/2-D19" and M.drawn_label(r) == "✓ 일치"
+    r["m_bot"] = "5-D19"
+    assert [k for k, _ in M.drawn_issues(r)] == ["m_bot"] and M.drawn_label(r).startswith("≠")
+    rows = _full("beam", BEAMS)
+    rows[0]["m_bot"] = "4/2-D19"
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "b.dxf")
+        export_dxf(p, "beam", rows, opts={"layer_text": "total"}, log=lambda *a: None)
+        res, warn, _ = import_dxf(p, log=lambda *a: None)
+        g = res["beam"][0]
+        assert g["m_bot"] == "4/2-D19" and M.drawn_label(g) == "✓ 일치", (g["m_bot"], g.get("drawn"))
+        assert all(M.drawn_label(x) == "✓ 일치" for x in res["beam"] if x.get("drawn"))
+
+
+def test_deep_beam_bands():
+    """깊은 보 단은 늘리고(1:1), 시트에 넣으려 보통 단을 줄임 — 예제 도면 시트 3·4 와 같은 구성."""
+    mk = lambda n, h: dict(name=n, b="450", h=str(h), kind="전단면")
+    rows = [mk(f"A{i}", 800) for i in range(9)] + [mk("D1", 1950), mk("D2", 1800), mk("D3", 2550),
+                                                   mk("D4", 2750), mk("D5", 2600), mk("D6", 1400),
+                                                   mk("N1", 1100), mk("N2", 800), mk("N3", 900),
+                                                   mk("N4", 950), mk("N5", 800), mk("N6", 800),
+                                                   mk("N7", 800), mk("N8", 900), mk("N9", 650),
+                                                   mk("N10", 650), mk("D7", 2700), mk("D8", 2550), mk("N11", 850)]
+    plan = plan_beam_sheets(rows)
+    hs = [[round(h) for bm, h in sh if bm] for sh in plan]
+    assert hs == [[2674, 2674, 2674], [3574, 3574, 2674], [2374, 2374, 3574, 2374]], hs
 
 
 if __name__ == "__main__":

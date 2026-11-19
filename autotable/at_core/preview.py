@@ -121,7 +121,10 @@ class Preview(tk.Frame):
                          f"{label}: As하 {pb['area']:.0f} mm²" if pb else f"{label}: —")
         if not (B > 0 and Hh > 0):
             self.cv.create_text(W / 2, H / 2, text="B, H 를 입력하세요", fill=T.FAINT, font=T.F_UI)
-        self.info.config(text=f"B×H = {r.get('b') or '?'}×{r.get('h') or '?'}   슬래브 {r.get('slab') or '-'}   구분 {r.get('kind')}\n" + "\n".join(lines))
+        chk = M.drawn_label(r, "beam")
+        self.info.config(text=f"B×H = {r.get('b') or '?'}×{r.get('h') or '?'}   슬래브 {r.get('slab') or '-'}   구분 {r.get('kind')}\n"
+                              + "\n".join(lines) + (f"\n그림 대조: {chk}" if chk else ""),
+                         fg=T.NG if chk.startswith("≠") else T.MUTED)
 
     def _column(self, r, W, H):
         B = self._num(r.get("b"))
@@ -137,7 +140,7 @@ class Preview(tk.Frame):
         if p and B > 0 and D > 0:
             Ag = B * D if r.get("shape") != "원형" else 3.14159 * B * B / 4
             rho = f"   ρ = {p['area'] / Ag * 100:.2f}%"
-        self.info.config(text=f"{r.get('floor') or ''}  {r.get('b')}×{r.get('h')}  주근 {r.get('main') or '-'}{rho}\n"
+        self.info.config(fg=T.MUTED, text=f"{r.get('floor') or ''}  {r.get('b')}×{r.get('h')}  주근 {r.get('main') or '-'}{rho}\n"
                               f"대근 단부 {r.get('hoop_e') or '-'} / 중앙 {r.get('hoop_m') or '-'}")
 
     def _wall(self, r, W, H):
@@ -145,7 +148,7 @@ class Preview(tk.Frame):
         if t > 0:
             prims = S.wall_section(t, r.get("layer"), r.get("vert"), r.get("horz"))
             self._prims(prims, (-350, -150, 1050, t + 150), (10, 10, W - 10, H - 10))
-        self.info.config(text=f"두께 {r.get('t')}  {r.get('layer')}\n수직 {r.get('vert') or '-'}   수평 {r.get('horz') or '-'}   (1 m 구간 평단면)")
+        self.info.config(fg=T.MUTED, text=f"두께 {r.get('t')}  {r.get('layer')}\n수직 {r.get('vert') or '-'}   수평 {r.get('horz') or '-'}   (1 m 구간 평단면)")
 
     def _slab(self, r, W, H):
         cv = self.cv
@@ -158,5 +161,5 @@ class Preview(tk.Frame):
         cv.create_line(cx, y0 + 10, cx, y1 - 10, arrow="both", fill=T.BLUE, width=2)
         cv.create_text(cx, cy - 12, text="단변", fill=T.ORANGE_D, font=T.F_SMALL)
         cv.create_text(cx + 18, y0 + 20, text="장변", fill=T.BLUE, font=T.F_SMALL, anchor="w")
-        self.info.config(text=(f"단변  상부 {r.get('x_te') or '-'} / {r.get('x_tm') or '-'}   하부 {r.get('x_be') or '-'} / {r.get('x_bm') or '-'}\n"
+        self.info.config(fg=T.MUTED, text=(f"단변  상부 {r.get('x_te') or '-'} / {r.get('x_tm') or '-'}   하부 {r.get('x_be') or '-'} / {r.get('x_bm') or '-'}\n"
                                f"장변  상부 {r.get('y_te') or '-'} / {r.get('y_tm') or '-'}   하부 {r.get('y_be') or '-'} / {r.get('y_bm') or '-'}"))

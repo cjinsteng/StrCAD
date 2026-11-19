@@ -63,6 +63,7 @@ TYPES = {
             Col("j_bot", "하부근", "내단부", kind="rebar", aliases=("내단부하부근", "END-JBOT", "JBOT")),
             Col("j_stir", "늑근", "내단부", kind="stir", aliases=("내단부늑근", "END-JSTIRRUP", "JSTIRRUP")),
             Col("note", "비고", width=130, aliases=NOTE_AL),
+            Col("drawn", "그림 대조", width=230, kind="drawn"),
         ],
     },
     "column": {
@@ -198,12 +199,19 @@ def is_empty_mark(s):
     return (s or "").strip() in EMPTY_MARKS
 
 
+_TWO_RE = re.compile(r"(\d+-[A-Z]{0,3}\d{1,2})/(\d+-[A-Z]{0,3}\d{1,2})")
+
+
 def norm_rebar(s, pfx="D"):
-    """'3-22'→'3-D22', '4d19'→'4-D19', '5/2-22'→'5/2-D22', 'D22-4'→'4-D22'. 못 알아보면 그대로."""
+    """'3-22'→'3-D22', '4d19'→'4-D19', '5/2-22'→'5/2-D22', 'D22-4'→'4-D22', '6-25/2-22'→'6-D25/2-D22'."""
     raw = (s or "").strip()
     if not raw or is_empty_mark(raw):
         return "-" if raw else ""
     t = _clean(raw)
+    m2 = _TWO_RE.fullmatch(t)
+    if m2:
+        a, b = norm_rebar(m2.group(1), pfx), norm_rebar(m2.group(2), pfx)
+        return f"{a}/{b}" if parse_rebar(a) and parse_rebar(b) else raw
     out = []
     for p in t.split("+"):
         m = _REBAR_RE.fullmatch(p)
@@ -317,6 +325,13 @@ def parse_rebar(s):
     t = _clean(s)
     if not t or is_empty_mark(t):
         return None
+    m2 = _TWO_RE.fullmatch(t)
+    if m2:                                   # 1단/2단 지름이 다를 때 '6-D25/2-D22'
+        a, b = parse_rebar(m2.group(1)), parse_rebar(m2.group(2))
+        if not a or not b:
+            return None
+        return {"n1": a["total"], "n2": b["total"], "pfx": a["pfx"], "dia": max(a["dia"], b["dia"]),
+                "total": a["total"] + b["total"], "area": a["area"] + b["area"]}
     n1 = n2 = 0
     dia = 0
     pfx = ""
@@ -373,8 +388,7 @@ def swap_prefix(s, kind, new_pfx):
         return v
     t = _clean(v)
     if kind == "rebar":
-        return "+".join(re.sub(r"^(\d+(?:/\d+)?)-[A-Z]{0,3}(\d+)$", lambda m: f"{m.group(1)}-{new_pfx}{m.group(2)}",
-                               norm_rebar(p, new_pfx)) for p in t.split("+"))
+        return re.sub(r"(?<=-)[A-Z]{0,3}(?=\d)", new_pfx, norm_rebar(t, new_pfx))
     if kind == "stir":
         n = norm_stir(t, new_pfx)
         return re.sub(r"^((?:\d+-)?)[A-Z]{0,3}(\d+@)", lambda m: f"{m.group(1)}{new_pfx}{m.group(2)}", n)
@@ -449,3 +463,80 @@ def clean_rows(mtype, rows):
     return [r for r in rows if (r.get("name") or "").strip() or any(
         (r.get(k) or "").strip() and (r.get(k) or "").strip() != c.default
         for k, c in zip(keys, cols(mtype)))]
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  그림 대조 (CAD 단면 그림의 철근 개수 ↔ 글자)
+#  row["drawn"] = "e_top=0/0;e_bot=4/2;m_bot=6/0"  (1단/2단 개수)
+# ═══════════════════════════════════════════════════════════════════
+_ZN = {"e_": "단부", "m_": "중앙부", "j_": "내단부"}
+_PN = {"top": "상부", "bot": "하부"}
+
+
+_DORDER = ["e_top", "e_bot", "m_top", "m_bot", "j_top", "j_bot"]
+
+
+def drawn_format(d):
+    return ";".join(f"{k}={d[k][0]}/{d[k][1]}" for k in _DORDER if k in d)
+
+
+def drawn_parse(s):
+    out = {}
+    for part in (s or "").split(";"):
+        m = re.fullmatch(r"\s*([emj]_(?:top|bot))=(\d+)/(\d+)\s*", part)
+        if m:
+            out[m.group(1)] = (int(m.group(2)), int(m.group(3)))
+    return out
+
+
+def _zone_label(row, key):
+    z = _ZN[key[:2]]
+    if key.startswith("e_") and row.get("kind") == "전단면":
+        z = "전단면"
+    elif key.startswith("e_") and row.get("kind") == "외단/중앙/내단":
+        z = "외단부"
+    return f"{z} {_PN[key[2:]]}"
+
+
+def drawn_issues(row, mtype="beam"):
+    """[(열 키, 설명)] — 글자와 그림 개수가 다른 칸."""
+    d = drawn_parse(row.get("drawn", ""))
+    out = []
+    for key, (n1, n2) in d.items():
+        if disabled(mtype, row, key):
+            continue
+        v = row.get(key, "")
+        p = parse_rebar(v)
+        if not p:
+            if (n1 + n2) and not is_empty_mark(v):
+                out.append((key, f"{_zone_label(row, key)}: 글자 '{v or '빈칸'}' / 그림 {n1 + n2}개"))
+            continue
+        if p["total"] != n1 + n2:
+            out.append((key, f"{_zone_label(row, key)}: 글자 {p['total']}개 / 그림 {n1 + n2}개" + (f"({n1}/{n2})" if n2 else "")))
+        elif p["n2"] and (p["n1"], p["n2"]) != (n1, n2):
+            out.append((key, f"{_zone_label(row, key)}: 글자 {p['n1']}/{p['n2']} / 그림 {n1}/{n2}"))
+    return out
+
+
+def drawn_label(row, mtype="beam"):
+    if not drawn_parse(row.get("drawn", "")):
+        return ""
+    iss = drawn_issues(row, mtype)
+    if not iss:
+        return "✓ 일치"
+    return "≠ " + " · ".join(t for _, t in iss)
+
+
+def apply_drawn(row):
+    """가져올 때: 합계가 같으면 그림대로 2단 표기(6-D19 → 4/2-D19). 다르면 경고 문구 반환."""
+    d = drawn_parse(row.get("drawn", ""))
+    for key, (n1, n2) in d.items():
+        if not n2 or disabled("beam", row, key):
+            continue
+        v = row.get(key, "")
+        p = parse_rebar(v)
+        if p and not p["n2"] and "+" not in v and p["total"] == n1 + n2:
+            m = re.fullmatch(r"(\d+)-([A-Z]{0,3})(\d+)", _clean(v))
+            if m:
+                row[key] = f"{n1}/{n2}-{m.group(2)}{m.group(3)}"
+    return [f"{row.get('name')}: {t}" for _, t in drawn_issues(row)]
