@@ -176,6 +176,7 @@ class SheetGrid(tk.Frame):
         r0, r1 = self.top, min(self.nrows, self.top + nvis)
         (ra, ca), (rb, cb) = self.sel_range()
         fz = self.RH_W + self.frozen_w()
+        issues = {}
 
         def cells(col_ids):
             for c in col_ids:
@@ -188,6 +189,8 @@ class SheetGrid(tk.Frame):
                     y0 = self.row_y(r)
                     phantom = r >= len(self.rows)
                     row = self.rows[r] if not phantom else {}
+                    if row.get("drawn") and r not in issues:
+                        issues[r] = {k for k, _ in M.drawn_issues(row, self.mtype)}
                     dis = (not phantom) and M.disabled(self.mtype, row, col.key)
                     insel = ra <= r <= rb and ca <= c <= cb and (ra, ca) != (rb, cb)
                     if dis:
@@ -200,6 +203,19 @@ class SheetGrid(tk.Frame):
                         bg = T.ALT if r % 2 else T.PANEL
                     cv.create_rectangle(x0, y0, x0 + w, y0 + self.ROW_H, fill=bg, outline=T.LINE, tags="g")
                     v = row.get(col.key, "")
+                    if col.kind == "drawn":
+                        lab = M.drawn_label(row, self.mtype) if v else ""
+                        if lab:
+                            cv.create_text(x0 + 6, y0 + self.ROW_H / 2, text=lab, anchor="w", font=T.F_SMALL,
+                                           fill=T.NG if lab.startswith("≠") else T.OK, tags="g")
+                        continue
+                    if col.key in issues.get(r, ()):      # 그림과 다른 칸: 빨간 모서리
+                        cv.create_polygon(x0 + w - 9, y0 + 1, x0 + w - 1, y0 + 1, x0 + w - 1, y0 + 9, fill=T.NG,
+                                          outline="", tags="g")
+                    if col.kind == "choice" and not dis and not phantom:
+                        cv.create_text(x0 + w - 8, y0 + self.ROW_H / 2, text="▾", fill=T.FAINT, font=T.F_SMALL, tags="g")
+                    if v and c >= self.frozen and x0 + w / 2 < fz + 12:     # 고정 열 뒤로 숨은 칸 글자
+                        continue
                     if v:
                         ok = M.is_valid(col.kind, v, col.choices)
                         fg = T.DIS_TX if dis else (T.NG if not ok else (T.INK if col.kind in ("text", "num", "choice") else T.BLUE))
@@ -339,15 +355,21 @@ class SheetGrid(tk.Frame):
         if r >= len(self.rows) and self.mode == "nav":
             bg = "#F7F9FC"
         val = self._cell_value(r, c)
+        if col.kind == "drawn":
+            val = M.drawn_label(self.rows[r], self.mtype) if r < len(self.rows) and val else ""
+            dis = True
+            bg = T.DIS if not self._is_multi() else T.SEL
         ok = M.is_valid(col.kind, val, col.choices)
         fg = T.DIS_TX if dis else (T.NG if not ok else (T.INK if col.kind in ("text", "num", "choice") else T.BLUE))
-        just = "left" if col.key in ("name", "note", "floor") else "center"
+        if col.kind == "drawn":
+            fg = T.NG if val.startswith("≠") else T.OK
+        just = "left" if col.key in ("name", "note", "floor", "drawn") else "center"
         font = T.F_CELL_B if col.key == "name" else T.F_CELL
         if self.mode == "nav":
             self.ed.config(bg=bg, fg=fg, insertontime=0, selectbackground=bg, selectforeground=fg,
                            justify=just, font=font, readonlybackground=bg)
             self._set_text(val)
-            self.ed.config(state="readonly" if (dis or col.kind == "choice") else "normal")
+            self.ed.config(state="readonly" if (dis or col.kind in ("choice", "drawn")) else "normal")
             self.ed.select_range(0, "end")
             self.ed.icursor("end")
         else:
@@ -377,6 +399,8 @@ class SheetGrid(tk.Frame):
     def _begin_edit(self, select_all=False):
         r, c = self.cur
         col = self.cols[c]
+        if col.kind == "drawn":
+            return
         if r < len(self.rows) and M.disabled(self.mtype, self.rows[r], col.key):
             self.on_status(self._dis_msg(col))
             return
@@ -460,7 +484,7 @@ class SheetGrid(tk.Frame):
         elif col.kind in ("rebar", "stir", "spacing"):
             self.on_status(f"{col.full_title}  ·  예: {self._example(col.kind)}  ·  숫자만 쳐도 강종({self.get_prefix()})이 붙습니다  ·  F4 강종 바꾸기")
         elif col.kind == "choice":
-            self.on_status(f"{col.title}: " + "  ".join(f"[{i + 1}] {v}" for i, v in enumerate(col.choices)) + "   (숫자키 또는 Space)")
+            self.on_status(f"{col.title}: " + "  ".join(f"[{i + 1}] {v}" for i, v in enumerate(col.choices)) + "   (클릭 · 숫자키 · Space)")
         else:
             self.on_status("")
 
@@ -648,6 +672,9 @@ class SheetGrid(tk.Frame):
                     else:
                         self._open_choice()
                     return "break"
+            if col.kind == "drawn" and e.char and e.char.isprintable():
+                self.on_status("그림 대조: CAD 에서 가져온 단면 그림의 철근 개수와 글자를 비교합니다 (Delete 로 지움).")
+                return "break"
             if dis and e.char and e.char.isprintable():
                 self.on_status(self._dis_msg(col))
                 return "break"
@@ -824,7 +851,8 @@ class SheetGrid(tk.Frame):
                 for c in range(ca, cb + 1):
                     col = self.cols[c]
                     self._ensure_row(r)
-                    self.rows[r][col.key] = M.normalize(col.kind, block[0][0], pfx, col.choices)
+                    if col.kind != "drawn":
+                        self.rows[r][col.key] = M.normalize(col.kind, block[0][0], pfx, col.choices)
         else:
             for i, line in enumerate(block):
                 for j, v in enumerate(line):
@@ -833,6 +861,8 @@ class SheetGrid(tk.Frame):
                         break
                     col = self.cols[c]
                     self._ensure_row(ra + i)
+                    if col.kind == "drawn":
+                        continue
                     self.rows[ra + i][col.key] = M.normalize(col.kind, v, pfx, col.choices)
             self.anchor = (ra, ca)
             self.cur = (ra + len(block) - 1, min(len(self.cols) - 1, ca + max(len(x) for x in block) - 1))
@@ -989,6 +1019,7 @@ class SheetGrid(tk.Frame):
             return
         self.move_to(r, c, extend=shift)
         self._drag = "cell"
+        self._press = (r, c) if not shift else None
 
     def _motion_drag(self, e):
         if self._resize:
@@ -1015,7 +1046,14 @@ class SheetGrid(tk.Frame):
 
     def _release(self, e):
         self._resize = None
+        was = self._drag
         self._drag = None
+        press, self._press = getattr(self, "_press", None), None
+        if was == "cell" and press and press == self.cur == self.anchor:     # 클릭 = 구분 목록 열기
+            r, c = press
+            col = self.cols[c]
+            if col.kind == "choice" and r < len(self.rows) and not M.disabled(self.mtype, self.rows[r], col.key):
+                self.after(10, self._open_choice)
 
     def _dbl(self, e):
         r, c = self.cell_at(e.x, e.y)

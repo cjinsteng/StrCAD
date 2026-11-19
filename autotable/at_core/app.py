@@ -88,7 +88,7 @@ class AutoTableApp(tk.Toplevel):
         tbtn("저장", self.save)
         sep()
         self.b_imp = tbtn("가져오기 ▾", lambda: self._menu(self.b_imp, [
-            ("CAD 일람표 (DXF)…", self.import_dxf), ("MIDAS Gen (txt)…", lambda: self.import_table("midas")),
+            ("CAD 일람표 (DXF)…", self.import_dxf), ("MIDAS Gen (MGT · txt)…", lambda: self.import_table("midas")),
             ("엑셀 (xlsx)…", lambda: self.import_table("excel")), ("TXT / CSV…", lambda: self.import_table("txt")),
             None, ("PDF…", self.import_pdf), ("사진 (jpg·png)…", self.import_photo)]), primary=True)
         self.b_exp = tbtn("내보내기 ▾", lambda: self._menu(self.b_exp, [
@@ -342,12 +342,21 @@ class AutoTableApp(tk.Toplevel):
 
     def import_table(self, kind):
         ft = {"excel": [("엑셀", "*.xlsx *.xlsm"), ("모든 파일", "*.*")],
-              "midas": [("MIDAS 텍스트", "*.txt *.out *.csv"), ("모든 파일", "*.*")],
+              "midas": [("MIDAS (MGT·텍스트)", "*.mgt *.txt *.out *.csv"), ("모든 파일", "*.*")],
               "txt": [("TXT/CSV", "*.txt *.csv *.tsv"), ("모든 파일", "*.*")]}[kind]
         p = filedialog.askopenfilename(parent=self, title="표 가져오기", filetypes=ft)
         if not p:
             return
         from . import table_io as TI
+        if not p.lower().endswith((".xlsx", ".xlsm", ".xltx")):
+            try:
+                txt = TI.read_text(p)
+            except Exception:                         # noqa: BLE001
+                txt = ""
+            if TI.is_mgt(txt):                        # MIDAS MGT (*REBAR-BEAM)
+                rows, warn = TI.parse_mgt(txt)
+                self._merge({"beam": rows}, warn, p)
+                return
         try:
             grids = TI.read_grids(p)
         except Exception as e:                        # noqa: BLE001
@@ -436,7 +445,8 @@ class AutoTableApp(tk.Toplevel):
             for i, t in enumerate(types):
                 path = p if len(types) == 1 else f"{root}_{M.TYPES[t]['title']}{ext}"
                 n = DW.export_dxf(path, t, self.project.rows[t], o["template"],
-                                  {"drawing_no": o["drawing_no"], "notes": o["notes"], "project": o["project"]}, log)
+                                  {"drawing_no": o["drawing_no"], "notes": o["notes"], "project": o["project"],
+                                   "layer_text": o.get("layer_text", "total"), "deep": o.get("deep", "grow")}, log)
                 out.append((path, n))
             return out
         try:

@@ -62,13 +62,14 @@ def beam_section(B, H, slab=0.0, top="", bot="", stir=""):
         if not p:
             return
         d = p["dia"]
-        ins = 60 + d / 2
+        ins = max(70.0, 60 + d / 2)                  # 예제: 철근 중심 70 안쪽
         r = _bar_r(d)
         y1 = H - ins if at_top else ins
         for x in _xs(p["n1"], ins, B - ins):
             out.append({"t": "donut", "c": (x, y1), "r": r, "layer": L_BAR})
         if p["n2"]:
-            y2 = y1 - (d + 25) if at_top else y1 + (d + 25)
+            gap = max(90.0, d + 50)                  # 예제: 2단은 1단에서 90
+            y2 = y1 - gap if at_top else y1 + gap
             xs = _xs(p["n1"], ins, B - ins)
             pick = xs if p["n2"] >= len(xs) else [xs[round(i * (len(xs) - 1) / max(1, p["n2"] - 1))] for i in range(p["n2"])] \
                 if p["n2"] > 1 else [xs[0]]

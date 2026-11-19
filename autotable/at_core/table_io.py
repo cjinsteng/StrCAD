@@ -387,6 +387,8 @@ def export_excel(path, project, types=None):
                         pass
                 elif t == "beam" and M.disabled(t, r, c.key):
                     v = ""
+                elif c.kind == "drawn":
+                    v = M.drawn_label(r, t)
                 cell = ws.cell(ri, ci, v)
                 cell.font = bold if c.key == "name" else font
                 cell.alignment = left if c.key in ("name", "note", "floor") else center
@@ -397,3 +399,148 @@ def export_excel(path, project, types=None):
     if n == 0:
         wb.create_sheet("보")
     wb.save(path)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  MIDAS Gen MGT  (*REBAR-BEAM ; Modify Beam Rebar Data)
+#  한 단면 = 4줄:  1) iSEC, iSUBSEC, 늑근이름, dT, dB, …, bSAMETOPBOT, bSAMEIMJ, bSAMELAYER
+#                 2~4) I / 중앙(M) / J :
+#                    상부 [배치, 1단개수, 2단개수, 1단이름, 2단이름], 하부 [같음], 늑근간격, 늑근다리수, 측면근수
+#  *SECTION 이 같이 있으면 단면 이름(2G1 등)·B·H 도 읽음,  *UNIT 으로 길이 단위
+# ═══════════════════════════════════════════════════════════════════
+def read_text(path):
+    raw = open(path, "rb").read()
+    for enc in ("utf-8-sig", "cp949", "utf-16", "latin-1"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("latin-1", "replace")
+
+
+def is_mgt(text):
+    return "*REBAR-BEAM" in text.upper()
+
+
+def _mgt_blocks(text):
+    blocks = {}
+    cur = None
+    for ln in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        s = ln.strip()
+        if not s:
+            continue
+        if s.startswith("*"):
+            cur = s.split(";")[0].strip().upper()
+            blocks.setdefault(cur, [])
+            continue
+        if s.startswith(";") or cur is None:
+            continue
+        blocks[cur].append(s.split(";")[0])
+    return blocks
+
+
+def _toks(line):
+    return [t.strip() for t in line.split(",")]
+
+
+def parse_mgt(text):
+    """→ (rows, warnings)"""
+    blocks = _mgt_blocks(text)
+    warn = []
+    unit = 1000.0                                   # 기본 m → mm
+    for ln in blocks.get("*UNIT", [])[:1]:
+        t = _toks(ln)
+        if len(t) > 1:
+            unit = {"M": 1000.0, "CM": 10.0, "MM": 1.0, "IN": 25.4, "FT": 304.8}.get(t[1].upper(), 1000.0)
+    unit_known = bool(blocks.get("*UNIT"))
+
+    secs = {}                                       # iSEC → (이름, B, H)
+    for ln in blocks.get("*SECTION", []):
+        t = _toks(ln)
+        if len(t) < 3 or not t[0].isdigit():
+            continue
+        name = t[2]
+        B = H = ""
+        up = [x.upper() for x in t]
+        for shp in ("SB", "SR"):
+            if shp in up[3:]:
+                i = up.index(shp, 3)
+                if i + 3 < len(t) and t[i + 1] == "2":
+                    try:
+                        d1, d2 = float(t[i + 2]), float(t[i + 3])
+                        if shp == "SB":                 # 직사각형: H, B
+                            H, B = M.norm_num(str(d1 * unit)), M.norm_num(str(d2 * unit))
+                        else:
+                            B = M.norm_num(str(d1 * unit))
+                    except ValueError:
+                        pass
+                break
+        secs[t[0]] = (name, B, H)
+
+    recs = []
+    for ln in blocks.get("*REBAR-BEAM", []):
+        t = _toks(ln)
+        if t and t[-1].upper() in ("YES", "NO") and t[0].isdigit():
+            recs.append({"head": t, "lines": []})
+        elif recs:
+            recs[-1]["lines"].append(t)
+
+    def bars(n1, n2, a, b):
+        try:
+            n1, n2 = int(float(n1 or 0)), int(float(n2 or 0))
+        except ValueError:
+            return ""
+        a, b = (a or "").upper(), (b or a or "").upper()
+        if n1 == 0 and n2 == 0:
+            return ""
+        if n2 == 0:
+            return f"{n1}-{a}"
+        if a == b:
+            return f"{n1}/{n2}-{a}"
+        return f"{n1}-{a}/{n2}-{b}"
+
+    rows = []
+    for rec in recs:
+        h = rec["head"]
+        isec = h[0]
+        stir_name = (h[2] or "D10").upper()
+        zones = []
+        for t in rec["lines"][:3]:
+            t = t + [""] * (13 - len(t))
+            top = bars(t[1], t[2], t[3], t[4])
+            bot = bars(t[6], t[7], t[8], t[9])
+            try:
+                sp = float(t[10] or 0)
+                if not unit_known and sp < 5:
+                    sp *= 1000.0
+                elif unit_known:
+                    sp *= unit
+                legs = int(float(t[11] or 2))
+            except ValueError:
+                sp, legs = 0, 2
+            stir = (f"{legs}-" if legs not in (0, 2) else "") + f"{stir_name}@{M.norm_num(str(round(sp)))}" if sp else ""
+            zones.append((top, bot, stir))
+        if not zones:
+            warn.append(f"단면 {isec}: 배근 줄이 없음")
+            continue
+        while len(zones) < 3:
+            zones.append(zones[0])
+        zi, zm, zj = zones
+        name, B, H = secs.get(isec, (isec, "", ""))
+        r = M.new_row("beam")
+        r.update({"name": name, "b": B, "h": H, "slab": ""})
+        if zi == zm == zj:
+            r["kind"] = "전단면"
+            r["e_top"], r["e_bot"], r["e_stir"] = zi
+        else:
+            r["kind"] = "양단/중앙" if zi == zj else "외단/중앙/내단"
+            r["e_top"], r["e_bot"], r["e_stir"] = zi
+            r["m_top"], r["m_bot"], r["m_stir"] = zm
+            if zi != zj:
+                r["j_top"], r["j_bot"], r["j_stir"] = zj
+        r["note"] = f"MIDAS 단면 {isec}" if name != isec else ""
+        rows.append(r)
+    if rows and not secs:
+        warn.append("*SECTION 자료가 없어 부호는 MIDAS 단면 번호, B·H 는 빈칸입니다. "
+                    "MGT 전체(*SECTION 포함)를 가져오면 단면 이름·크기도 채워집니다.")
+    return rows, warn

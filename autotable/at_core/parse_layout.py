@@ -262,7 +262,7 @@ def parse_beams(items: list[TItem], dims: list[DimItem] = (), log=print):
                         H = float(min(hor[1:], key=lambda v: v.x).text)
             if B or H:
                 sizes.append((B, H))
-            cells.append((z.x, ybot, sec_top, W))
+            cells.append((z.x, ybot, sec_top, W, zt))
         kinds = set(got)
         if kinds == {"A"}:
             row["kind"] = "전단면"
@@ -291,7 +291,7 @@ def parse_beams(items: list[TItem], dims: list[DimItem] = (), log=print):
             warn.append(f"{row['name']}: 단면 크기(치수)를 못 읽음")
         row["_sort"] = (sheet_of(n.x), -round(m["zy"] / (3 * u)), n.x)
         row["_pos"] = (n.x, n.y)
-        row["_cells"] = cells
+        row["_cells"] = [(c[0], c[1], c[2], c[3], mp.get(c[4])) for c in cells]
         rows.append(row)
     rows.sort(key=lambda r: r["_sort"])
     for r in rows:

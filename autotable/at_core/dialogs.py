@@ -164,8 +164,10 @@ class ImportResult(_Modal):
             for c in cs:
                 tv.heading(c.key, text=c.full_title)
                 tv.column(c.key, width=max(52, int(c.width * 0.9)), anchor="center", stretch=False)
+            tv.tag_configure("ng", foreground=T.NG)
             for r in rows:
-                tv.insert("", "end", values=[("" if M.disabled(t, r, c.key) else r.get(c.key, "")) for c in cs])
+                vals = [("" if M.disabled(t, r, c.key) else (M.drawn_label(r, t) if c.kind == "drawn" else r.get(c.key, ""))) for c in cs]
+                tv.insert("", "end", values=vals, tags=("ng",) if M.drawn_issues(r, t) else ())
             sb = ttk.Scrollbar(f, orient="horizontal", command=tv.xview)
             tv.configure(xscrollcommand=sb.set)
             sb.pack(side="bottom", fill="x")
@@ -343,7 +345,7 @@ def _col(i):
 # ═══════════════════════════════════════════════════════════════════
 class ExportDxfDialog(_Modal):
     def __init__(self, parent, project, mtype, default_tpl):
-        super().__init__(parent, "CAD(DXF) 내보내기", "620x560")
+        super().__init__(parent, "CAD(DXF) 내보내기", "660x720")
         self.project = project
         meta = project.meta
         body = tk.Frame(self, bg=T.SURFACE)
@@ -398,8 +400,26 @@ class ExportDxfDialog(_Modal):
         self.notes.insert("1.0", "\n".join(meta.get("notes") or []))
         self.notes.grid(row=row, column=1, sticky="w")
         row += 1
+        lab("2단 배근 글자")
+        self.layer_text = tk.StringVar(value=project.settings.get("layer_text", "total"))
+        lf = tk.Frame(body, bg=T.SURFACE)
+        lf.grid(row=row, column=1, sticky="w")
+        tk.Radiobutton(lf, text="합계로 (4/2-D19 → 6-D19, 원본 도면처럼)", value="total", variable=self.layer_text,
+                       bg=T.SURFACE, font=T.F_UI).pack(anchor="w")
+        tk.Radiobutton(lf, text="단별로 (4/2-D19 그대로)", value="split", variable=self.layer_text,
+                       bg=T.SURFACE, font=T.F_UI).pack(anchor="w")
+        row += 1
+        lab("깊은 보 단면")
+        self.deep = tk.StringVar(value=project.settings.get("deep", "grow"))
+        df = tk.Frame(body, bg=T.SURFACE)
+        df.grid(row=row, column=1, sticky="w")
+        tk.Radiobutton(df, text="칸을 늘려 1:1 로 (원본 도면처럼, 시트당 단 수가 줄 수 있음)", value="grow",
+                       variable=self.deep, bg=T.SURFACE, font=T.F_UI).pack(anchor="w")
+        tk.Radiobutton(df, text="칸 크기 그대로, 단면을 줄여서", value="fit", variable=self.deep,
+                       bg=T.SURFACE, font=T.F_UI).pack(anchor="w")
+        row += 1
         tk.Label(body, text="· 보 4단×3부재 = 시트당 12개, 기둥 시트당 27개, 벽·슬래브는 표 형식\n"
-                            "· 큰 단면은 칸에 맞게 줄여 그리고 치수 글자는 실제 값으로 씁니다.\n"
+                            "· 치수 글자는 항상 실제 값으로 씁니다.\n"
                             "· 여러 종류를 고르면 종류별로 파일을 따로 저장합니다 (이름_보.dxf …).",
                  font=T.F_SMALL, bg=T.SURFACE, fg=T.MUTED, justify="left").grid(row=row, column=0, columnspan=2, sticky="w", pady=8)
         self.footer("저장 위치 고르기…")
@@ -423,7 +443,10 @@ class ExportDxfDialog(_Modal):
         tpl = next((p for n, p in self._tpl_opts if n == self.tpl.get()), self._tpl_opts[-1][1])
         notes = [ln for ln in self.notes.get("1.0", "end").rstrip("\n").split("\n")]
         notes = [] if not any(n.strip() for n in notes) else notes
+        self.project.settings["layer_text"] = self.layer_text.get()
+        self.project.settings["deep"] = self.deep.get()
         self.result = {"types": types, "template": tpl, "drawing_no": self.dno.get().strip(),
+                       "layer_text": self.layer_text.get(), "deep": self.deep.get(),
                        "project": [self.p1.get().strip(), self.p2.get().strip()], "notes": notes}
         self.destroy()
 
@@ -448,7 +471,10 @@ HELP = """키 조작 (엑셀과 같음)
 빠르게 쓰기
   · 철근은 숫자만:  3-22 → 3-D22,   5/2-22 → 5/2-D22 (2단),   10@200 → D10@200
     (붙는 기호는 위 '강종' 선택값)
-  · '구분'·'형태' 칸은 숫자키 1/2/3 또는 Space 로 고름
+  · '구분'·'형태' 칸은 클릭하면 목록이 열림 (숫자키 1/2/3, Space 도 됨)
+  · '그림 대조' 열: CAD 에서 가져온 단면 그림의 철근 개수와 글자 비교.
+    합계가 같으면 그림대로 2단 표기(6-D19 → 4/2-D19), 다르면 ≠ 와 빨간 모서리로 표시
+  · 1단/2단 지름이 다르면 6-D25/2-D22 처럼 씀
   · 보 '구분'이 전단면이면 중앙부·내단부 칸은 회색(출력 안 함)
   · '-' 는 '확인 불가/없음' 표시로 그대로 출력됩니다.
   · Ctrl+S 저장 · Ctrl+O 열기 · Ctrl+N 새로
