@@ -5,6 +5,7 @@ STR Design & Check  —  런처 메인 화면
 · CAD Analysis → DXF 분석기 창 실행
 · Basic Design → 재료·부재 선택 후 부재별 기본 설계 (basic_design/)
 · Report Design → 진단·검토 보고서 작성 도우미 (report_design/)
+· Information → 건물정보 분석 — 주소·시설물·높이로 풍하중·지진하중·설하중 산정 (information/)
 · 하단 ver. 1.0.0
 기본 계정: 1234 / 1234   |   user1 / pass1234   ·   회원가입한 계정 (accounts.py, ~/.strcad/users.json)
 """
@@ -251,7 +252,7 @@ class Launcher(tk.Tk):
     _MODS = [
         ("basic_design","Basic Design", "RC·Steel 부재별\n기본 설계", "📐","NEW", 0,0),
         ("2d_design",   "2D Design",    "2D 도면 작업",       "✏️","NEW", 0,1),
-        ("3d_design",   "3D Design",    "3D 구조 모델링",     "🧱","NEW", 0,2),
+        ("information", "Information",  "건물정보 분석\n풍·지진·설하중", "🏢","NEW", 0,2),
         ("cad_analysis","CAD Analysis", "DXF 구조도면 분석",  "🔍",None,  1,0),
         ("auto_table",  "Auto Table",   "보·기둥·슬래브·벽\n배근표 자동 작성", "📊","NEW", 1,1),
         ("report_design","Report Design","진단·검토 보고서\n작성 도우미", "📝","NEW", 1,2),
@@ -393,7 +394,7 @@ class Launcher(tk.Tk):
             if   mid == "cad_analysis":  self._open_cad()
             elif mid == "basic_design":  self._open_basic()
             elif mid == "2d_design":     self._open_2d()
-            elif mid == "3d_design":     self._open_3d()
+            elif mid == "information":   self._open_information()
             elif mid == "auto_table":    self._open_auto_table()
             elif mid == "report_design": self._open_report()
             else:                        messagebox.showinfo("준비 중","해당 모듈 준비 중입니다.", parent=self)
@@ -508,14 +509,17 @@ class Launcher(tk.Tk):
             import traceback
             messagebox.showerror("Basic Design 오류", f"{e}\n\n{traceback.format_exc()}", parent=self)
 
-    def _open_3d(self):
+    def _open_information(self):
+        """Information (information/) — 건물정보 분석: 풍하중 · 지진하중 · 설하중"""
         try:
-            import sys, os
-            sys.path.insert(0, os.path.join(os.path.dirname(__file__), "3ddesign"))
-            from design_3d import open_3d_design
-            open_3d_design(self, username=self._user)
+            from information import open_information
+            nm = (getattr(self, "_uinfo", None) or {}).get("name") or self._user
+            open_information(self, username=nm)
         except ImportError as e:
-            messagebox.showinfo("준비 중", f"3D Design 모듈 준비 중입니다.\n({e})", parent=self)
+            messagebox.showerror("모듈 오류", f"information 폴더를 찾을 수 없습니다.\n{e}", parent=self)
+        except Exception as e:
+            import traceback
+            messagebox.showerror("Information 오류", f"{e}\n\n{traceback.format_exc()}", parent=self)
 
     def _open_auto_table(self):
         try:
