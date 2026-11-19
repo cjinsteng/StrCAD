@@ -214,6 +214,7 @@ class InformationApp(tk.Toplevel):
                            activebackground=T.BG2, font=T.FONT).pack(side="left")
         T.entry(rb, v["v0_manual"], 6).pack(side="left", padx=4)
         tk.Label(rb, text="m/s", font=T.FONT_S, bg=T.BG2, fg=T.TX3).pack(side="left")
+        T.btn(rb, "🗺", lambda: self.open_kds_map("wind"), padx=4).pack(side="left", padx=(4, 0))
         self.lbl_map_wind = T.label(p, "", fg=T.TX3, font=T.FONT_S)
         self.lbl_map_wind.pack(anchor="w", padx=12)
         cr = self._row(p, "지표면조도", lambda f: T.combo(f, v["roughness"], list("ABCD"), width=6))
@@ -236,8 +237,13 @@ class InformationApp(tk.Toplevel):
         for val, txt in (("zone", "지진구역계수"), ("map", "위험지도")):
             tk.Radiobutton(rb, text=txt, variable=v["s_mode"], value=val, bg=T.BG2, fg=T.TXT, selectcolor=T.BG4,
                            activebackground=T.BG2, font=T.FONT).pack(side="left")
-        self._row(p, "위험지도 S", lambda f: T.entry(f, v["s_map_manual"]), "%g")
-        T.label(p, "  (비우면 보정한 지도에서 조회)", fg=T.TX3, font=T.FONT_S).pack(anchor="w", padx=12)
+        rs = tk.Frame(p, bg=T.BG2)
+        rs.pack(fill="x", padx=12, pady=2)
+        tk.Label(rs, text="위험지도 S", width=11, anchor="w", font=T.FONT, bg=T.BG2, fg=T.TX2).pack(side="left")
+        T.entry(rs, v["s_map_manual"], 8).pack(side="left")
+        tk.Label(rs, text="%g", font=T.FONT_S, bg=T.BG2, fg=T.TX3).pack(side="left", padx=4)
+        T.btn(rs, "🗺", lambda: self.open_kds_map("seismic"), padx=4).pack(side="left", padx=(4, 0))
+        T.label(p, "  (비우면 내장 지도에서 자동 — 등고선 사이 보간)", fg=T.TX3, font=T.FONT_S).pack(anchor="w", padx=12)
         self.lbl_map_seis = T.label(p, "", fg=T.TX3, font=T.FONT_S)
         self.lbl_map_seis.pack(anchor="w", padx=12)
         self._row(p, "시추 반경", lambda f: T.entry(f, v["radius"]), "m")
@@ -254,6 +260,7 @@ class InformationApp(tk.Toplevel):
                            activebackground=T.BG2, font=T.FONT).pack(side="left")
         T.entry(rb, v["sg_manual"], 6).pack(side="left", padx=4)
         tk.Label(rb, text="kN/㎡", font=T.FONT_S, bg=T.BG2, fg=T.TX3).pack(side="left")
+        T.btn(rb, "🗺", lambda: self.open_kds_map("snow"), padx=4).pack(side="left", padx=(4, 0))
         self.lbl_map_snow = T.label(p, "", fg=T.TX3, font=T.FONT_S)
         self.lbl_map_snow.pack(anchor="w", padx=12)
         T.check(p, "고지대·산간 (그림값 ×1.5, 4.2.1)", v["highland"]).pack(anchor="w", padx=12)
@@ -286,10 +293,40 @@ class InformationApp(tk.Toplevel):
     def _update_map_status(self):
         for kind, lbl in (("wind", self.lbl_map_wind), ("snow", self.lbl_map_snow), ("seismic", self.lbl_map_seis)):
             mi = maps.map_info(kind)
-            if mi:
-                lbl.config(text=f"  지도 보정됨 ({mi['created']}, 값 {len(mi['values'])}종)", fg=T.C_OK)
+            if mi and mi.get("builtin"):
+                lbl.config(text="  내장 지도로 자동 조회 · 🗺 위치 확인", fg=T.C_OK)
+            elif mi:
+                lbl.config(text=f"  보정한 지도로 자동 조회 ({mi['created']}) · 🗺 위치 확인", fg=T.C_OK)
             else:
-                lbl.config(text="  지도 보정 안 됨 — ⚙ 설정 › 지도 보정 / 직접 입력", fg=T.C_WARN)
+                lbl.config(text="  🗺 버튼 → 지도 위 건설지점 핀을 보고 값 입력", fg=T.C_WARN)
+
+    def open_kds_map(self, kind):
+        """내장 KDS 지도에 건설지점 핀 — 값을 읽어 바로 입력."""
+        inp = self._inputs()
+        if inp["lat"] is None or inp["lon"] is None:
+            if inp["address"] and (self.settings.get("vworld_key") or self.settings.get("kakao_key")):
+                self._geocode()
+                inp = self._inputs()
+            if inp["lat"] is None or inp["lon"] is None:
+                messagebox.showinfo("KDS 지도", "먼저 위도·경도를 넣거나 [좌표 찾기]를 하세요.", parent=self)
+                return
+        if not maps.kds_meta(kind):
+            messagebox.showerror("KDS 지도", "내장 지도 데이터(information/data)를 찾지 못했습니다.", parent=self)
+            return
+
+        def pick(k, val):
+            if k == "wind":
+                self.v["v0_manual"].set(f"{val:g}")
+                self.v["v0_mode"].set("manual")
+            elif k == "snow":
+                self.v["sg_manual"].set(f"{val:g}")
+                self.v["sg_mode"].set("manual")
+            else:
+                self.v["s_map_manual"].set(f"{val:g}")
+                self.v["s_mode"].set("map")
+            self.log(f"[지도] {maps.KINDS[k]['title']} → {val:g} {maps.KINDS[k]['unit']} 입력")
+        from .map_tool import KdsMapViewer
+        KdsMapViewer(self, kind, (inp["lat"], inp["lon"], inp.get("project") or "건설지점"), on_pick=pick)
 
     # ── 요약 탭 ──
     def _build_summary(self):
@@ -545,11 +582,14 @@ class InformationApp(tk.Toplevel):
                 v0, src = float(val), f"그림 5.5-1 지도 ({how})"
             else:
                 src = how
+        if v0 is None and inp["lat"] is not None:
+            val, how = maps.kds_inset_value("wind", inp["lat"], inp["lon"])
+            if val is not None:
+                v0, src = float(val), "그림 5.5-1 " + how
         if v0 is None and inp["v0_manual"]:
             v0, src = inp["v0_manual"], "직접 입력 (지도 조회 불가)"
         if v0 is None:
-            out["msg"] = "기본풍속 V0 가 없습니다 — " + (src or "좌표 또는 직접 입력값 필요") + \
-                         "\n  (⚙ 설정 › 지도 보정에서 그림 5.5-1 을 보정하거나 V0 를 직접 입력)"
+            out["msg"] = "기본풍속 V0 가 없습니다 — 기본풍속 옆 🗺 버튼으로 그림 5.5-1 위 건설지점 핀을 보고 값을 넣으세요."
             self.log("[풍하중] " + out["msg"])
             return
         cat = inp["roughness"]
@@ -601,7 +641,7 @@ class InformationApp(tk.Toplevel):
         zone, ztxt = SE.seismic_zone(addr, SE.parse_sido(inp["sido"]) if inp["sido"] else "", inp["sigungu"])
         out["zone"], out["zone_txt"] = zone, ztxt
         s_map = None
-        if inp["s_mode"] == "map":
+        if True:                                     # 위험지도 값은 방식과 관계없이 참고로 조회
             if inp["s_map_manual"]:
                 s_map = inp["s_map_manual"] / 100.0
                 out["s_map_src"] = "직접 입력"
@@ -609,7 +649,7 @@ class InformationApp(tk.Toplevel):
                 val, how = maps.lookup("seismic", inp["lat"], inp["lon"])
                 if val is not None:
                     s_map = float(val) / 100.0
-                    out["s_map_src"] = f"그림 3.2-1 지도 ({how})"
+                    out["s_map_src"] = f"그림 3.2-1 ({how})"
                 else:
                     out["s_map_src"] = how
         # 시추조사
@@ -668,11 +708,14 @@ class InformationApp(tk.Toplevel):
                 sg_map, src = float(val), f"그림 4.2-1 지도 ({how})"
             else:
                 src = how
+        if sg_map is None and inp["lat"] is not None:
+            val, how = maps.kds_inset_value("snow", inp["lat"], inp["lon"])
+            if val is not None:
+                sg_map, src = float(val), "그림 4.2-1 " + how
         if sg_map is None and inp["sg_manual"]:
             sg_map, src = inp["sg_manual"], "직접 입력 (지도 조회 불가)"
         if sg_map is None:
-            out["msg"] = "기본지상설하중 Sg 가 없습니다 — " + (src or "직접 입력 필요") + \
-                         "\n  (⚙ 설정 › 지도 보정에서 그림 4.2-1 을 보정하거나 Sg 를 직접 입력)"
+            out["msg"] = "기본지상설하중 Sg 가 없습니다 — 지상설하중 옆 🗺 버튼으로 그림 4.2-1 위 건설지점 핀을 보고 값을 넣으세요."
             self.log("[설하중] " + out["msg"])
             return
         sg, notes = SN.ground_snow(sg_map, inp["highland"])

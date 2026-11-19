@@ -586,3 +586,186 @@ class _CityDialog(tk.Toplevel):
         nm = self.v_city.get()
         self.result = ("" if nm == "직접 입력" else nm, la, lo)
         self.destroy()
+
+
+# ═════════════════════════════════════════════════════════
+#  내장 KDS 지도에서 건설지점 위치 확인 (위경도 → 그림 위 핀)
+# ═════════════════════════════════════════════════════════
+VIEW_KINDS = [("wind", "🌬 기본풍속 (그림 5.5-1)"), ("snow", "❄ 지상설하중 (그림 4.2-1)"),
+              ("seismic", "🌐 국가지진위험지도 (그림 3.2-1)")]
+VIEW_NOTE = {
+    "wind": "등풍속선 사이에 있으면 인근 등풍속선 중 큰 값 (5.5.2 주2). 가장 안쪽 28 m/s 선 안쪽 내륙은 28.",
+    "snow": "등치선 사이는 큰 값으로 읽으세요. 0.5 선 바깥(남서쪽)은 최소 지상설하중 0.5 kN/㎡ (4.2.1(3)).",
+    "seismic": "값은 %g (S = 값/100 g). 등고선 사이는 직선보간 — 자동 계산값을 같이 표시합니다. "
+               "지진구역계수법 S(=Z×2.0)의 80% 이상이어야 합니다 (3.2).",
+}
+
+
+class KdsMapViewer(tk.Toplevel):
+    def __init__(self, parent, kind, site, on_pick=None):
+        super().__init__(parent)
+        self.site = site                     # (lat, lon, 이름)
+        self.on_pick = on_pick
+        self.kind = tk.StringVar(value=kind)
+        self.zoom = 2.0
+        self._photo = None
+        self._click = None
+        self.title("KDS 지도 — 건설지점 위치")
+        self.configure(bg=T.BG)
+        self.geometry("1220x860")
+        self.minsize(900, 600)
+        T.setup_style(self)
+        self._build()
+        self._load()
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def _build(self):
+        bar = tk.Frame(self, bg=T.BG2, height=44)
+        bar.pack(fill="x")
+        for key, txt in VIEW_KINDS:
+            tk.Radiobutton(bar, text=txt, variable=self.kind, value=key, indicatoron=False, bg=T.BG3, fg=T.TXT,
+                           selectcolor=T.ACC, activebackground=T.BG5, activeforeground=T.WHI, font=T.FONT_B,
+                           bd=0, padx=10, pady=4, command=self._load).pack(side="left", padx=(8, 2), pady=7)
+        T.btn(bar, "📍 건설지점으로", self._center_pin, bg=T.ORANGE, fg=T.WHI).pack(side="right", padx=10)
+        T.btn(bar, "−", lambda: self._zoom(1 / 1.3)).pack(side="right", padx=2)
+        T.btn(bar, "맞춤", self._fit).pack(side="right", padx=2)
+        T.btn(bar, "+", lambda: self._zoom(1.3)).pack(side="right", padx=2)
+        body = tk.Frame(self, bg=T.BG)
+        body.pack(fill="both", expand=True)
+        right = tk.Frame(body, bg=T.BG2, width=320)
+        right.pack(side="right", fill="y")
+        right.pack_propagate(False)
+        cf = tk.Frame(body, bg="white")
+        cf.pack(side="left", fill="both", expand=True)
+        self.cv = tk.Canvas(cf, bg="white", highlightthickness=0, cursor="crosshair")
+        sx = ttk.Scrollbar(cf, orient="horizontal", command=self.cv.xview)
+        sy = ttk.Scrollbar(cf, orient="vertical", command=self.cv.yview)
+        self.cv.configure(xscrollcommand=sx.set, yscrollcommand=sy.set)
+        sy.pack(side="right", fill="y")
+        sx.pack(side="bottom", fill="x")
+        self.cv.pack(fill="both", expand=True)
+        self.cv.bind("<Button-1>", self._on_click)
+        for b in ("<ButtonPress-3>", "<ButtonPress-2>"):
+            self.cv.bind(b, lambda e: self.cv.scan_mark(e.x, e.y))
+        for b in ("<B3-Motion>", "<B2-Motion>"):
+            self.cv.bind(b, lambda e: self.cv.scan_dragto(e.x, e.y, gain=1))
+        self.cv.bind("<MouseWheel>", lambda e: self._zoom(1.15 if e.delta > 0 else 1 / 1.15))
+        self.cv.bind("<Button-4>", lambda e: self._zoom(1.15))
+        self.cv.bind("<Button-5>", lambda e: self._zoom(1 / 1.15))
+
+        self.lbl_title = T.label(right, "", fg=T.WHI, font=T.FONT_H, wraplength=300, justify="left")
+        self.lbl_title.pack(anchor="w", padx=12, pady=(12, 2))
+        self.lbl_site = T.label(right, "", fg=T.TX2, wraplength=300, justify="left")
+        self.lbl_site.pack(anchor="w", padx=12)
+        self.lbl_note = T.label(right, "", fg=T.TXT, wraplength=296, justify="left", bg=T.BG3)
+        self.lbl_note.pack(fill="x", padx=12, pady=10, ipady=6, ipadx=4)
+        T.section(right, "자동 값", T.C_OK)
+        self.lbl_auto = T.label(right, "", fg=T.WHI, font=T.FONT_B, wraplength=300, justify="left")
+        self.lbl_auto.pack(anchor="w", padx=12)
+        T.section(right, "클릭한 곳", T.CYN)
+        self.lbl_click = T.label(right, "지도를 클릭하면 위경도와 건설지점까지 거리를 보여줍니다.",
+                                 fg=T.TX2, wraplength=300, justify="left")
+        self.lbl_click.pack(anchor="w", padx=12)
+        T.section(right, "적용할 값", T.ORANGE)
+        f = tk.Frame(right, bg=T.BG2)
+        f.pack(fill="x", padx=12)
+        self.v_val = tk.StringVar()
+        T.entry(f, self.v_val, 10).pack(side="left")
+        self.lbl_unit = T.label(f, "", fg=T.TX3)
+        self.lbl_unit.pack(side="left", padx=6)
+        if self.on_pick:
+            T.btn(right, "이 값을 프로젝트에 사용", self._use, bg=T.ORANGE, fg=T.WHI).pack(anchor="w", padx=12, pady=8)
+        T.label(right, "휠: 확대·축소   오른쪽 드래그: 이동", fg=T.TX3, font=T.FONT_S).pack(side="bottom", anchor="w",
+                                                                                     padx=12, pady=8)
+
+    def _load(self):
+        from PIL import Image
+        k = self.kind.get()
+        p = maps.kds_image_path(k)
+        if not p or not p.exists():
+            messagebox.showerror("KDS 지도", "내장 지도 그림을 찾지 못했습니다 (information/data).", parent=self)
+            return
+        self.img = Image.open(p).convert("RGB")
+        info = maps.KINDS[k]
+        self.lbl_title.config(text=info["title"])
+        self.lbl_note.config(text=VIEW_NOTE[k])
+        self.lbl_unit.config(text=info["unit"])
+        la, lo = self.site[0], self.site[1]
+        x, y, note = maps.kds_to_px(k, la, lo)
+        self.pin = (x, y)
+        self.lbl_site.config(text=f"{self.site[2] if len(self.site) > 2 else '건설지점'}\n위도 {la:.5f}, 경도 {lo:.5f}"
+                                  + (f"\n{note}" if note else ""))
+        v, how = maps.kds_inset_value(k, la, lo)
+        if v is None:
+            v, how = maps.lookup(k, la, lo)
+            if v is None:
+                how = "자동 값 없음 — 핀 위치의 등치선을 읽어 아래에 입력하세요"
+        self.lbl_auto.config(text=(f"{v:.2f} {info['unit']}\n" if v is not None else "") + how,
+                             fg=T.WHI if v is not None else T.C_WARN)
+        self.v_val.set("" if v is None else (f"{v:.1f}" if k == "seismic" else f"{v:g}"))
+        self._click = None
+        self.zoom = 3.0
+        self._render()
+        self.after(50, self._center_pin)
+
+    def _render(self):
+        from PIL import Image, ImageTk
+        w, h = int(self.img.width * self.zoom), int(self.img.height * self.zoom)
+        im = self.img.resize((w, h), Image.LANCZOS if self.zoom < 1 else Image.BICUBIC)
+        self._photo = ImageTk.PhotoImage(im)
+        self.cv.delete("all")
+        self.cv.create_image(0, 0, image=self._photo, anchor="nw")
+        self.cv.configure(scrollregion=(0, 0, w, h))
+        z = self.zoom
+        x, y = self.pin[0] * z, self.pin[1] * z
+        self.cv.create_line(x, 0, x, h, fill="#ef4444", dash=(4, 4))
+        self.cv.create_line(0, y, w, y, fill="#ef4444", dash=(4, 4))
+        r = max(5, 3 * z)
+        self.cv.create_oval(x - r, y - r, x + r, y + r, outline="#dc2626", width=3)
+        self.cv.create_oval(x - 2.5, y - 2.5, x + 2.5, y + 2.5, fill="#dc2626", outline="")
+        self.cv.create_text(x + r + 4, y - r - 2, text=self.site[2] if len(self.site) > 2 else "건설지점",
+                            fill="#b91c1c", anchor="sw", font=T.FONT_B)
+        if self._click:
+            cx, cy = self._click[0] * z, self._click[1] * z
+            self.cv.create_oval(cx - 5, cy - 5, cx + 5, cy + 5, outline="#2563eb", width=2)
+
+    def _fit(self):
+        self.update_idletasks()
+        cw, ch = max(self.cv.winfo_width(), 300), max(self.cv.winfo_height(), 300)
+        self.zoom = min(cw / self.img.width, ch / self.img.height) * 0.98
+        self._render()
+
+    def _zoom(self, f):
+        self.zoom = max(0.5, min(self.zoom * f, 10.0))
+        self._render()
+        self._center_pin()
+
+    def _center_pin(self):
+        self.update_idletasks()
+        w, h = self.img.width * self.zoom, self.img.height * self.zoom
+        cw, ch = self.cv.winfo_width(), self.cv.winfo_height()
+        x, y = self.pin[0] * self.zoom, self.pin[1] * self.zoom
+        self.cv.xview_moveto(max(0.0, (x - cw / 2) / w))
+        self.cv.yview_moveto(max(0.0, (y - ch / 2) / h))
+
+    def _on_click(self, e):
+        x, y = self.cv.canvasx(e.x) / self.zoom, self.cv.canvasy(e.y) / self.zoom
+        self._click = (x, y)
+        la, lo = maps.kds_to_ll(self.kind.get(), x, y)
+        from . import geo
+        d = geo.haversine(self.site[0], self.site[1], la, lo)
+        txt = f"위도 {la:.4f}, 경도 {lo:.4f}\n건설지점에서 {d / 1000:.1f} km"
+        v, _ = maps.lookup(self.kind.get(), la, lo)
+        if v is not None:
+            txt += f"\n지도 값 {v:.2f} {maps.KINDS[self.kind.get()]['unit']}"
+        self.lbl_click.config(text=txt, fg=T.TXT)
+        self._render()
+
+    def _use(self):
+        try:
+            v = float(self.v_val.get())
+        except ValueError:
+            messagebox.showwarning("값", "적용할 값을 숫자로 넣으세요.", parent=self)
+            return
+        self.on_pick(self.kind.get(), v)
+        self.destroy()

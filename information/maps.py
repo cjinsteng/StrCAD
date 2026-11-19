@@ -12,6 +12,7 @@ information/maps.py — KDS 지도(기본풍속·지상설하중·국가지진�
 import base64
 import json
 import math
+import sys
 import time
 import zlib
 from pathlib import Path
@@ -245,8 +246,19 @@ def load_grid(kind):
         if p.exists():
             try:
                 js = json.loads(p.read_text(encoding="utf-8"))
-                js["_grid"] = zlib.decompress(base64.b64decode(js["data"]))
+                raw = zlib.decompress(base64.b64decode(js["data"]))
+                if js.get("enc") == "u16":                 # 실수 값 격자 (값 × scale, 0 = 없음)
+                    import array
+                    a = array.array("H")
+                    a.frombytes(raw)
+                    if sys.byteorder != "little":
+                        a.byteswap()
+                    js["_grid16"] = a
+                    js["_grid"] = None
+                else:
+                    js["_grid"] = raw
                 js["_path"] = str(p)
+                js["_builtin"] = p.parent == PKG_DIR
                 _CACHE[kind] = js
                 return js
             except Exception:                        # noqa: BLE001
@@ -273,6 +285,21 @@ def lookup(kind, lat, lon, search=3):
     iy = int(round((lat - lat0) / res))
     g = js["_grid"]
     vals = js["values"]
+    g16 = js.get("_grid16")
+    if g16 is not None:                                 # 보간 격자 — 이중선형
+        fx = (lon - lon0) / res
+        fy = (lat - lat0) / res
+        i0, j0 = int(math.floor(fx)), int(math.floor(fy))
+        acc = wsum = 0.0
+        for di, dj in ((0, 0), (1, 0), (0, 1), (1, 1)):
+            i, j = i0 + di, j0 + dj
+            if 0 <= i < nx and 0 <= j < ny and g16[j * nx + i]:
+                w = (1 - abs(fx - i)) * (1 - abs(fy - j))
+                acc += w * g16[j * nx + i] / js["scale"]
+                wsum += w
+        if wsum > 0:
+            return acc / wsum, "지도 격자 (등고선 사이 보간)" + (" · 내장" if js.get("_builtin") else "")
+        return None, "지도 범위 밖"
 
     def at(i, j):
         if 0 <= i < nx and 0 <= j < ny:
@@ -303,5 +330,73 @@ def map_info(kind):
     if not js:
         return None
     return {"created": js.get("created", ""), "values": js.get("values", []), "path": js.get("_path", ""),
+            "builtin": js.get("_builtin", False),
             "points": len((js.get("calib") or {}).get("points", [])),
             "seeds": len((js.get("calib") or {}).get("seeds", []))}
+
+
+# ─────────────────────────────────────────────────────────────
+#  내장 KDS 지도 그림 (위치 표시용) — data/kds_maps.json
+#  그림 픽셀 = affine(UTM-K 좌표).  시군구 경계·해안선과 맞춰 구한 값.
+# ─────────────────────────────────────────────────────────────
+_KDS_META = None
+# 울릉도·독도는 지도 오른쪽 위에 따로 그린 그림(인셋)이라 실제 좌표와 위치가 다르다
+INSET_AREAS = {"울릉도": (37.40, 130.75, 37.60, 131.00), "독도": (37.22, 131.84, 37.26, 131.89)}
+
+
+def kds_meta(kind=None):
+    global _KDS_META
+    if _KDS_META is None:
+        try:
+            _KDS_META = json.loads((PKG_DIR / "kds_maps.json").read_text(encoding="utf-8"))
+        except Exception:                            # noqa: BLE001
+            _KDS_META = {}
+    return _KDS_META.get(kind) if kind else _KDS_META
+
+
+def kds_image_path(kind):
+    m = kds_meta(kind)
+    return PKG_DIR / m["image"] if m else None
+
+
+def _inset_of(lat, lon):
+    for nm, (la0, lo0, la1, lo1) in INSET_AREAS.items():
+        if la0 <= lat <= la1 and lo0 <= lon <= lo1:
+            return nm
+    return None
+
+
+def kds_to_px(kind, lat, lon):
+    """위경도 → 내장 지도 그림 픽셀 (x, y, 비고).  울릉도·독도는 인셋 위치."""
+    m = kds_meta(kind)
+    if not m:
+        return None
+    ins = _inset_of(lat, lon)
+    if ins and ins in (m.get("insets") or {}):
+        x, y, _v = m["insets"][ins]
+        return x, y, f"{ins} — 지도 인셋 위치"
+    a = m["affine_utmk"]
+    E, N = geo.tm_forward(lat, lon, geo.CRS["EPSG:5179"])
+    return a[0] + a[1] * E + a[2] * N, a[3] + a[4] * E + a[5] * N, ""
+
+
+def kds_to_ll(kind, x, y):
+    """내장 지도 그림 픽셀 → 위경도."""
+    m = kds_meta(kind)
+    if not m:
+        return None
+    a = m["affine_utmk"]
+    det = a[1] * a[5] - a[2] * a[4]
+    dx, dy = x - a[0], y - a[3]
+    E = (a[5] * dx - a[2] * dy) / det
+    N = (-a[4] * dx + a[1] * dy) / det
+    return geo.tm_inverse(E, N, geo.CRS["EPSG:5179"])
+
+
+def kds_inset_value(kind, lat, lon):
+    """울릉도·독도 인셋에 적힌 값 (기본풍속 46 m/s, 지상설하중 10 kN/㎡)."""
+    m = kds_meta(kind)
+    ins = _inset_of(lat, lon)
+    if m and ins and ins in (m.get("insets") or {}):
+        return m["insets"][ins][2], f"{ins} (지도 인셋 표기값)"
+    return None, ""

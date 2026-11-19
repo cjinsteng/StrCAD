@@ -97,6 +97,21 @@ def run():
         check("지도 조회 (서울 30, 부산 36)", v1 == 30 and v2 == 36 and not leaks)
     except ImportError:
         print("  (PIL/numpy 없음 — 지도 점검 생략)")
+    print("[내장 KDS 지도]")
+    old = maps.MAP_DIR
+    maps.MAP_DIR = __import__("pathlib").Path(tempfile.gettempdir()) / "no_user_maps"
+    maps._CACHE.clear()
+    v, how = maps.lookup("seismic", 37.5665, 126.978)
+    check("국가지진위험지도 서울 ≈ 16 %g (내장 격자)", v is not None and 15.5 < v < 17.0)
+    v, _ = maps.lookup("seismic", 35.8714, 128.6014)
+    check("국가지진위험지도 대구 ≈ 19 %g", v is not None and 18.5 < v <= 19.0)
+    maps.MAP_DIR = old
+    maps._CACHE.clear()
+    for k in ("wind", "snow", "seismic"):
+        x, y, _ = maps.kds_to_px(k, 36.35, 127.38)
+        la, lo = maps.kds_to_ll(k, x, y)
+        check(f"지도 핀 왕복 ({k})", abs(la - 36.35) < 1e-6 and abs(lo - 127.38) < 1e-6)
+    check("울릉도 인셋 값 (풍속 46)", maps.kds_inset_value("wind", 37.48, 130.9)[0] == 46)
     print("결과:", "모두 통과" if ok else "실패 있음")
     return ok
 

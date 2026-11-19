@@ -62,7 +62,8 @@ def build_text(inp, res):
     a(f"  유효지반가속도 S = {_f(si.get('S'))} g   ({'국가지진위험지도' if si.get('method') == 'map' else '지진구역계수 Z × 2.0'})"
       + (f"  {si.get('note')}" if si.get("note") else ""))
     if si.get("S_map") is not None:
-        a(f"    위험지도 값 {si['S_map']:.3f} g / 하한(Z·I×80%) {_f(si.get('S_min'))} g")
+        a(f"    국가지진위험지도 {si['S_map'] * 100:.1f} %g = {si['S_map']:.3f} g ({s.get('s_map_src', '')}) / "
+          f"하한(Z·I×80%) {_f(si.get('S_min'))} g" + ("" if si.get("method") == "map" else "  — 참고값"))
     bh = s.get("boreholes") or {}
     if bh:
         a(f"  시추조사        : 반경 {bh.get('radius', 0):.0f} m 안 {bh.get('n_total', 0)}공")
@@ -101,8 +102,9 @@ def build_text(inp, res):
         a(f"  · {t}")
     for kind in ("wind", "snow", "seismic"):
         mi = maps.map_info(kind)
-        a(f"  · 지도 {maps.KINDS[kind]['title']}: " + (f"보정 {mi['created']} (기준점 {mi['points']}, 구역 {mi['seeds']})"
-                                                       if mi else "보정 데이터 없음"))
+        a(f"  · 지도 {maps.KINDS[kind]['title']}: " + (
+            "내장 격자 자동 조회" if mi and mi.get("builtin") else
+            f"사용자 보정 격자 {mi['created']}" if mi else "자동 값 없음 — 내장 지도 핀으로 확인 후 입력"))
     return "\n".join(L)
 
 

@@ -186,24 +186,24 @@ def analyze_profile(prof, z, cat, search=2000.0, base_win=1500.0, h_min=2.0, sit
         if not Lu or Lu <= 0:
             continue
         # 풍하측: H/2 아래로 내려가는 지점이 있으면 언덕·산, 없으면 경사지
-        dn_lim = max(3.5 * Lu, 4.0 * H)
+        # 풍하측 평균경사 θd — 표 5.5-4 그림: 정점에서 지표면까지 직선거리 5H 인 점까지의 경사
+        #   θd ≤ 0.05 → 경사지, 그 밖 → 언덕·산
+        theta_d = None
         Ld = None
-        for i in range(ic, n):
-            if ss[i] - sc > dn_lim:
+        for i in range(ic + 1, n):
+            dxs = ss[i] - sc
+            if math.hypot(dxs, ec - es[i]) >= 5.0 * H:
+                theta_d = max((ec - es[i]) / max(dxs, 1.0), 0.0)
+                Ld = dxs
                 break
-            if es[i] <= half:
-                Ld = ss[i] - sc
-                break
-        reach_end = ss[-1] - sc >= dn_lim
-        if Ld is None and not reach_end:
-            kind = "hill"                           # 단면 끝까지 판단 불가 → 언덕으로 (경사지보다 불리)
-            theta_d = None
-        elif Ld is None:
-            kind = "escarpment"
-            theta_d = None
-        else:
-            kind = "hill"
-            theta_d = (H / 2.0) / max(Ld, 1.0)
+        if theta_d is None:
+            # 단면이 5H 까지 닿지 않음 → 있는 데까지로 판단 (끝까지 거의 평평하면 경사지)
+            if ss[-1] - sc > 2.0 * H:
+                theta_d = max((ec - es[-1]) / (ss[-1] - sc), 0.0)
+                Ld = ss[-1] - sc
+            else:
+                theta_d = H / (2.0 * Lu)               # 판단 불가 → 풍상측 경사와 같게 (언덕)
+        kind = "escarpment" if theta_d <= 0.05 else "hill"
         x = 0.0 - sc
         r = kzt_from_params(kind, H, Lu, x, z, cat, theta_d)
         r.update(crest_s=sc, crest_elev=ec, base_elev=eb, site_elev=es[i0], Ld=Ld)
