@@ -165,9 +165,10 @@ n8, d8 = ring_model(False); n4, d4 = ring_model(True)
 chk("4노드 면 절점수 = 8노드 면", n4, n8, 1e-9)
 chk("4노드 면 처짐 = 8노드 면", d4, d8, 1e-6)
 
-# 10) Midas 비교 (사용자 제공): 9×6m, 테두리 보 400×600, 모서리 기둥 500×500 (상하부, H=3m),
-#     t=150 C24 ν=0.167, 자중 + 5 kN/m² + (5,3) 10kN, 메시 0.25m
-m = pm.new_model(); m["mesh_size"] = 0.25
+# 10) Midas 비교 (사용자 제공): 9×6m, 테두리 보 400×600, 모서리 기둥 500×500 (상하부, H=3m,
+#     E=22628MPa, Bending Stiffness Scale Factor 6), t=150 C24 ν=0.167,
+#     자중 + 5 kN/m² + (5,3) 10kN, 메시 0.3m (Midas 와 비슷한 분할)
+m = pm.new_model(); m["mesh_size"] = 0.3
 g = pm.generate_grid(m, [5, 4], [3, 3], beams=True, slabs=False, sup=None)
 for lid in list(m["lines"]):
     ln = m["lines"][lid]; a_, b_ = m["nodes"][ln["ni"]], m["nodes"][ln["nj"]]
@@ -175,19 +176,19 @@ for lid in list(m["lines"]):
         del m["lines"][lid]
 m["areas"] = {}
 aid = pm.add_area(m, [g[(0, 0)], g[(2, 0)], g[(2, 2)], g[(0, 2)]], kind="slab", slab=1)
-m["sup_types"][3].update(col_n=2, col_H=3.0)
+m["sup_types"][3].update(col_n=2, col_H=3.0, col_factor=6, col_E=22628)
 for k in [(0, 0), (2, 0), (2, 2), (0, 2)]:
     m["supports"][g[k]] = 3
 m["aloads"].append(dict(id=1, case=1, area=aid, q=5, sw=True)); m["nloads"].append(dict(id=2, case=1, node=g[(1, 1)], p=10))
 r = analyze(m); res = r["results"][("case", 1)]; mesh = r["mesh"]
 nd = np.unique(mesh.plates.ravel())
 chk("면하중 자중포함 하중합", r["applied"][1], 54 * (5 + 3.6) + 10 + 24 * 0.24 * 30, 1e-6)
-chk("Midas My max 16.1", res["My"][nd].max(), 16.09, 0.06)
-chk("Midas My min -11.5", res["My"][nd].min(), -11.50, 0.08)
-chk("Midas Mx max 12.4", res["Mx"][nd].max(), 12.37, 0.06)
-chk("Midas Mx min -15.0", res["Mx"][nd].min(), -15.05, 0.06)
+chk("Midas My max 16.1", res["My"][nd].max(), 16.09, 0.03)
+chk("Midas My min -11.5", res["My"][nd].min(), -11.50, 0.03)
+chk("Midas Mx max 12.4", res["Mx"][nd].max(), 12.37, 0.03)
+chk("Midas Mx min -15.0", res["Mx"][nd].min(), -15.05, 0.03)
 b9 = [d for d in res["beams"].values() if abs(d["s"][-1] - 6) > 1e-6 and abs(d["s"][-1] - 3) > 1e-6]
-chk("Midas 보 M+ 109.5", max(d["M"].max() for d in b9), 109.5, 0.08)
-chk("Midas 보 M- -152.8", min(d["M"].min() for d in b9), -152.8, 0.06)
+chk("Midas 보 M+ 109.5", max(d["M"].max() for d in b9), 109.5, 0.03)
+chk("Midas 보 M- -152.8", min(d["M"].min() for d in b9), -152.8, 0.03)
 
 print("\n전체 통과" if not FAILS else f"\n실패: {FAILS}")

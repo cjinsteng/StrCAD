@@ -539,17 +539,20 @@ class InputTabMixin:
         f2.row("kz", lambda p: entry(p, vk["kz"], 10), "kN/m")
         f2.row("krx", lambda p: entry(p, vk["krx"], 10), "kN·m/rad")
         f2.row("kry", lambda p: entry(p, vk["kry"], 10), "kN·m/rad")
-        section_title(body, "기둥 회전강성 (k = n·4EI/H)", C_SUP)
+        section_title(body, "기둥 회전강성 (k = n · 계수 · EI/H)", C_SUP)
         check(body, "기둥 강성 사용 (노드 지점에만 적용)", vb["col"]).pack(anchor="w", padx=4)
         f3 = Form(body)
         vc = {k: tk.StringVar(value=f"{float(st.get(k, d) or d):g}") for k, d in
-              (("col_b", 500), ("col_h", 500), ("col_H", 3.5), ("col_n", 2))}
+              (("col_b", 500), ("col_h", 500), ("col_H", 3.5), ("col_n", 2), ("col_factor", 4))}
+        vc["col_E"] = tk.StringVar(value=f"{float(st.get('col_E', 0) or 0):g}")
         v_cm = tk.StringVar(value=self._pick("materials", int(st.get("col_mat", 1))))
         f3.row("기둥 b (X)", lambda p: entry(p, vc["col_b"], 8), "mm")
         f3.row("기둥 h (Y)", lambda p: entry(p, vc["col_h"], 8), "mm")
         f3.row("층고 H", lambda p: entry(p, vc["col_H"], 8), "m")
         f3.row("기둥 수 n", lambda p: entry(p, vc["col_n"], 8), "(하부만 1, 상하부 2)")
         f3.row("재료", lambda p: combo(p, v_cm, self._names("materials")))
+        f3.row("기둥 E", lambda p: entry(p, vc["col_E"], 8), "MPa (0 = 재료 E)")
+        f3.row("강성 계수", lambda p: entry(p, vc["col_factor"], 8), "원단고정 4 (Midas Scale Factor)")
 
         def apply():
             self.push_undo()
@@ -559,6 +562,8 @@ class InputTabMixin:
                       col_b=parse_float(vc["col_b"].get(), 500), col_h=parse_float(vc["col_h"].get(), 500),
                       col_H=max(0.1, parse_float(vc["col_H"].get(), 3.5)),
                       col_n=max(1, int(parse_float(vc["col_n"].get(), 1))),
+                      col_factor=max(0.0, parse_float(vc["col_factor"].get(), 4.0)),
+                      col_E=max(0.0, parse_float(vc["col_E"].get(), 0.0)),
                       col_mat=self._id_of(v_cm.get()) or 1)
             self.edit_target = ("ST", sid)
             self.changed(f"지점 타입 '{st['name']}' 수정")

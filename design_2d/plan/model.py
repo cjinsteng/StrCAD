@@ -69,7 +69,8 @@ def support_desc(st):
     extra = []
     if st.get("col"):
         extra.append(f"기둥 {float(st.get('col_b', 0)):g}×{float(st.get('col_h', 0)):g} "
-                     f"H={float(st.get('col_H', 0)):g}m ×{int(st.get('col_n', 1))}")
+                     f"H={float(st.get('col_H', 0)):g}m ×{int(st.get('col_n', 1))}"
+                     f" · {float(st.get('col_factor', 4) or 4):g}EI/H")
     for k in ("kz", "krx", "kry"):
         if float(st.get(k, 0) or 0) > 0:
             extra.append(f"{k}={float(st[k]):g}")
