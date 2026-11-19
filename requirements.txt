@@ -11,3 +11,5 @@ rapidocr_onnxruntime; python_version < "3.15"
 python-docx
 olefile
 pywin32; sys_platform == "win32"
+# Information (건물정보 분석): KDS 지도 PDF 쪽 열기 (없으면 캡처 이미지로도 가능)
+pymupdf

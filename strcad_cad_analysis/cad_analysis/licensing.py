@@ -33,13 +33,13 @@ PUBLIC_KEY_B64 = "lTuNINAM8Yq54VT_zS8aPvWVkcd4GW_17H8p9bq-T0E"
 MODULES = {                          # 런처 모듈 id → 표시 이름
     "cad_analysis": "CAD Analysis",
     "2d_design": "2D Design",
-    "3d_design": "3D Design",
+    "information": "Information",
     "auto_table": "Auto Table",
     "basic_design": "Basic Design",
     "report_design": "Report Design",
 }
 # 이름이 바뀐 모듈: 예전에 발급된 키(mods 에 옛 id)도 그대로 인정
-MODULE_ALIASES = {"report_design": ("detail_design",)}
+MODULE_ALIASES = {"report_design": ("detail_design",), "information": ("3d_design",)}  # 3D Design 자리 → Information
 EDITIONS = {"trial": "체험판", "standard": "Standard", "pro": "Professional", "site": "사이트(다중 PC)"}
 
 DIR = os.path.join(os.path.expanduser("~"), ".strcad")

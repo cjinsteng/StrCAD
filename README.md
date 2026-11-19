@@ -8,6 +8,7 @@
 | Basic Design | `basic_design/` | 재료(RC/Steel/Other) → 부재 → 설계 방식 선택. 현재 **RC Slab Lite** (1방향·2방향 단일 슬래브, 등분포하중 · 부재 목록 저장(.slab) · A4 PDF 출력), **RC Slab Table** (두께·철근·간격별 φMn 일람표), **RC Slab Pro** (유한요소 해석 · 사각형/다각형 · 집중/라인/면 하중 · 개구부 · 뚫림전단 · 2D/3D 결과), **RC Beam Lite** (직사각형 보 · 단면 1~3개 · 휨/균열/전단/비틀림), **RC Beam Pro** (깊은보 · 스트럿-타이 모델 KDS 14 20 24 · 타이/복부철근 자동 배근 · 절점영역 검토) |
 | 2D Design | `design_2d/` | 단면해석(2D 프레임: M·V·N·반력) / 평면해석(슬래브+보 FEM: Mx·My·Qx·Qy·처짐, 보 M·V, 반력) |
 | Auto Table | `autotable/` | 보·기둥·벽·슬래브 배근 일람표 — 엑셀처럼 방향키로 입력, 가져오기(CAD DXF·MIDAS Gen txt·엑셀·PDF·사진), 내보내기(CAD DXF 원본 양식·엑셀·TXT). 사용법: [autotable/README.md](autotable/README.md) |
+| Information | `information/` | 건물정보 분석 — 주소·시설물 종류·건물높이 입력 → **풍하중**(기본풍속 지도, 지표면조도, DEM 지형단면 지형계수 Kzt, 설계풍속·높이별 속도압), **지진하중**(지진구역·S, 국토지반정보 시추공 반경검색 → 공별 기반암 깊이·Vs,soil·지반분류, Fa·Fv·SDS·SD1·내진설계범주), **설하중**(지상설하중 → 지붕설하중). KDS 지도는 `⚙ 설정 › 지도 보정`에서 한 번 맞춰 두면 자동 조회. 점검: `python -m information.selftest` |
 | Report Design | `report_design/` | 진단·검토 보고서(한글 .hwp) 작성 도우미 — 반복 내용 동기화, 절 단위 AI 검토(Claude / Ollama 무료), 번호 검사, 한글 파일 반영 |
 | (구버전) | `autocad_structure_analyzer/`, `modules/` | 이전 DXF 분석기 |
 
