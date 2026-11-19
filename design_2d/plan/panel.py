@@ -118,6 +118,15 @@ class PlanAnalysisPanel(DrawMixin, TreeTabMixin, InputTabMixin, LoadTabMixin, Re
                           ("메시", self.show_mesh), ("결과값", self.show_values),
                           ("메시별 값", self.show_cell_vals)):
             check(vbar, text, var, command=self.redraw).pack(side="left", padx=3)
+        tk.Label(vbar, text="  메시", font=FONT_S, bg=BG2, fg=C_SEL).pack(side="left", padx=(10, 2))
+        self.v_mesh = tk.StringVar(value=f"{self.model.get('mesh_size', 0.5):g}")
+        cbm = ttk.Combobox(vbar, textvariable=self.v_mesh, width=5, font=FONT,
+                           values=["1.0", "0.5", "0.3", "0.25", "0.2", "0.15"])
+        cbm.pack(side="left")
+        cbm.bind("<<ComboboxSelected>>", self._apply_mesh_size)
+        cbm.bind("<Return>", self._apply_mesh_size)
+        cbm.bind("<FocusOut>", self._apply_mesh_size)
+        tk.Label(vbar, text="m", font=FONT_S, bg=BG2, fg=TX3).pack(side="left", padx=(2, 0))
         tk.Label(vbar, text="  결과 크기", font=FONT_S, bg=BG2, fg=TX3).pack(side="left", padx=(10, 2))
         btn(vbar, "－", lambda: self._res_zoom(1 / 1.25), padx=6, pady=0).pack(side="left", padx=1)
         btn(vbar, "＋", lambda: self._res_zoom(1.25), padx=6, pady=0).pack(side="left", padx=1)
@@ -715,8 +724,27 @@ class PlanAnalysisPanel(DrawMixin, TreeTabMixin, InputTabMixin, LoadTabMixin, Re
         if msg:
             self.msg(msg)
 
+    def _apply_mesh_size(self, e=None):
+        v = parse_float(self.v_mesh.get())
+        cur = float(self.model.get("mesh_size", 0.5))
+        if v is None or v < 0.05 or v > 10:
+            self.v_mesh.set(f"{cur:g}")
+            if e is not None and getattr(e, "type", "") != "10":     # FocusOut 은 조용히 되돌림
+                self.msg("메시 크기는 0.05 ~ 10 m 입니다.", ORG)
+            return
+        if abs(v - cur) < 1e-12:
+            return
+        was = self.analysis is not None
+        self.push_undo()
+        self.model["mesh_size"] = v
+        self.changed(f"메시 크기 {v:g} m" + (" — 다시 해석합니다" if was else ""))
+        if was:
+            self.run_analysis()
+
     def refresh_all(self):
         self._refresh_undo_btns()
+        if hasattr(self, "v_mesh"):
+            self.v_mesh.set(f"{self.model.get('mesh_size', 0.5):g}")
         self._update_run_btn()
         self.refresh_tree()
         self.show_editor()
