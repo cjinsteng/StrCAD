@@ -82,6 +82,12 @@ def build_text(inp, res):
         for line in (bh.get("summary", {}).get("text") or "").split("\n"):
             if line:
                 a("    " + line)
+    comp = bh.get("composite") if bh else None
+    if comp and comp.get("n_radius"):
+        from . import composite as CP
+        a("  취합 주상도 (반경 안 시추자료):")
+        for line in CP.text(comp, bh.get("radius")).split("\n"):
+            a("    " + line)
     a(f"  지반분류        : {s.get('site', '—')}  {s.get('site_src', '')}")
     if e.get("ok"):
         sp = e["spectrum"]
@@ -187,4 +193,58 @@ def save_xlsx(path, inp, res):
             ws.cell(row=i, column=j, value=v)
     for col, wd in zip("ABCDEFGHIJ", (14, 30, 10, 10, 10, 12, 8, 8, 8, 40)):
         ws.column_dimensions[col].width = wd
+    wb.save(path)
+
+
+def save_composite_xlsx(path, c, radius=None, image=None):
+    """취합 주상도 — 미터별 표 + 대표 주상 + 지하수위 (+ 그림)."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+    from . import composite as CP
+    wb = Workbook()
+    hdr, fill = Font(bold=True, color="FFFFFF"), PatternFill("solid", fgColor="1F2D4A")
+
+    def head(ws, row, cols):
+        for i, t in enumerate(cols, 1):
+            cell = ws.cell(row=row, column=i, value=t)
+            cell.font, cell.fill = hdr, fill
+
+    ws = wb.active
+    ws.title = "요약"
+    for i, line in enumerate(CP.text(c, radius).split("\n"), 1):
+        ws.cell(row=i, column=1, value=line)
+    ws.column_dimensions["A"].width = 120
+    ws = wb.create_sheet("대표주상")
+    head(ws, 1, ["상단 GL−m", "하단 GL−m", "지층", "비율(%)", "N 평균", "N 최소", "N 최대", "N 근거", "Vs (m/s)", "Vs 근거", "공수"])
+    for i, p in enumerate(c.get("profile") or [], 2):
+        for j, v in enumerate([p["top"], p["bot"], p["label"], round(p["pct"] * 100, 1), p["N"], p["N_min"], p["N_max"],
+                               p["N_src"], p["Vs"], p["Vs_src"], p["n"]], 1):
+            ws.cell(row=i, column=j, value=round(v, 2) if isinstance(v, float) else v)
+    ws = wb.create_sheet("미터별")
+    cls_cols = list(CP.CLS_ORDER)
+    head(ws, 1, ["상단", "하단", "공수", "대표", "N 최소", "N 평균", "N 최대", "N 근거", "Vs 최소", "Vs 평균", "Vs 최대", "Vs 근거"]
+         + [CP.CLS_KO[k] + "(공)" for k in cls_cols])
+    for i, r in enumerate(c.get("rows") or [], 2):
+        N, V = r.get("N") or {}, r.get("Vs") or {}
+        vals = [r["z0"], r["z1"], r["n"], CP.CLS_KO[r["rep"]], N.get("min"), N.get("mean"), N.get("max"), r["N_src"],
+                V.get("min"), V.get("mean"), V.get("max"), r["Vs_src"]] + [r["dist"].get(k, 0) for k in cls_cols]
+        for j, v in enumerate(vals, 1):
+            ws.cell(row=i, column=j, value=round(v, 1) if isinstance(v, float) else v)
+    ws = wb.create_sheet("지하수위")
+    head(ws, 1, ["시추공", "거리 (m)", "지하수위 GL−m"])
+    for i, it in enumerate((c.get("gwl") or {}).get("items") or [], 2):
+        ws.cell(row=i, column=1, value=it["code"])
+        ws.cell(row=i, column=2, value=round(it["dist"], 1))
+        ws.cell(row=i, column=3, value=round(it["gwl"], 2))
+    if image is not None:
+        try:
+            import io
+            from openpyxl.drawing.image import Image as XLImage
+            bio = io.BytesIO()
+            image.save(bio, format="PNG")
+            bio.seek(0)
+            ws = wb.create_sheet("주상도")
+            ws.add_image(XLImage(bio), "A1")
+        except Exception:                            # noqa: BLE001
+            pass
     wb.save(path)

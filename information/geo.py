@@ -220,8 +220,8 @@ def guess_crs(xs, ys):
         return "WGS84"
     if 700000 < mx < 1400000 and 1300000 < my < 2200000:
         return "EPSG:5179"
-    if 0 < mx < 500000 and 300000 < my < 800000:
-        return "EPSG:5186" if my > 450000 else "EPSG:2097"
+    # 국토지반정보(data.go.kr) 시추정보는 전국을 중부원점 하나(GRS80, EPSG:5186)로 표기
+    #   X −10,000 ~ 560,000 / Y 60,000(제주) ~ 680,000
     return "EPSG:5186"
 
 

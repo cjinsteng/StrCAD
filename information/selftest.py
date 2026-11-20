@@ -127,6 +127,23 @@ def run():
     e = maps.kds_value("seismic", 37.5665, 126.978)
     check("지진 올림 = 위 등고선", e["max"] == math.ceil(e["interp"]))
 
+    print("[취합 주상도]")
+    from . import composite as CP
+    from . import boreholes as BH2
+    check("지층 분류 (사층·사력층·니층·풍화대)", BH2.classify_layer("사층") == "sand" and BH2.classify_layer("사력층") == "gravel"
+          and BH2.classify_layer("니층") == "clay" and BH2.classify_layer("풍화대") == "soil_weathered"
+          and BH2.classify_layer("퇴적층", "CL") == "clay")
+    check("N 추정 (보통조밀-조밀 → 30)", CP.est_n("sand", "실트질 모래 보통조밀-조밀함") == 30)
+    hs = [{"code": f"H{i}", "dist": 50.0 * i, "gwl": -2.0 - i, "depth": 20.0} for i in range(1, 4)]
+    det = {f"H{i}": ([{"top": 0, "bot": 2, "name": "매립층"}, {"top": 2, "bot": 8 + i, "name": "점토층"},
+                      {"top": 8 + i, "bot": 15, "name": "풍화암층"}, {"top": 15, "bot": 20, "name": "연암층"}], [], [])
+           for i in range(1, 4)}
+    c = CP.build(hs, det)
+    tops = [p["top"] for p in c["profile"]]
+    check("대표 주상 지층군 중앙값 (풍화암 GL-10, 연암 GL-15)", any(abs(t - 10) < 1e-6 for t in tops) and any(abs(t - 15) < 1e-6 for t in tops))
+    check("지하수위 중앙 GL-4.0", abs(c["gwl"]["med"] - 4.0) < 1e-6)
+    check("취합 주상도 그림", CP.render(c).height > 300)
+
     print("[노풍도]")
     from . import exposure as X
     check("판정 반경 40H·3km 중 작은 값", X.radius_m(50) == 2000 and X.radius_m(100) == 3000 and X.radius_m(50, "max") == 3000)
