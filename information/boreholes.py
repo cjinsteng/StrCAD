@@ -9,6 +9,7 @@ information/boreholes.py — 시추조사 자료 DB · 반경 검색 · 시추�
 받은 CSV 를 가져오면 PC 안의 SQLite DB(~/.strcad/boreholes.db)에 쌓고, 인터넷 없이 반경 검색한다.
 """
 import csv
+import re
 import io
 import math
 import sqlite3
@@ -87,8 +88,44 @@ def _norm(h):
     return "".join(ch for ch in str(h).upper() if ch not in " _-()/[].·\t﻿")
 
 
+def _summary_cols(headers):
+    hn = [_norm(h) for h in headers]
+    cols = {}
+    for key, _ in SUMMARY_LAYERS:
+        for i, h in enumerate(hn):
+            if h.startswith(_norm(key)) and "두께" in h:
+                cols[key + "_t"] = i
+            elif h.startswith(_norm(key)) and "N" in h.upper():
+                cols[key + "_n"] = i
+    if sum(1 for k in cols if k.endswith("_t")) >= 3:
+        for i, h in enumerate(hn):
+            if h.startswith(_norm("암반")):
+                cols["rqd"] = i
+            elif h.startswith("프로젝트명"):
+                cols["pname"] = i
+            elif h in ("공번", "시추번호", "시추공번호", "공명"):
+                cols["hole"] = i
+            elif h.startswith("가로좌표") or h in ("X좌표", "X"):
+                cols["x"] = i
+            elif h.startswith("세로좌표") or h in ("Y좌표", "Y"):
+                cols["y"] = i
+            elif h.startswith("표고"):
+                cols["elev"] = i
+            elif h.startswith("시추심도"):
+                cols["depth"] = i
+            elif h.startswith("지하수위"):
+                cols["gwl"] = i
+            elif h.startswith("시추일자"):
+                cols["date"] = i
+        return cols
+    return None
+
+
 def map_headers(headers):
-    """헤더 → {필드: 열 index}"""
+    """헤더 → {필드: 열 index}  (공별 요약표는 {"sum_cols": {...}})"""
+    sc = _summary_cols(headers)
+    if sc:
+        return {"sum_cols": sc}
     nh = [_norm(h) for h in headers]
     out = {}
     for f, cands in FIELDS.items():                      # 1) 정확히 같은 이름
@@ -107,7 +144,13 @@ def map_headers(headers):
     return out
 
 
+SUMMARY_LAYERS = (("매립층", "매립층"), ("퇴적층", "퇴적층"), ("풍화토", "풍화토층"), ("풍화암", "풍화암층"),
+                  ("연암", "연암층"), ("보통암", "보통암층"), ("경암", "경암층"))
+
+
 def detect_kind(m):
+    if "sum_cols" in m:
+        return "summary"                             # 공별 층 두께·N치 요약표 (조사보고서 요약)
     if "kperm" in m and "hole" in m:
         return "perm"                                # 현장투수시험
     if "sample" in m and ("phi" in m or "coh" in m):
@@ -129,7 +172,7 @@ def detect_kind(m):
 
 KIND_LABEL = {"holes": "시추공(위치)", "layers": "지층정보", "spt": "표준관입시험", "downhole": "하향식 탄성파(Vs)",
               "agg_holes": "골재자원조사 시추위치", "agg_layers": "골재자원조사 주상", "perm": "현장투수시험",
-              "strength": "전단강도시험", "": "알 수 없음"}
+              "strength": "전단강도시험", "summary": "공별 층두께·N치 요약표", "": "알 수 없음"}
 
 
 def read_csv_head(path, n=200):
@@ -219,6 +262,79 @@ class BoreholeDB:
                 c.execute(f"DELETE FROM {t}")
 
     # ── 가져오기 ──
+    def import_summary(self, path, cols, enc, progress=None, cancel=None):
+        """
+        공별 요약표 (프로젝트명·공번·좌표·표고·시추심도·지하수위·층별 두께·층별 N치 범위).
+        층 두께를 위에서부터 쌓아 지층을 만들고, 'a/b~c/d' N치 범위는 층 상·하단 근처의
+        표준관입 2점(최소→최대)으로 넣는다.  좌표는 중부원점(EPSG:5186), 가로·세로가 뒤바뀐 행은 바로잡음.
+        """
+        import hashlib
+        src = Path(path).name
+        n_ok = n_bad = 0
+
+        def g(r, k):
+            i = cols.get(k)
+            return r[i].strip() if i is not None and i < len(r) else ""
+
+        def parse_n(txt):
+            out = []
+            for a, b in re.findall(r"(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)", txt or ""):
+                out.append((float(a), float(b)))
+            return out
+
+        with self._lock, self._conn() as c, open(path, "r", encoding=enc, errors="replace", newline="") as fp:
+            rd = csv.reader(fp)
+            next(rd, None)
+            for r in rd:
+                if cancel and cancel():
+                    break
+                hole, pname = g(r, "hole"), g(r, "pname")
+                if not hole:
+                    continue
+                tag = hashlib.md5(pname.encode("utf-8")).hexdigest()[:6].upper()
+                code = f"R{tag}-{hole}"
+                x, y = _f(g(r, "x")), _f(g(r, "y"))
+                la = lo = None
+                if x is not None and y is not None:
+                    if x > 380000 and y < 300000:            # 가로·세로 뒤바뀜 (동해·남해 바다로 떨어짐)
+                        x, y = y, x
+                    try:
+                        la, lo = geo.to_wgs84(x, y, "EPSG:5186")
+                    except Exception:                    # noqa: BLE001
+                        la = lo = None
+                    if la is None or not (32.5 < la < 39.5 and 123.5 < lo < 132.5):
+                        la = lo = None
+                if la is None:
+                    n_bad += 1
+                gw = _f(g(r, "gwl"))
+                c.execute("INSERT OR REPLACE INTO holes VALUES (?,?,?,?,?,?,?,?,?)",
+                          (code, pname, f"{pname} {hole} ({g(r, 'date')})", la, lo, _f(g(r, "elev")),
+                           _f(g(r, "depth")), (-abs(gw) if gw else None), src))
+                c.execute("DELETE FROM layers WHERE hole=?", (code,))
+                c.execute("DELETE FROM spt WHERE hole=?", (code,))
+                z = 0.0
+                for key, nm in SUMMARY_LAYERS:
+                    t = _f(g(r, key + "_t"))
+                    if not t or t <= 0:
+                        continue
+                    ntxt = g(r, key + "_n")
+                    note = f"N치 {ntxt}" if ntxt else ""
+                    if key in ("연암", "보통암", "경암") and g(r, "rqd"):
+                        note = f"암질지수 {g(r, 'rqd')}"
+                    c.execute("INSERT INTO layers VALUES (?,?,?,?,?,?)", (code, z, z + t, nm, "", note))
+                    ns = parse_n(ntxt)
+                    if ns:
+                        pts = [ns[0], ns[-1]] if len(ns) > 1 else [ns[0]]
+                        deps = [z + min(0.5, t / 3), z + t - min(0.5, t / 3)] if len(pts) > 1 else [z + t / 2]
+                        for (bl, pe), dd in zip(pts, deps):
+                            c.execute("INSERT INTO spt VALUES (?,?,?,?,?)", (code, dd, bl, pe, n_value(bl, pe)))
+                    z += t
+                n_ok += 1
+            if progress:
+                progress(1.0, n_ok)
+        return n_ok, f"공별 요약표 {n_ok:,}공 가져옴 (지층·N치 범위 → 표준관입 2점/층)" + (
+            f", 좌표 없음 {n_bad}공" if n_bad else "")
+
     def fix_agg_units(self):
         """골재자원조사 주상 일부는 cm 단위 — 시추심도보다 훨씬 깊으면 1/100."""
         with self._lock, self._conn() as c:
@@ -238,6 +354,8 @@ class BoreholeDB:
         kind = kind or detect_kind(m)
         if not kind:
             raise ValueError("CSV 종류(시추공/지층/표준관입)를 알 수 없습니다. 열 이름을 확인하세요.")
+        if kind == "summary":
+            return self.import_summary(path, m["sum_cols"], enc, progress, cancel)
         if kind in ("holes", "agg_holes") and crs is None:
             xs = [_f(r[m["x"]]) for r in sample if len(r) > m["x"]]
             ys = [_f(r[m["y"]]) for r in sample if len(r) > m["y"]]
@@ -255,6 +373,7 @@ class BoreholeDB:
             rd = csv.reader(fp)
             next(rd, None)
             seen = set()
+            pnames = {}
             nbytes = 0
             for k, r in enumerate(rd):
                 nbytes += sum(len(x) for x in r) + len(r) + 1
@@ -342,6 +461,9 @@ class BoreholeDB:
                     b, p_in = parse_blows(raw_b)
                     p = _f(g(r, "pen")) or p_in
                     batch.append(("S", (code, _f(g(r, "sdepth")), b, p, n_value(b, p))))
+                    pn = g(r, "pname")
+                    if pn and code not in pnames:
+                        pnames[code] = pn
                 n_ok += 1
                 if len(batch) >= 5000:
                     self._flush(c, batch)
@@ -349,6 +471,9 @@ class BoreholeDB:
                     if progress:
                         progress(min(nbytes / total, 1.0), n_ok)
             self._flush(c, batch)
+            if pnames:                                   # 사업명이 비어 있는 시추공에 프로젝트명 채우기
+                c.executemany("UPDATE holes SET project=? WHERE code=? AND (project IS NULL OR project='')",
+                              [(v, k) for k, v in pnames.items()])
             c.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"import:{src}", f"{kind}:{n_ok}"))
         msg = f"{KIND_LABEL[kind]} {n_ok:,}행 가져옴" + (f" (좌표계 {crs})" if kind == "holes" else "")
         if kind == "agg_layers":

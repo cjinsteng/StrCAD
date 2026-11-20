@@ -31,7 +31,9 @@ CLS_ORDER = ("fill", "clay", "sand", "gravel", "sediment", "soil_weathered", "ro
 # 상대밀도·연경도 기술 → 대표 N (길게 겹치는 표현부터 확인)
 DENS_N = (("매우느슨", 3), ("매우조밀", 50), ("보통조밀", 20), ("느슨", 7), ("조밀", 40),
           ("매우연약", 1), ("매우견고", 25), ("보통견고", 6), ("연약", 3), ("견고", 12), ("단단", 15))
-CLS_N = {"fill": 7, "clay": 6, "sand": 15, "gravel": 30, "sediment": 12, "soil_weathered": 35,
+# 지층별 대표 N — 국토지반정보 표준관입시험 16,308공 · 17.7만 회를 지층과 맞춰 본 중앙값
+#   (매립 8, 점성토 5, 사질토 11, 자갈·사력 38, 풍화토 37, 풍화암 50)
+CLS_N = {"fill": 8, "clay": 5, "sand": 11, "gravel": 38, "sediment": 12, "soil_weathered": 37,
          "rock_weathered": 50, "unknown": 10}
 
 
