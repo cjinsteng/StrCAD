@@ -14,6 +14,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from . import boreholes as BH
+from . import boringlog as BL
 from . import composite as CP
 from . import exposure as EX
 from . import geo
@@ -622,12 +623,18 @@ class InformationApp(tk.Toplevel):
                                 (40, 90, 170, 60, 60, 65, 65, 45, 240), height=14)
         fr.pack(fill="both", expand=True)
         self.tv_bh.bind("<<TreeviewSelect>>", lambda e: self._draw_hole())
-        self.tv_bh.bind("<Double-1>", self._toggle_hole)
-        T.label(lf, "더블클릭: 판정에서 제외/포함", fg=T.TX3, font=T.FONT_S).pack(anchor="w")
+        self.tv_bh.bind("<Double-1>", self._bh_double)
+        self.tv_bh.bind("<space>", self._toggle_hole)
+        T.label(lf, "더블클릭: 시추주상도 보기  ·  '사용' 칸 더블클릭 또는 Space: 판정에서 제외/포함",
+                fg=T.TX3, font=T.FONT_S).pack(anchor="w")
         self.bh_sum = tk.Label(lf, text="", font=T.FONT, bg=T.BG3, fg=T.WHI, justify="left", anchor="w")
         self.bh_sum.pack(fill="x", pady=(4, 8), ipady=6, ipadx=8)
-        T.section(rf, "위치 (건설지점 기준)", T.C_GEO)
-        self.cv_bhmap = tk.Canvas(rf, bg=T.CANV_BG, highlightthickness=0, height=270)
+        hb = tk.Frame(rf, bg=T.BG2)
+        hb.pack(fill="x")
+        T.section(hb, "위치 (건설지점 기준)", T.C_GEO)
+        self.v_bh_sat = tk.BooleanVar(value=True)
+        T.check(hb, "위성 지도", self.v_bh_sat, command=self._draw_bhmap).pack(side="right", padx=6)
+        self.cv_bhmap = tk.Canvas(rf, bg=T.CANV_BG, highlightthickness=0, height=330)
         self.cv_bhmap.pack(fill="x")
         self.cv_bhmap.bind("<Configure>", lambda e: self._draw_bhmap())
         self.cv_bhmap.bind("<Button-1>", self._bhmap_click)
@@ -1349,7 +1356,20 @@ class InformationApp(tk.Toplevel):
         cx, cy = W_ / 2, H_ / 2
         sc = (min(W_, H_) / 2 - 18) / max(rad, 1)
         self._bhmap_sc = (cx, cy, sc, lat0, lon0)
-        cv.create_oval(cx - rad * sc, cy - rad * sc, cx + rad * sc, cy + rad * sc, outline=T.BDR2, dash=(4, 3))
+        if self.v_bh_sat.get():
+            img = self._bhmap_bg(lat0, lon0, rad)
+            if img:
+                from PIL import Image, ImageTk
+                side = int(2 * rad * 1.18 * sc)
+                if side > 20:
+                    self._bhmap_photo = ImageTk.PhotoImage(img.resize((side, side), Image.LANCZOS))
+                    cv.create_image(cx, cy, image=self._bhmap_photo)
+            else:
+                cv.create_text(W_ / 2, H_ - 10, text="위성 지도 내려받는 중…" if img is None else
+                               "위성 지도 없음 (인터넷·브이월드 키 확인)", fill=T.TX3, font=T.FONT_S)
+        cv.create_oval(cx - rad * sc, cy - rad * sc, cx + rad * sc, cy + rad * sc,
+                       outline="#ff4d4d" if self.v_bh_sat.get() else T.BDR2, width=2 if self.v_bh_sat.get() else 1,
+                       dash=(4, 3))
         for f in (0.5,):
             cv.create_oval(cx - rad * sc * f, cy - rad * sc * f, cx + rad * sc * f, cy + rad * sc * f,
                            outline="#1e2b47", dash=(2, 4))
@@ -1363,7 +1383,8 @@ class InformationApp(tk.Toplevel):
             px, py = cx + x * sc, cy - y * sc
             col = SITE_COLORS.get(r.get("site", ""), "#94a3b8") if r.get("use", True) else "#334155"
             rr = 7 if (sel and sel[0] == str(i)) else 5
-            cv.create_oval(px - rr, py - rr, px + rr, py + rr, fill=col, outline="white" if rr == 7 else "")
+            cv.create_oval(px - rr, py - rr, px + rr, py + rr, fill=col,
+                           outline="white" if (rr == 7 or self.v_bh_sat.get()) else "")
         cv.create_line(cx - 9, cy, cx + 9, cy, fill=T.ORANGE, width=2)
         cv.create_line(cx, cy - 9, cx, cy + 9, fill=T.ORANGE, width=2)
         y = 10
@@ -1371,6 +1392,31 @@ class InformationApp(tk.Toplevel):
             cv.create_oval(10, y, 20, y + 10, fill=SITE_COLORS[k], outline="")
             cv.create_text(24, y + 5, text=k or "판정불가", fill=T.TX2, anchor="w", font=T.FONT_S)
             y += 15
+
+    def _bhmap_bg(self, lat0, lon0, rad):
+        """반경 원 배경 위성 지도 (내려받기는 백그라운드, 끝나면 다시 그림)."""
+        key = (round(lat0, 6), round(lon0, 6), round(rad))
+        cache = getattr(self, "_bhbg", {})
+        self._bhbg = cache
+        if key in cache:
+            return cache[key]
+        if getattr(self, "_bhbg_busy", None) == key:
+            return None
+        self._bhbg_busy = key
+
+        def work():
+            try:
+                v = EX.compose_map(lat0, lon0, rad, self.settings, size=900)
+                cache[key] = v.image if v.src else False
+                if v.note:
+                    self.log("[시추 위치도] " + v.note)
+            except Exception as e:                   # noqa: BLE001
+                cache[key] = False
+                self.log(f"[시추 위치도] 위성 지도 실패: {e}")
+            self._bhbg_busy = None
+            self.ui(self._draw_bhmap)
+        threading.Thread(target=work, daemon=True).start()
+        return None
 
     def _bhmap_click(self, e):
         if not getattr(self, "_bhmap_sc", None) or not self.bh_results:
@@ -1473,6 +1519,27 @@ class InformationApp(tk.Toplevel):
         self._show_seismic()
         self._show_boreholes()
         self.nb.select(self.tab_bh)
+
+    def _bh_double(self, e):
+        col = self.tv_bh.identify_column(e.x)
+        row = self.tv_bh.identify_row(e.y)
+        if not row:
+            return
+        self.tv_bh.selection_set(row)
+        if col == "#1":
+            self._toggle_hole(e)
+            return "break"
+        self._open_boring_log(self.bh_results[int(row)])
+        return "break"
+
+    def _open_boring_log(self, r):
+        h = r["hole"]
+        try:
+            L, S = self.db.detail(h["code"])
+            V = self.db.vs_detail(h["code"])
+        except Exception:                            # noqa: BLE001
+            L, S, V = r.get("layers", []), r.get("spts", []), []
+        BoringLogWindow(self, h, L, S, V)
 
     def _toggle_hole(self, e):
         sel = self.tv_bh.selection()
@@ -1779,7 +1846,10 @@ class _ImportDialog(tk.Toplevel):
                     xs = [BH._f(r[m["x"]]) for r in rows if len(r) > m["x"]]
                     ys = [BH._f(r[m["y"]]) for r in rows if len(r) > m["y"]]
                     crs = geo.guess_crs(xs, ys)
-                found = ", ".join(f"{k}={headers[v]}" for k, v in m.items())
+                if "sum_cols" in m:
+                    found = "공별 요약표: " + ", ".join(headers[i] for i in m["sum_cols"].values())
+                else:
+                    found = ", ".join(f"{k}={headers[v]}" for k, v in m.items())
             except Exception as e:                   # noqa: BLE001
                 kind, crs, found, m = "", "", f"읽기 실패: {e}", {}
             vk = tk.StringVar(value=kind)
@@ -1811,7 +1881,7 @@ class _ImportDialog(tk.Toplevel):
     def _go(self):
         self.btn.config(state="disabled")
         order = {"holes": 0, "agg_holes": 1, "layers": 2, "agg_layers": 3, "spt": 4, "downhole": 5, "perm": 6,
-                 "strength": 7, "": 9}
+                 "strength": 7, "summary": 8, "": 9}
         jobs = sorted(((p, vk.get(), vc.get() or None, m) for p, vk, vc, m in self.items), key=lambda j: order[j[1]])
 
         def work():
@@ -1896,6 +1966,51 @@ class _HoleDialog(tk.Toplevel):
                 "elev": _num(self.v["elev"].get()), "depth": _num(self.v["depth"].get()), "source": "직접입력"}
         self.result = (hole, layers, spts)
         self.destroy()
+
+
+class BoringLogWindow(tk.Toplevel):
+    """시추주상도 한 장 (스크롤·그림 저장)."""
+
+    def __init__(self, app, hole, layers, spts, vs):
+        super().__init__(app)
+        self.app = app
+        self.title(f"시추주상도 — {hole['code']}")
+        self.configure(bg=T.BG)
+        self.geometry("1300x900")
+        T.setup_style(self)
+        self.img = BL.render(hole, layers, spts, vs)
+        bar = tk.Frame(self, bg=T.BG2)
+        bar.pack(fill="x")
+        dist = hole.get("dist")
+        tk.Label(bar, text=f"🕳  {hole['code']}   {hole.get('project') or ''}" + (f"   · 건설지점에서 {dist:.0f} m" if dist else ""),
+                 font=T.FONT_B, bg=T.BG2, fg=T.WHI).pack(side="left", padx=12, pady=8)
+        T.btn(bar, "닫기", self.destroy).pack(side="right", padx=8, pady=6)
+        T.btn(bar, "🖼 그림 저장", self._save).pack(side="right", padx=3)
+        fr = tk.Frame(self, bg="white")
+        fr.pack(fill="both", expand=True)
+        self.cv = tk.Canvas(fr, bg="white", highlightthickness=0)
+        vsb = ttk.Scrollbar(fr, orient="vertical", command=self.cv.yview)
+        hsb = ttk.Scrollbar(fr, orient="horizontal", command=self.cv.xview)
+        self.cv.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb.pack(side="right", fill="y")
+        hsb.pack(side="bottom", fill="x")
+        self.cv.pack(fill="both", expand=True)
+        from PIL import ImageTk
+        self.photo = ImageTk.PhotoImage(self.img)
+        self.cv.create_image(0, 0, anchor="nw", image=self.photo)
+        self.cv.configure(scrollregion=(0, 0, self.img.width, self.img.height))
+        self.cv.bind("<MouseWheel>", lambda e: self.cv.yview_scroll(int(-e.delta / 120), "units"))
+        self.cv.bind("<Button-4>", lambda e: self.cv.yview_scroll(-3, "units"))
+        self.cv.bind("<Button-5>", lambda e: self.cv.yview_scroll(3, "units"))
+        self.bind("<Escape>", lambda e: self.destroy())
+        self._code = hole["code"]
+
+    def _save(self):
+        p = filedialog.asksaveasfilename(parent=self, defaultextension=".png", filetypes=[("PNG", "*.png")],
+                                         initialfile=f"시추주상도_{self._code}.png")
+        if p:
+            self.img.save(p)
+            self.app.set_status(f"시추주상도 저장: {p}")
 
 
 class ExposureWindow(tk.Toplevel):

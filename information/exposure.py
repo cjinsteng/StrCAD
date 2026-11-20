@@ -45,10 +45,11 @@ TH = {
 TILE_SRC = {
     "vworld_sat": ("브이월드 영상", "https://api.vworld.kr/req/wmts/1.0.0/{key}/Satellite/{z}/{y}/{x}.jpeg", 19),
     "vworld_base": ("브이월드 기본", "https://api.vworld.kr/req/wmts/1.0.0/{key}/Base/{z}/{y}/{x}.png", 19),
+    "esri_sat": ("Esri 위성", "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", 19),
     "osm": ("OpenStreetMap", "https://tile.openstreetmap.org/{z}/{x}/{y}.png", 19),
 }
 ATTRIB = {"vworld_sat": "© 국토교통부 브이월드", "vworld_base": "© 국토교통부 브이월드",
-          "osm": "© OpenStreetMap contributors"}
+          "esri_sat": "Esri, Maxar, Earthstar Geographics", "osm": "© OpenStreetMap contributors"}
 
 
 def radius_m(H, rule="kds"):
@@ -114,7 +115,7 @@ def compose_map(lat, lon, R, settings=None, size=760, provider=None, progress=No
     settings = settings or geo.load_settings()
     key = (settings.get("vworld_key") or "").strip()
     order = [provider] if provider else []
-    order += (["vworld_sat", "vworld_base"] if key else []) + ["osm"]
+    order += (["vworld_sat", "vworld_base"] if key else []) + ["esri_sat", "osm"]
     half = R * 1.18
     mpp_target = 2 * half / size
     errors = []
