@@ -32,6 +32,13 @@ CREATE INDEX IF NOT EXISTS ix_layers_hole ON layers(hole);
 CREATE TABLE IF NOT EXISTS spt (
     hole TEXT, depth REAL, blows REAL, pen REAL, n REAL);
 CREATE INDEX IF NOT EXISTS ix_spt_hole ON spt(hole);
+CREATE TABLE IF NOT EXISTS vs (
+    hole TEXT, top REAL, bot REAL, vp REAL, vs REAL, layer TEXT);
+CREATE INDEX IF NOT EXISTS ix_vs_hole ON vs(hole);
+CREATE TABLE IF NOT EXISTS perm (hole TEXT, top REAL, bot REAL, k REAL);
+CREATE INDEX IF NOT EXISTS ix_perm_hole ON perm(hole);
+CREATE TABLE IF NOT EXISTS strength (hole TEXT, sample TEXT, typ TEXT, phi REAL, c REAL);
+CREATE INDEX IF NOT EXISTS ix_str_hole ON strength(hole);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 """
 
@@ -45,7 +52,7 @@ FIELDS = {
     "name":     ["HOLE_NAME", "시추공명", "시추공이름", "BH_NAME"],
     "x":        ["HOLE_X", "X좌표", "좌표X", "TM_X", "X", "경도", "LON", "LONGITUDE", "HOLE_LON", "LNG"],
     "y":        ["HOLE_Y", "Y좌표", "좌표Y", "TM_Y", "Y", "위도", "LAT", "LATITUDE", "HOLE_LAT"],
-    "elev":     ["HOLE_EL", "HOLE_ELEV", "HOLE_ELEVATION", "표고", "지반고", "지반표고", "공구표고", "ELEV", "EL"],
+    "elev":     ["HOLE_EL", "HOLE_ELEV", "HOLE_ELEVATION", "표고", "고도", "지반고", "지반표고", "공구표고", "ELEV", "EL"],
     "depth":    ["HOLE_DEPTH", "시추심도", "굴진심도", "시추깊이", "총심도", "DEPTH"],
     "gwl":      ["HOLE_WATER_LEVEL", "WATER_LEVEL", "GWL", "지하수위", "지하수위심도"],
     "top":      ["LAYER_DEPTH_FROM", "지층시작심도", "시작심도", "상단심도", "심도FROM", "FROM"],
@@ -56,6 +63,23 @@ FIELDS = {
     "sdepth":   ["DEPTH_SPT", "시험심도", "SPT_DEPTH", "SPT심도", "N값심도"],
     "blows":    ["SPT_BLOW", "BLOW_COUNT", "타격회수", "타격횟수", "N값", "N_VALUE", "NVALUE", "N"],
     "pen":      ["SPT_PENETRATION", "PENETRATION", "관입깊이", "관입량", "관입심도", "PEN"],
+    "vs":       ["DH_VS_VELOCITY", "전단파속도(S파)", "S파속도", "VS"],
+    "vp":       ["DH_VP_VELOCITY", "전단파속도(P파)", "P파속도", "VP"],
+    "serial":   ["시추일련번호"],
+    "pattern":  ["패턴코드"],
+    "ftop":     ["구간시작(미터)"],
+    "fbot":     ["구간종료(미터)"],
+    "mdepth":   ["시추심도(미터)"],
+    "site":     ["시추지점명"],
+    "addr":     ["주소코드"],
+    "geom":     ["위치정보"],
+    "kperm":    ["평균투수계수"],
+    "ttop":     ["시험 시작심도"],
+    "tbot":     ["시험 종료심도"],
+    "sample":   ["시료코드"],
+    "ttype":    ["시험종류"],
+    "phi":      ["내부마찰각"],
+    "coh":      ["점착력"],
 }
 
 
@@ -84,6 +108,16 @@ def map_headers(headers):
 
 
 def detect_kind(m):
+    if "kperm" in m and "hole" in m:
+        return "perm"                                # 현장투수시험
+    if "sample" in m and ("phi" in m or "coh" in m):
+        return "strength"                            # 전단강도시험 (삼축·직접전단)
+    if "serial" in m and "pattern" in m:
+        return "agg_layers"                          # 골재자원조사 시추 주상(패턴코드)
+    if "serial" in m and "x" in m and "y" in m:
+        return "agg_holes"                           # 골재자원조사 GIS (위도·경도)
+    if "vs" in m and "top" in m and "hole" in m:
+        return "downhole"                            # 하향식 탄성파(Vs)
     if "top" in m and "bot" in m:
         return "layers"
     if "sdepth" in m and "blows" in m:
@@ -93,21 +127,24 @@ def detect_kind(m):
     return ""
 
 
-KIND_LABEL = {"holes": "시추공(위치)", "layers": "지층정보", "spt": "표준관입시험", "": "알 수 없음"}
+KIND_LABEL = {"holes": "시추공(위치)", "layers": "지층정보", "spt": "표준관입시험", "downhole": "하향식 탄성파(Vs)",
+              "agg_holes": "골재자원조사 시추위치", "agg_layers": "골재자원조사 주상", "perm": "현장투수시험",
+              "strength": "전단강도시험", "": "알 수 없음"}
 
 
 def read_csv_head(path, n=200):
     """(headers, rows, encoding)"""
-    raw = Path(path).read_bytes()[:4_000_000]
-    for enc in ("utf-8-sig", "cp949", "euc-kr"):
-        try:
-            text = raw.decode(enc)
-            break
-        except UnicodeDecodeError:
-            continue
-    else:
-        text, enc = raw.decode("utf-8", "replace"), "utf-8"
-    rd = csv.reader(io.StringIO(text))
+    with open(path, "rb") as fp:
+        raw = fp.read(4_000_000)
+    # 깨진 글자가 가장 적은 인코딩 (자료 안에 잘못된 바이트가 섞여 있어도 판별)
+    best = None
+    for enc in ("utf-8-sig", "cp949"):
+        t = raw.decode(enc, errors="replace")
+        bad = t.count("\ufffd")
+        if best is None or bad < best[0]:
+            best = (bad, t, enc)
+    _, text, enc = best
+    rd = csv.reader(io.StringIO(text, newline=""))
     headers = next(rd, [])
     rows = []
     for r in rd:
@@ -172,13 +209,28 @@ class BoreholeDB:
             hl = c.execute("SELECT COUNT(*) FROM holes WHERE lat IS NOT NULL").fetchone()[0]
             l = c.execute("SELECT COUNT(DISTINCT hole) FROM layers").fetchone()[0]
             s = c.execute("SELECT COUNT(DISTINCT hole) FROM spt").fetchone()[0]
-        return {"holes": h, "located": hl, "with_layers": l, "with_spt": s}
+            v = c.execute("SELECT COUNT(DISTINCT hole) FROM vs").fetchone()[0]
+            w = c.execute("SELECT COUNT(*) FROM holes WHERE gwl IS NOT NULL AND gwl != 0").fetchone()[0]
+        return {"holes": h, "located": hl, "with_layers": l, "with_spt": s, "with_vs": v, "with_gwl": w}
 
     def clear(self):
         with self._lock, self._conn() as c:
-            c.execute("DELETE FROM holes"); c.execute("DELETE FROM layers"); c.execute("DELETE FROM spt")
+            for t in ("holes", "layers", "spt", "vs", "perm", "strength"):
+                c.execute(f"DELETE FROM {t}")
 
     # ── 가져오기 ──
+    def fix_agg_units(self):
+        """골재자원조사 주상 일부는 cm 단위 — 시추심도보다 훨씬 깊으면 1/100."""
+        with self._lock, self._conn() as c:
+            rows = c.execute("SELECT hole, MAX(bot) FROM layers WHERE hole LIKE 'AGG-%' AND bot > 60 "
+                             "GROUP BY hole").fetchall()
+            for code, mb in rows:
+                m_max = c.execute("SELECT MAX(bot) FROM layers WHERE hole=? AND bot <= 60", (code,)).fetchone()[0]
+                if m_max and m_max >= 0.5 * mb / 100.0:          # m 단위 행이 따로 있으면 cm 행은 중복
+                    c.execute("DELETE FROM layers WHERE hole=? AND bot > 60", (code,))
+                else:
+                    c.execute("UPDATE layers SET top=top/100.0, bot=bot/100.0 WHERE hole=?", (code,))
+
     def import_csv(self, path, kind=None, mapping=None, crs=None, progress=None, cancel=None, replace=True):
         """data.go.kr 형식 CSV 가져오기.  반환 (가져온 행 수, 메시지)"""
         headers, sample, enc = read_csv_head(path, 300)
@@ -186,7 +238,7 @@ class BoreholeDB:
         kind = kind or detect_kind(m)
         if not kind:
             raise ValueError("CSV 종류(시추공/지층/표준관입)를 알 수 없습니다. 열 이름을 확인하세요.")
-        if kind == "holes" and crs is None:
+        if kind in ("holes", "agg_holes") and crs is None:
             xs = [_f(r[m["x"]]) for r in sample if len(r) > m["x"]]
             ys = [_f(r[m["y"]]) for r in sample if len(r) > m["y"]]
             crs = geo.guess_crs(xs, ys)
@@ -209,10 +261,54 @@ class BoreholeDB:
                 if cancel and cancel():
                     break
                 code = g(r, "hole")
-                if kind != "holes" and not code:
+                if kind == "strength":
+                    smp = g(r, "sample")
+                    code = smp[:-4] if len(smp) > 6 else ""   # 시료코드 = 시추공코드 + DS07 등 4자리
+                if kind in ("agg_holes", "agg_layers"):
+                    code = "AGG-" + g(r, "serial") if g(r, "serial") else ""
+                if kind not in ("holes", "agg_holes") and not code:
                     n_bad += 1
                     continue
-                if kind == "holes":
+                if kind == "agg_holes":
+                    la, lo = _f(g(r, "y")), _f(g(r, "x"))
+                    if la is None or lo is None or not (32.5 < la < 39.5 and 123.5 < lo < 132.5):
+                        la = lo = None
+                        gm = g(r, "geom")                  # 'POINT (x y)' — 중부원점 GRS80(FN 500,000)
+                        if gm.upper().startswith("POINT"):
+                            try:
+                                px, py = (float(t) for t in gm[gm.index("(") + 1:gm.index(")")].split()[:2])
+                                la, lo = geo.to_wgs84(px, py, "EPSG:5181")
+                            except Exception:          # noqa: BLE001
+                                la = lo = None
+                    if la is None or not (32.5 < la < 39.5 and 123.5 < lo < 132.5):
+                        n_bad += 1
+                        continue
+                    batch.append(("H", (code, "골재자원조사", (g(r, "site") + " " + g(r, "addr")).strip(), la, lo,
+                                        None, _f(g(r, "mdepth")), None, src)))
+                elif kind == "agg_layers":
+                    if replace and code not in seen:
+                        seen.add(code)
+                        batch.append(("DL", (code,)))
+                    nm = g(r, "pattern")
+                    batch.append(("L", (code, _f(g(r, "ftop")), _f(g(r, "fbot")),
+                                        "" if nm.startswith("#") else nm, "", "골재자원조사 패턴")))
+                elif kind == "perm":
+                    if replace and code not in seen:
+                        seen.add(code)
+                        batch.append(("DP", (code,)))
+                    batch.append(("P", (code, _f(g(r, "ttop")), _f(g(r, "tbot")), _f(g(r, "kperm")))))
+                elif kind == "strength":
+                    if replace and code not in seen:
+                        seen.add(code)
+                        batch.append(("DT", (code,)))
+                    batch.append(("T", (code, g(r, "sample"), g(r, "ttype"), _f(g(r, "phi")), _f(g(r, "coh")))))
+                elif kind == "downhole":
+                    if replace and code not in seen:
+                        seen.add(code)
+                        batch.append(("DV", (code,)))
+                    batch.append(("V", (code, _f(g(r, "top")), _f(g(r, "bot")), _f(g(r, "vp")), _f(g(r, "vs")),
+                                        g(r, "lname"))))
+                elif kind == "holes":
                     x, y = _f(g(r, "x")), _f(g(r, "y"))
                     lat = lon = None
                     if x is not None and y is not None:
@@ -255,6 +351,8 @@ class BoreholeDB:
             self._flush(c, batch)
             c.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (f"import:{src}", f"{kind}:{n_ok}"))
         msg = f"{KIND_LABEL[kind]} {n_ok:,}행 가져옴" + (f" (좌표계 {crs})" if kind == "holes" else "")
+        if kind == "agg_layers":
+            self.fix_agg_units()
         if n_bad:
             msg += f", 좌표/코드 없는 행 {n_bad:,}"
         return n_ok, msg
@@ -272,6 +370,18 @@ class BoreholeDB:
                 c.execute("DELETE FROM layers WHERE hole=?", row)
             elif typ == "DS":
                 c.execute("DELETE FROM spt WHERE hole=?", row)
+            elif typ == "P":
+                c.execute("INSERT INTO perm VALUES (?,?,?,?)", row)
+            elif typ == "DP":
+                c.execute("DELETE FROM perm WHERE hole=?", row)
+            elif typ == "T":
+                c.execute("INSERT INTO strength VALUES (?,?,?,?,?)", row)
+            elif typ == "DT":
+                c.execute("DELETE FROM strength WHERE hole=?", row)
+            elif typ == "V":
+                c.execute("INSERT INTO vs VALUES (?,?,?,?,?,?)", row)
+            elif typ == "DV":
+                c.execute("DELETE FROM vs WHERE hole=?", row)
 
     # ── 직접 입력 ──
     def save_hole(self, hole, layers, spts):
@@ -315,6 +425,25 @@ class BoreholeDB:
         out.sort(key=lambda h: h["dist"])
         return out[:limit]
 
+    def tests(self, codes):
+        """반경 안 공들의 현장투수시험·전단강도시험."""
+        codes = list(codes)
+        P, T = [], []
+        with self._conn() as c:
+            for i in range(0, len(codes), 500):
+                q = ",".join("?" * len(codes[i:i + 500]))
+                P += c.execute(f"SELECT hole, top, bot, k FROM perm WHERE hole IN ({q})", codes[i:i + 500]).fetchall()
+                T += c.execute(f"SELECT hole, sample, typ, phi, c FROM strength WHERE hole IN ({q})",
+                               codes[i:i + 500]).fetchall()
+        return ([{"hole": h, "top": a, "bot": b, "k": k} for h, a, b, k in P if k],
+                [{"hole": h, "sample": s_, "typ": t or "", "phi": f, "c": cc} for h, s_, t, f, cc in T])
+
+    def vs_detail(self, code):
+        with self._conn() as c:
+            R = c.execute("SELECT top, bot, vp, vs, layer FROM vs WHERE hole=? ORDER BY top", (code,)).fetchall()
+        return [{"top": a, "bot": b, "vp": p, "vs": v, "layer": n or ""} for a, b, p, v, n in R
+                if a is not None and b is not None and v]
+
     def detail(self, code):
         with self._conn() as c:
             L = c.execute("SELECT top, bot, name, uscs, descr FROM layers WHERE hole=? ORDER BY top",
@@ -330,20 +459,43 @@ class BoreholeDB:
 # ─────────────────────────────────────────────────────────────
 #  지층 분류 · 전단파속도 · 지반분류
 # ─────────────────────────────────────────────────────────────
-def classify_layer(name, uscs="", descr=""):
-    t = f"{name} {uscs} {descr}".lower()
-    for cls in ("rock_hard", "rock_soft", "rock_weathered", "soil_weathered", "fill",
-                "gravel", "clay", "sand", "sediment"):
+_ORDER = ("rock_hard", "rock_soft", "rock_weathered", "soil_weathered", "fill", "gravel", "clay", "sand", "sediment")
+
+
+def _kw_class(text):
+    t = (text or "").lower()
+    for cls in _ORDER:
         if any(kw.lower() in t for kw in K.LAYER_KEYWORDS[cls]):
             return cls
+    return None
+
+
+def _uscs_class(uscs):
     u = (uscs or "").strip().upper()
-    if u[:1] in ("C", "M", "O") or u in ("CL", "CH", "ML", "MH", "OL", "OH", "PT"):
+    if not u or len(u) > 3:
+        return None
+    if u in ("PT",) or u[:1] in ("C", "M", "O"):
         return "clay"
     if u[:1] == "S":
         return "sand"
     if u[:1] == "G":
         return "gravel"
-    return "unknown"
+    return None
+
+
+def classify_layer(name, uscs="", descr=""):
+    """층 이름 → (암반·풍화·매립이면 그대로) → USCS → 이름의 토질 → 설명 순으로 판정."""
+    c = _kw_class(name)
+    if c in ("rock_hard", "rock_soft", "rock_weathered", "soil_weathered", "fill"):
+        return c
+    u = _uscs_class(uscs)
+    if u and (c is None or c == "sediment"):
+        return u
+    if c:
+        return c
+    if u:
+        return u
+    return _kw_class(uscs) or _kw_class((descr or "")[:40]) or "unknown"
 
 
 def vs_from_n(n, cls, corr="imai"):
@@ -358,7 +510,7 @@ def bedrock_classes(rule="soft"):
     return ("rock_soft", "rock_hard") if rule == "soft" else ("rock_weathered", "rock_soft", "rock_hard")
 
 
-def analyze_hole(hole, layers, spts, settings=None):
+def analyze_hole(hole, layers, spts, settings=None, vs_meas=None):
     """한 시추공: 층 분류, Vs, 기반암 깊이, Vs,soil, 지반분류."""
     s = settings or geo.load_settings()
     corr = s.get("vs_corr", "imai")
@@ -372,7 +524,16 @@ def analyze_hole(hole, layers, spts, settings=None):
         ns = [sp["n"] for sp in spts if sp.get("n") is not None and ly["top"] <= sp["depth"] <= ly["bot"]]
         vss = [vs_from_n(n, cls, corr) for n in ns]
         vss = [v for v in vss if v]
-        if cls in ("rock_soft", "rock_hard"):
+        meas = []
+        for v in vs_meas or []:
+            ov = min(v["bot"], ly["bot"]) - max(v["top"], ly["top"])
+            if ov > 0 and v.get("vs"):
+                meas.append((ov, v["vs"]))
+        if meas:
+            tw = sum(t for t, _ in meas)
+            vs = tw / sum(t / v for t, v in meas)          # 두께 가중 조화평균
+            src = f"하향식 탄성파 실측 {len(meas)}구간"
+        elif cls in ("rock_soft", "rock_hard"):
             vs = max(defaults[cls], K.BEDROCK_VS)
             src = "암반 기본값"
         elif vss:

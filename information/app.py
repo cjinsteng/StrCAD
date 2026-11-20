@@ -14,6 +14,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from . import boreholes as BH
+from . import composite as CP
 from . import exposure as EX
 from . import geo
 from . import kds_data as K
@@ -169,15 +170,17 @@ class InformationApp(tk.Toplevel):
         self.tab_wind = tk.Frame(self.nb, bg=T.BG2)
         self.tab_seis = tk.Frame(self.nb, bg=T.BG2)
         self.tab_bh = tk.Frame(self.nb, bg=T.BG2)
+        self.tab_comp = tk.Frame(self.nb, bg=T.BG2)
         self.tab_snow = tk.Frame(self.nb, bg=T.BG2)
         self.tab_log = tk.Frame(self.nb, bg=T.BG2)
         for f, t in ((self.tab_sum, "  요약  "), (self.tab_wind, "  🌬 풍하중  "), (self.tab_seis, "  🌐 지진하중  "),
-                     (self.tab_bh, "  🕳 시추조사  "), (self.tab_snow, "  ❄ 설하중  "), (self.tab_log, "  로그  ")):
+                     (self.tab_bh, "  🕳 시추조사  "), (self.tab_comp, "  📊 취합 주상도  "), (self.tab_snow, "  ❄ 설하중  "), (self.tab_log, "  로그  ")):
             self.nb.add(f, text=t)
         self._build_summary()
         self._build_wind_tab()
         self._build_seis_tab()
         self._build_bh_tab()
+        self._build_comp_tab()
         self._build_snow_tab()
         self._build_log_tab()
 
@@ -633,6 +636,94 @@ class InformationApp(tk.Toplevel):
         self.cv_log.pack(fill="both", expand=True, pady=(0, 8))
         self.cv_log.bind("<Configure>", lambda e: self._draw_hole())
 
+    # ── 취합 주상도 탭 ──
+    def _build_comp_tab(self):
+        p = self.tab_comp
+        bar = tk.Frame(p, bg=T.BG2)
+        bar.pack(fill="x", padx=10, pady=(8, 4))
+        self.lbl_comp = T.label(bar, "반경 안 시추자료를 미터별로 모은 대표 주상도 — [🔎 반경 검색] 또는 분석 실행", fg=T.TX2)
+        self.lbl_comp.pack(side="left")
+        T.btn(bar, "🖼 그림 저장", self._save_comp_png).pack(side="right", padx=3)
+        T.btn(bar, "📗 미터별 표 엑셀", self._save_comp_xlsx).pack(side="right", padx=3)
+        T.btn(bar, "🔎 반경 검색", self._search_boreholes, bg=T.ACC, fg=T.WHI).pack(side="right", padx=3)
+        mid = tk.Frame(p, bg=T.BG2)
+        mid.pack(fill="both", expand=True, padx=10, pady=(0, 8))
+        rf = tk.Frame(mid, bg=T.BG2, width=470)
+        rf.pack(side="right", fill="y", padx=(10, 0))
+        rf.pack_propagate(False)
+        cf = tk.Frame(mid, bg=T.CANV_BG)
+        cf.pack(side="left", fill="both", expand=True)
+        self.cv_comp = tk.Canvas(cf, bg="white", highlightthickness=0)
+        vs = ttk.Scrollbar(cf, orient="vertical", command=self.cv_comp.yview)
+        hs = ttk.Scrollbar(cf, orient="horizontal", command=self.cv_comp.xview)
+        self.cv_comp.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
+        vs.pack(side="right", fill="y")
+        hs.pack(side="bottom", fill="x")
+        self.cv_comp.pack(side="left", fill="both", expand=True)
+        self.cv_comp.bind("<MouseWheel>", lambda e: self.cv_comp.yview_scroll(int(-e.delta / 120), "units"))
+        self.cv_comp.bind("<Button-4>", lambda e: self.cv_comp.yview_scroll(-3, "units"))
+        self.cv_comp.bind("<Button-5>", lambda e: self.cv_comp.yview_scroll(3, "units"))
+        T.section(rf, "대표 주상 (지층군 출현깊이 중앙값)", T.C_GEO)
+        fr, self.tv_comp = T.tree(rf, ("GL−m", "지층", "비율", "N", "Vs m/s", "공수"), (95, 80, 50, 80, 85, 45), height=7)
+        fr.pack(fill="x")
+        T.section(rf, "취합 결과", T.C_SEIS)
+        self.txt_comp = tk.Text(rf, bg=T.BG3, fg=T.TXT, font=T.FONT, relief="flat", wrap="word", padx=8, pady=6)
+        self.txt_comp.pack(fill="both", expand=True)
+        self._comp_img = None
+
+    def _show_composite(self):
+        bh = (self.res.get("seismic") or {}).get("boreholes") or {}
+        c = bh.get("composite")
+        self.cv_comp.delete("all")
+        self.tv_comp.delete(*self.tv_comp.get_children())
+        self.txt_comp.delete("1.0", "end")
+        if not c:
+            self.lbl_comp.config(text="반경 안 시추자료가 없습니다 — 시추 DB 를 채운 뒤 [🔎 반경 검색]")
+            return
+        from PIL import ImageTk
+        inp = self.res.get("inputs") or {}
+        title = f"{inp.get('project') or '건설지점'} — 반경 {bh.get('radius', 0):.0f} m 취합 주상도"
+        self._comp_img = CP.render(c, title, bh.get("radius"))
+        self._comp_photo = ImageTk.PhotoImage(self._comp_img)
+        self.cv_comp.create_image(0, 0, anchor="nw", image=self._comp_photo)
+        self.cv_comp.configure(scrollregion=(0, 0, self._comp_img.width, self._comp_img.height))
+        for pr in c.get("profile") or []:
+            n = "—" if pr["N"] is None else f"{pr['N']:.0f}" + ("*" if pr["N_src"] == "추정" else "")
+            v = "—" if pr["Vs"] is None else f"{pr['Vs']:.0f}" + ("*" if pr["Vs_src"] == "추정" else "")
+            self.tv_comp.insert("", "end", values=(f"{pr['top']:.1f}~{pr['bot']:.1f}", pr["label"],
+                                                   f"{pr['pct'] * 100:.0f}%", n, v, pr["n"]))
+        g = c.get("gwl") or {}
+        txt = CP.text(c, bh.get("radius"))
+        if g.get("items"):
+            txt += "\n\n지하수위 (가까운 순):\n" + "\n".join(
+                f"  {it['code']:<12} {it['dist']:5.0f} m  GL−{it['gwl']:.1f} m" for it in g["items"][:40])
+        txt += "\n\n* 표시는 추정값 (N: 지층·상대밀도 기술, Vs: N→Imai 또는 암반 기본값)"
+        self.txt_comp.insert("1.0", txt)
+        self.lbl_comp.config(text=f"반경 {bh.get('radius', 0):.0f} m · 시추공 {c['n_radius']}공 (지층자료 {c['n_used']}공) · "
+                                  f"지하수위 {g.get('n', 0)}공 · 깊이 {c.get('dmax', 0):.0f} m")
+
+    def _save_comp_png(self):
+        if not self._comp_img:
+            messagebox.showinfo("취합 주상도", "먼저 반경 검색을 하세요.", parent=self)
+            return
+        p = filedialog.asksaveasfilename(parent=self, defaultextension=".png", filetypes=[("PNG", "*.png")],
+                                         initialfile=(self.v["project"].get() or "건설지점") + "_취합주상도.png")
+        if p:
+            self._comp_img.save(p)
+            self.set_status(f"취합 주상도 저장: {p}")
+
+    def _save_comp_xlsx(self):
+        bh = (self.res.get("seismic") or {}).get("boreholes") or {}
+        c = bh.get("composite")
+        if not c:
+            messagebox.showinfo("취합 주상도", "먼저 반경 검색을 하세요.", parent=self)
+            return
+        p = filedialog.asksaveasfilename(parent=self, defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")],
+                                         initialfile=(self.v["project"].get() or "건설지점") + "_취합주상도.xlsx")
+        if p:
+            report.save_composite_xlsx(p, c, bh.get("radius"), self._comp_img)
+            self.set_status(f"취합 표 저장: {p}")
+
     # ── 설하중 탭 ──
     def _build_snow_tab(self):
         p = self.tab_snow
@@ -892,13 +983,21 @@ class InformationApp(tk.Toplevel):
             try:
                 hs = self.db.search(inp["lat"], inp["lon"], bh["radius"])
                 rs = []
+                det = {}
                 for k, h in enumerate(hs):
                     L, S = self.db.detail(h["code"])
-                    rs.append(BH.analyze_hole(h, L, S, self.settings))
+                    V = self.db.vs_detail(h["code"])
+                    det[h["code"]] = (L, S, V)
+                    rs.append(BH.analyze_hole(h, L, S, self.settings, vs_meas=V))
                     if k % 20 == 0:
                         self.set_status(f"시추공 분석 {k + 1}/{len(hs)}", 60 + 25 * (k + 1) / max(len(hs), 1))
                 sm = BH.summarize(rs, S_for_amp, inp["amp_mode"])
                 bh.update(holes=rs, n_total=len(rs), summary=sm)
+                try:
+                    bh["composite"] = CP.build(hs, det, settings=self.settings,
+                                               tests=self.db.tests([h["code"] for h in hs]))
+                except Exception as e:               # noqa: BLE001
+                    self.log(f"[시추] 취합 주상도 실패: {e}")
                 self.log(f"[시추] 반경 {bh['radius']:.0f}m: {len(rs)}공 — " + sm.get("text", "").replace("\n", " / "))
             except Exception as e:                   # noqa: BLE001
                 self.log(f"[시추] 검색 실패: {e}")
@@ -1075,6 +1174,7 @@ class InformationApp(tk.Toplevel):
                            "분석을 실행하거나 [반경 검색]을 누르세요.")
         self._draw_bhmap()
         self._draw_hole()
+        self._show_composite()
 
     def _fill_bh_tree(self):
         self.tv_bh.delete(*self.tv_bh.get_children())
@@ -1416,8 +1516,9 @@ class InformationApp(tk.Toplevel):
             self._search_boreholes()
 
     def _import_csv(self):
-        paths = filedialog.askopenfilenames(parent=self, title="시추자료 CSV 선택 (시추공·지층정보·표준관입시험)",
+        paths = filedialog.askopenfilenames(parent=self, title="시추자료 CSV 선택 (시추정보·지층정보·표준관입·하향식탄성파·현장투수·전단강도·골재자원조사, 여러 개 한 번에)",
                                             filetypes=[("CSV", "*.csv"), ("모든 파일", "*.*")])
+        paths = [p for p in paths if p.lower().endswith(".csv")]     # '_기준' 항목설명 xlsx 는 건너뜀
         if not paths:
             return
         dlg = _ImportDialog(self, list(paths), self.db)
@@ -1684,14 +1785,16 @@ class _ImportDialog(tk.Toplevel):
             vk = tk.StringVar(value=kind)
             vc = tk.StringVar(value=crs)
             T.label(tbl, p.replace("\\", "/").split("/")[-1][:34], fg=T.TXT).grid(row=i, column=0, sticky="w", padx=4)
-            T.combo(tbl, vk, ["holes", "layers", "spt", ""], width=8).grid(row=i, column=1, padx=4)
+            T.combo(tbl, vk, [k for k in BH.KIND_LABEL if k] + [""], width=10).grid(row=i, column=1, padx=4)
             cc = T.combo(tbl, vc, crs_names, width=11)
             cc.grid(row=i, column=2, padx=4)
             T.label(tbl, found[:80], fg=T.TX3, font=T.FONT_S).grid(row=i, column=3, sticky="w", padx=4)
             self.items.append((p, vk, vc, m))
         self.prog = ttk.Progressbar(self, style="Info.Horizontal.TProgressbar", mode="determinate")
         self.prog.pack(fill="x", padx=14)
-        self.msg = T.label(self, "순서: 시추공(위치) → 지층정보 → 표준관입시험 (자동 정렬)", fg=T.TX3, font=T.FONT_S)
+        self.msg = T.label(self, "순서: 시추공(위치) → 지층정보 → 표준관입시험 → 하향식 탄성파 → 현장투수·전단강도 (자동 정렬)  "
+                                 "holes=시추정보, layers=지층정보, spt=표준관입, downhole=Vs, perm=현장투수, strength=전단강도, "
+                                 "agg_*=골재자원조사", fg=T.TX3, font=T.FONT_S, wraplength=900, justify="left")
         self.msg.pack(anchor="w", padx=14, pady=4)
         b = tk.Frame(self, bg=T.BG2)
         b.pack(fill="x", padx=14, pady=(0, 12))
@@ -1707,7 +1810,8 @@ class _ImportDialog(tk.Toplevel):
 
     def _go(self):
         self.btn.config(state="disabled")
-        order = {"holes": 0, "layers": 1, "spt": 2, "": 3}
+        order = {"holes": 0, "agg_holes": 1, "layers": 2, "agg_layers": 3, "spt": 4, "downhole": 5, "perm": 6,
+                 "strength": 7, "": 9}
         jobs = sorted(((p, vk.get(), vc.get() or None, m) for p, vk, vc, m in self.items), key=lambda j: order[j[1]])
 
         def work():
