@@ -619,9 +619,22 @@ class InformationApp(tk.Toplevel):
         rf.pack_propagate(False)
         lf = tk.Frame(mid, bg=T.BG2)
         lf.pack(side="left", fill="both", expand=True)
-        fr, self.tv_bh = T.tree(lf, ("사용", "시추공", "사업명", "거리m", "심도m", "기반암m", "Vs,soil", "지반", "판정"),
-                                (40, 90, 170, 60, 60, 65, 65, 45, 240), height=14)
+        fb = tk.Frame(lf, bg=T.BG2)
+        fb.pack(fill="x", pady=(0, 3))
+        tk.Label(fb, text="보기", font=T.FONT, bg=T.BG2, fg=T.TX2).pack(side="left")
+        self.v_bh_filter = tk.StringVar(value="전체")
+        cbf = T.combo(fb, self.v_bh_filter, ["전체", "N치 있는 공", "지층 있는 공", "지하수위 있는 공", "Vs 있는 공",
+                                              "N치·지하수위 모두"], width=16)
+        cbf.pack(side="left", padx=6)
+        cbf.bind("<<ComboboxSelected>>", lambda e: self._fill_bh_tree())
+        self.lbl_bh_cnt = T.label(fb, "", fg=T.TX3, font=T.FONT_S)
+        self.lbl_bh_cnt.pack(side="left", padx=6)
+        fr, self.tv_bh = T.tree(lf, ("사용", "시추공", "사업명", "거리m", "심도m", "지층", "N치", "지하수위", "Vs",
+                                     "기반암m", "Vs,soil", "지반", "판정"),
+                                (36, 90, 150, 50, 50, 38, 55, 62, 34, 58, 55, 40, 220), height=14)
         fr.pack(fill="both", expand=True)
+        for c in ("지층", "N치", "지하수위", "Vs"):
+            self.tv_bh.column(c, anchor="center")
         self.tv_bh.bind("<<TreeviewSelect>>", lambda e: self._draw_hole())
         self.tv_bh.bind("<Double-1>", self._bh_double)
         self.tv_bh.bind("<space>", self._toggle_hole)
@@ -995,7 +1008,9 @@ class InformationApp(tk.Toplevel):
                     L, S = self.db.detail(h["code"])
                     V = self.db.vs_detail(h["code"])
                     det[h["code"]] = (L, S, V)
-                    rs.append(BH.analyze_hole(h, L, S, self.settings, vs_meas=V))
+                    rr = BH.analyze_hole(h, L, S, self.settings, vs_meas=V)
+                    rr["n_vs"] = len(V)
+                    rs.append(rr)
                     if k % 20 == 0:
                         self.set_status(f"시추공 분석 {k + 1}/{len(hs)}", 60 + 25 * (k + 1) / max(len(hs), 1))
                 sm = BH.summarize(rs, S_for_amp, inp["amp_mode"])
@@ -1183,15 +1198,42 @@ class InformationApp(tk.Toplevel):
         self._draw_hole()
         self._show_composite()
 
+    @staticmethod
+    def _bh_flags(r):
+        h = r["hole"]
+        g = h.get("gwl")
+        ns = [s for s in r.get("spts") or [] if s.get("n") is not None]
+        return {"layer": bool(r.get("layers")), "n": len(ns), "gwl": None if g in (None, 0) else abs(g),
+                "vs": r.get("n_vs", 0)}
+
     def _fill_bh_tree(self):
         self.tv_bh.delete(*self.tv_bh.get_children())
+        flt = self.v_bh_filter.get() if hasattr(self, "v_bh_filter") else "전체"
+        shown = 0
+        cnt = {"n": 0, "gwl": 0, "layer": 0, "vs": 0}
         for i, r in enumerate(self.bh_results):
             h = r["hole"]
+            f = self._bh_flags(r)
+            for k in cnt:
+                cnt[k] += 1 if f[k] else 0
+            ok = {"전체": True, "N치 있는 공": f["n"] > 0, "지층 있는 공": f["layer"], "지하수위 있는 공": f["gwl"] is not None,
+                  "Vs 있는 공": f["vs"] > 0, "N치·지하수위 모두": f["n"] > 0 and f["gwl"] is not None}.get(flt, True)
+            if not ok:
+                continue
+            shown += 1
             self.tv_bh.insert("", "end", iid=str(i), values=(
-                "✔" if r.get("use", True) else "✖", h["code"], (h.get("name") or h.get("project") or "")[:30],
+                "✔" if r.get("use", True) else "✖", h["code"], (h.get("project") or h.get("name") or "")[:30],
                 f"{h['dist']:.0f}", f"{r['depth']:.1f}",
+                "O" if f["layer"] else "X",
+                f"O ({f['n']})" if f["n"] else "X",
+                f"O {f['gwl']:.1f}" if f["gwl"] is not None else "X",
+                "O" if f["vs"] else "X",
                 "" if r.get("rock_depth") is None else f"{r['rock_depth']:.1f}",
                 "" if r.get("vs_soil") is None else f"{r['vs_soil']:.0f}", r.get("site", ""), r.get("reason", "")))
+        n = len(self.bh_results)
+        if hasattr(self, "lbl_bh_cnt"):
+            self.lbl_bh_cnt.config(text=f"{shown}/{n}공 표시 · 지층 {cnt['layer']} · N치 {cnt['n']} · "
+                                        f"지하수위 {cnt['gwl']} · Vs {cnt['vs']}")
 
     def _show_snow(self):
         n = self.res.get("snow") or {}
@@ -1591,6 +1633,8 @@ class InformationApp(tk.Toplevel):
         dlg = _ImportDialog(self, list(paths), self.db)
         self.wait_window(dlg)
         self._refresh_db_label()
+        if self.bh_results and self._inputs().get("lat") is not None:
+            self._search_boreholes()                 # 새로 넣은 N치·지층이 목록·주상도에 바로 반영
 
     def _manual_hole(self):
         inp = self._inputs()
