@@ -1484,20 +1484,52 @@ class CadAnalysisApp:
             try:
                 if kind in ("beam", "wall") and len(p) >= 4:
                     a, b = self.w2s(p[0], p[1]), self.w2s(p[2], p[3])
-                    cv.create_line(*a, *b, fill=col, width=9 if kind == "wall" else 4, capstyle="round",
-                                   stipple="gray75" if kind == "wall" else "", tags=tag)
-                    if kind == "beam":
-                        for q in (a, b):
-                            cv.create_oval(q[0] - 3, q[1] - 3, q[0] + 3, q[1] + 3, fill=col, outline="", tags=tag)
+                    thick = float(sk.get("t") or 200) if kind == "wall" else float(sk.get("w") or 400)
+                    L = math.hypot(p[2] - p[0], p[3] - p[1]) or 1
+                    nx, ny = -(p[3] - p[1]) / L * thick / 2, (p[2] - p[0]) / L * thick / 2
+                    band = [self.w2s(p[0] + nx, p[1] + ny), self.w2s(p[2] + nx, p[3] + ny),
+                            self.w2s(p[2] - nx, p[3] - ny), self.w2s(p[0] - nx, p[1] - ny)]
+                    wpx = thick * self.s
+                    if kind == "wall" and wpx >= 5:
+                        cv.create_polygon(*[c for q in band for c in q], fill=col, stipple="gray50", outline=col, tags=tag)
+                    elif kind == "beam" and sk.get("dbl") and wpx >= 3:          # 복선 보
+                        cv.create_line(*band[0], *band[1], fill=col, width=2, tags=tag)
+                        cv.create_line(*band[3], *band[2], fill=col, width=2, tags=tag)
+                        cv.create_line(*a, *b, fill=col, width=1, dash=(6, 3), tags=tag)
+                    else:
+                        cv.create_line(*a, *b, fill=col, width=9 if kind == "wall" else 4, capstyle="round",
+                                       stipple="gray75" if kind == "wall" else "", tags=tag)
+                        if kind == "beam":
+                            for q in (a, b):
+                                cv.create_oval(q[0] - 3, q[1] - 3, q[0] + 3, q[1] + 3, fill=col, outline="", tags=tag)
+                    if sk.get("name") and math.hypot(b[0] - a[0], b[1] - a[1]) > 30:
+                        cv.create_text((a[0] + b[0]) / 2, (a[1] + b[1]) / 2 - max(9, wpx / 2 + 7), text=sk["name"],
+                                       fill=col, font=(TH.FAM, 9, "bold"), tags=tag)
                 elif kind == "column" and len(p) >= 4:
                     a, b = self.w2s(p[0], p[1]), self.w2s(p[2], p[3])
                     cv.create_rectangle(*a, *b, outline=col, width=2, fill=col, stipple="gray25", tags=tag)
                     cv.create_line(*a, *b, fill=col, tags=tag)
                     cv.create_line(a[0], b[1], b[0], a[1], fill=col, tags=tag)
-                    w, h = abs(p[2] - p[0]), abs(p[3] - p[1])
-                    if abs(b[0] - a[0]) > 30:
-                        cv.create_text((a[0] + b[0]) / 2, min(a[1], b[1]) - 3, anchor="s", text=f"{w:.0f}×{h:.0f}",
+                    w, h = sk.get("b") or abs(p[2] - p[0]), sk.get("h") or abs(p[3] - p[1])
+                    if abs(b[0] - a[0]) > 22:
+                        cv.create_text((a[0] + b[0]) / 2, min(a[1], b[1]) - 3, anchor="s",
+                                       text=(f"{sk['name']} " if sk.get("name") else "") + f"{w:.0f}×{h:.0f}",
                                        fill=col, font=(TH.FAM, 8, "bold"), tags=tag)
+                elif kind == "dim" and len(p) >= 4:             # 치수 (값은 그릴 때 저장한 mm)
+                    a, b = self.w2s(p[0], p[1]), self.w2s(p[2], p[3])
+                    L = math.hypot(b[0] - a[0], b[1] - a[1]) or 1
+                    ux, uy = (b[0] - a[0]) / L, (b[1] - a[1]) / L
+                    cv.create_line(*a, *b, fill=col, width=1.5, tags=tag)
+                    for q in (a, b):
+                        cv.create_line(q[0] - (ux + uy) * 5, q[1] - (uy - ux) * 5, q[0] + (ux + uy) * 5, q[1] + (uy - ux) * 5,
+                                       fill=col, width=2, tags=tag)
+                        cv.create_line(q[0] + uy * 8, q[1] - ux * 8, q[0] - uy * 8, q[1] + ux * 8, fill=col, tags=tag)
+                    ang = -math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))
+                    if ang > 90 or ang < -90:
+                        ang += 180
+                    val = sk.get("val") or math.hypot(p[2] - p[0], p[3] - p[1])
+                    cv.create_text((a[0] + b[0]) / 2, (a[1] + b[1]) / 2 - 9,
+                                   text=f"{float(val):,.0f}", angle=ang, fill=col, font=(TH.FAM, 9, "bold"), tags=tag)
                 elif kind == "free" and len(p) >= 4:
                     cv.create_line(*[c for i in range(0, len(p) - 1, 2) for c in self.w2s(p[i], p[i + 1])],
                                    fill=col, width=2.5, capstyle="round", joinstyle="round", smooth=True, tags=tag)
@@ -1519,13 +1551,21 @@ class CadAnalysisApp:
     def _draw_survey(self, rec, byid, hl=False):
         cv = self.cv
         col = self.P.get(rec.get("purpose"), {}).get("color", "#d62828")
+        if not SV.is_placed(rec):
+            return
         g = SV.geometry(rec, byid)
         tag = ("survey", f"sv{rec['id']}") + (("sel",) if hl else ())
         if g[0] == "area":
             x0, y0, x1, y1 = g[1]
             a, b = self.w2s(x0, y1), self.w2s(x1, y0)
-            cv.create_rectangle(*a, *b, fill=col, stipple="gray25" if hl else "gray12", outline="", tags=tag)
-            cv.create_rectangle(*a, *b, outline=col, width=3 if hl else 2, dash=(10, 5), tags=tag)
+            pl = SV.poly_pts(rec)
+            if pl:                                  # 다각형 영역
+                flat = [c for q in pl for c in self.w2s(*q)]
+                cv.create_polygon(*flat, fill=col, stipple="gray25" if hl else "gray12", outline="", tags=tag)
+                cv.create_polygon(*flat, fill="", outline=col, width=3 if hl else 2, dash=(10, 5), tags=tag)
+            else:
+                cv.create_rectangle(*a, *b, fill=col, stipple="gray25" if hl else "gray12", outline="", tags=tag)
+                cv.create_rectangle(*a, *b, outline=col, width=3 if hl else 2, dash=(10, 5), tags=tag)
             fl = rec.get("fields") or {}
             w, h = b[0] - a[0], b[1] - a[1]
             if w > 80 and h > 24:
@@ -1537,7 +1577,7 @@ class CadAnalysisApp:
                 for i, t in enumerate(lines):
                     cv.create_text((a[0] + b[0]) / 2, cy + i * 16, text=t, fill=col, width=w - 8,
                                    font=(TH.FAM, 9, "bold"), tags=tag)
-            px, py = a
+            px, py = self.w2s(*SV.anchor(rec, byid))
         elif g[0] == "span":
             a, b = self.w2s(*g[1]), self.w2s(*g[2])
             cv.create_line(*a, *b, fill=col, width=7 if not hl else 11, capstyle="butt", tags=tag)
@@ -1553,10 +1593,22 @@ class CadAnalysisApp:
         d = math.hypot(px - bx, py - by)
         if d > r:
             cv.create_line(bx + (px - bx) * r / d, by + (py - by) * r / d, px, py, fill=col, width=2, tags=tag)
-        cv.create_oval(bx - r, by - r, bx + r, by + r, fill="white", outline=col, width=3 if not hl else 4, tags=tag)
+        txt = str(rec.get("label") or rec.get("no", ""))
+        hw = max(r, len(txt) * 4 + 6)                  # 균열 번호(CR1 …)는 알약 모양
+        if hw > r:
+            wd = 3 if not hl else 4
+            cv.create_rectangle(bx - hw + r, by - r, bx + hw - r, by + r, fill="white", outline="", tags=tag)
+            for cx0 in (bx - hw, bx + hw - 2 * r):
+                cv.create_oval(cx0, by - r, cx0 + 2 * r, by + r, fill="white", outline="", tags=tag)
+            cv.create_arc(bx - hw, by - r, bx - hw + 2 * r, by + r, start=90, extent=180, outline=col, width=wd, style="arc", tags=tag)
+            cv.create_arc(bx + hw - 2 * r, by - r, bx + hw, by + r, start=-90, extent=180, outline=col, width=wd, style="arc", tags=tag)
+            for yy in (by - r, by + r):
+                cv.create_line(bx - hw + r, yy, bx + hw - r, yy, fill=col, width=wd, tags=tag)
+        else:
+            cv.create_oval(bx - r, by - r, bx + r, by + r, fill="white", outline=col, width=3 if not hl else 4, tags=tag)
         if hl:
-            cv.create_oval(bx - r - 4, by - r - 4, bx + r + 4, by + r + 4, outline=SEL, width=3, tags=tag)
-        cv.create_text(bx, by, text=str(rec.get("no", "")), fill=col, font=(TH.FAM, 9, "bold"), tags=tag)
+            cv.create_oval(bx - hw - 4, by - r - 4, bx + hw + 4, by + r + 4, outline=SEL, width=3, tags=tag)
+        cv.create_text(bx, by, text=txt, fill=col, font=(TH.FAM, 9, "bold"), tags=tag)
 
     def _draw_selection(self):
         self.cv.delete("sel")
@@ -2516,7 +2568,7 @@ class CadAnalysisApp:
         byid = self.res.by_id()
         best = None
         for rec in self.res.surveys:
-            if rec.get("purpose") in self.sv_hidden:
+            if rec.get("purpose") in self.sv_hidden or not SV.is_placed(rec):
                 continue
             bx, by = SV.bubble(rec, byid)
             d = math.hypot(x - bx, y - by) * self.s - 12          # px outside the bubble
@@ -2539,7 +2591,7 @@ class CadAnalysisApp:
             return None
         byid = self.res.by_id()
         for rec in reversed(self.res.surveys):
-            if rec.get("purpose") in self.sv_hidden:
+            if rec.get("purpose") in self.sv_hidden or not SV.is_placed(rec):
                 continue
             bx, by = SV.bubble(rec, byid)
             if math.hypot(x - bx, y - by) * self.s <= 13:
@@ -2710,7 +2762,7 @@ class CadAnalysisApp:
         m = self.res.by_id().get(rec.get("member"))
         self.sel = m
         self._show_info(m)
-        if center:
+        if center and SV.is_placed(rec):
             x, y = SV.anchor(rec, self.res.by_id())
             W, H = self.cv.winfo_width(), self.cv.winfo_height()
             sx, sy = self.w2s(x, y)
@@ -3081,6 +3133,8 @@ class CadAnalysisApp:
         if not e:
             return SU.copy_photos(files, folder)
         code = SV.purpose_code(e.get("purpose"), self.P)
+        if e.get("label") and self.P.get(e.get("purpose"), {}).get("crack"):       # crack_CR1_01
+            return SU.copy_photos(files, folder, namer=lambda f: "crack_" + SV.safe_part(e["label"]))
         return SU.copy_photos(files, folder, namer=lambda f: SV.photo_base(
             self.project or "프로젝트", self.db_name or "도면", SV.photo_date(f), e.get("no"), code))
 

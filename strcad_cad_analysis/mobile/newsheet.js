@@ -257,10 +257,12 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
   function startCalib() {
     if (!S.sheet) return;
     if (!S.sheet.extKind || S.sheet.members.length) { toast("DXF에서 만든 도면은 이미 실제 치수입니다"); return; }
-    calib = []; hint("📏 길이를 아는 두 점을 차례로 누르세요"); draw();
+    calib = []; hint(window.SK && SK.list.some((s) => s.kind === "dim") ? "📏 치수를 누르거나, 길이를 아는 두 점을 차례로 누르세요" : "📏 길이를 아는 두 점을 차례로 누르세요"); draw();
   }
   function tapCalib(x, y) {                 // returns true if handled
     if (!calib) return false;
+    const dm = !calib.length && window.SK && SK.dimAt(x, y);       // 치수를 누르면 그 치수로
+    if (dm) { calib = null; hint(""); SK.calibrateWith(dm); return true; }
     calib.push([x, y]); draw();
     if (calib.length < 2) return true;
     const [[ax, ay], [bx, by]] = calib; calib = null; hint("");
@@ -295,6 +297,7 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
       const rec = JSON.parse(r.rec);
       if (rec.x != null) { const [x, y] = RA(rec.x, rec.y); rec.x = x - nx0; rec.y = y - ny0; }
       if (rec.area && rec.area.length === 4) { const [a0, a1] = RA(rec.area[0], rec.area[1]), [a2, a3] = RA(rec.area[2], rec.area[3]); rec.area = [a0 - nx0, a1 - ny0, a2 - nx0, a3 - ny0]; }
+      if (rec.poly) { const o = []; for (let i = 0; i + 1 < rec.poly.length; i += 2) { const [px, py] = RA(rec.poly[i], rec.poly[i + 1]); o.push(Math.round(px - nx0), Math.round(py - ny0)); } rec.poly = o; }
       for (const k of ["bx", "by", "dx", "dy"]) if (typeof rec[k] === "number") rec[k] *= f;
       rec.updated = nowIso();
       run("UPDATE surveys SET rec=?, updated=? WHERE uid=?", [JSON.stringify(rec), rec.updated, r.uid]);
@@ -303,6 +306,8 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
       const d = JSON.parse(r.data), o = [];
       for (let i = 0; i + 1 < d.pts.length; i += 2) { const [x, y] = RA(d.pts[i], d.pts[i + 1]); o.push(Math.round(x - nx0), Math.round(y - ny0)); }
       d.pts = o; d.updated = nowIso();
+      if (d.kind === "column" && d.b && d.h && o.length >= 4) {         // 기둥 크기(mm)는 그대로, 위치만
+        const cx = (o[0] + o[2]) / 2, cy = (o[1] + o[3]) / 2; d.pts = [cx - d.b / 2, cy - d.h / 2, cx + d.b / 2, cy + d.h / 2].map(Math.round); }
       run("UPDATE sketches SET data=?, updated=? WHERE uid=?", [JSON.stringify(d), d.updated, r.uid]);
     }
     persistSoon(); loadSheet(S.sheetIdx);
@@ -314,6 +319,6 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
   $("#miNew").onclick = () => { $("#menu").classList.remove("show"); dialog(!S.db); };
   $("#miCalib").onclick = () => { $("#menu").classList.remove("show"); startCalib(); };
 
-  return { dialog, addSheet, createProject, startCalib, tapCalib, drawCalib, get calibrating() { return !!calib; } };
+  return { dialog, addSheet, createProject, startCalib, tapCalib, drawCalib, rescale, get calibrating() { return !!calib; } };
 })();
 window.NS = NS;

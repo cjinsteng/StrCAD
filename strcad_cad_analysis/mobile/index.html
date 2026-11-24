@@ -33,24 +33,21 @@
       <canvas id="cv"></canvas>
       <div id="tools">
         <div class="seg" id="modeSeg">
-          <button data-mode="view">보기</button>
-          <button data-mode="point" class="on">검측점</button>
-          <button data-mode="span">구간</button>
+          <button data-mode="point" class="on">📍 검측점</button>
           <button data-mode="sketch">✎ 스케치</button>
         </div>
         <div class="seg" id="purposeSeg"></div>
+        <div class="seg hidden" id="pointOpts"></div>
         <div id="sketchBar" class="hidden">
           <div class="seg" id="skTools">
-            <button data-tool="beam" class="on">━ 보</button>
-            <button data-tool="column">■ 기둥</button>
-            <button data-tool="wall">▬ 벽</button>
+            <button data-tool="member" class="on">🏗 부재</button>
             <button data-tool="axis">⊕ 축</button>
             <button data-tool="free">〰 자유선</button>
+            <button data-tool="dim">↔ 치수</button>
             <button data-tool="text">A 글자</button>
-            <button data-tool="erase">⌫ 지우기</button>
           </div>
-          <div class="seg sk-colors" id="skColors"></div>
-          <div class="seg"><button id="skUndo">↶ 되돌리기</button></div>
+          <div class="seg" id="skSub"></div>
+          <div class="seg" id="skOps"></div>
         </div>
         <button class="icon round" id="btnLayers" title="표시할 조사">👁</button>
         <button class="icon round" id="btnFit" title="전체보기">⛶</button>
@@ -71,7 +68,7 @@
 
   <section id="list">
     <div class="list-head" id="listHead">
-      <b>조사 목록</b> <span id="listCount"></span>
+      <b id="listTitle">조사 목록</b> <span id="listCount"></span>
       <div id="filters"></div>
       <button class="icon" id="listDock" title="목록 위치">⇆</button>
       <button class="icon" id="listToggle">▾</button>

@@ -107,12 +107,18 @@ def rescale(res, f: float, ox=0.0, oy=0.0):
         if r.get("area") and len(r["area"]) == 4:
             a = r["area"]
             r["area"] = [*P(a[0], a[1]), *P(a[2], a[3])]
+        if r.get("poly"):
+            pl = r["poly"]
+            r["poly"] = [round(v) for i in range(0, len(pl) - 1, 2) for v in P(pl[i], pl[i + 1])]
     for sk in getattr(res, "sketches", []):
         p = sk.get("pts") or []
         q = []
         for i in range(0, len(p) - 1, 2):
             q += list(P(p[i], p[i + 1]))
         sk["pts"] = [round(v) for v in q]
+        if sk.get("kind") == "column" and sk.get("b") and sk.get("h") and len(q) >= 4:     # 기둥 크기(mm) 유지
+            cx, cy = (q[0] + q[2]) / 2, (q[1] + q[3]) / 2
+            sk["pts"] = [round(cx - sk["b"] / 2), round(cy - sk["h"] / 2), round(cx + sk["b"] / 2), round(cy + sk["h"] / 2)]
     for n in res.nodes.values():
         n.x, n.y = P(n.x, n.y)
     for m in res.members:

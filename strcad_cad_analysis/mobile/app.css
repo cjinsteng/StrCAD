@@ -279,3 +279,38 @@ body.sketching #cv { cursor: crosshair; }
 .bz-bar.on { display: block; }
 .bz-bar i { display: block; height: 100%; width: 0; background: #F28C28; transition: width .2s; }
 @keyframes bzr { to { transform: rotate(360deg); } }
+/* v2.16 — 검측점/스케치 · 스케치 도구 · 균열 목록 · 다각형 */
+#pointOpts button.go, #pointOpts button.go:active { background: var(--orange); color: #fff; font-weight: 700; }
+#pointOpts.hidden, #skSub.hidden, #purposeSeg.hidden, #filters.hidden { display: none; }
+#sketchBar { flex-direction: column; align-items: flex-start; gap: 6px; flex-basis: 100%; }
+#skSub button.on { background: #fff4e6; color: #c2410c; font-weight: 700; box-shadow: inset 0 -3px 0 var(--orange); }
+#skSub button.val { color: var(--navy); font-weight: 700; }
+#skOps button.on { background: var(--navy); color: #fff; }
+.sk-sep { width: 1px; background: #e2e8f0; margin: 6px 2px; flex: none; }
+.sk-dot { display: inline-block; width: 14px; height: 14px; border-radius: 50%; margin-right: 5px; vertical-align: -2px; box-shadow: 0 0 0 2px #fff, 0 0 0 3px #94a3b8; }
+.sk-numrow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+.sk-numrow .sk-lab { min-width: 74px; font-weight: 700; color: var(--navy); font-size: 14px; }
+.sk-numrow .b { padding: 8px 10px; }
+.sk-num { width: 96px; font-size: 18px; padding: 8px; border: 1px solid #cbd5e1; border-radius: 8px; text-align: center; }
+.sk-numrow .sk-input { flex: 1; min-width: 120px; margin: 0; }
+.sk-chips { display: flex; flex-wrap: wrap; gap: 5px; flex-basis: 100%; padding-left: 80px; }
+.sk-chips:empty { display: none; }
+.sk-chips button { border: 1px solid #cbd5e1; background: #fff; border-radius: 16px; padding: 5px 11px; font-size: 14px; }
+.sk-chips button.on { background: var(--navy); color: #fff; border-color: var(--navy); }
+.sk-seg button { padding: 8px 14px; }
+.sk-colors-pick { display: flex; gap: 10px; flex-wrap: wrap; margin: 6px 0 4px; }
+.sk-colors-pick .sw { width: 32px; height: 32px; border-radius: 50%; background: var(--c); border: 3px solid #fff; box-shadow: 0 0 0 1px #cbd5e1; padding: 0; }
+.sk-colors-pick.big .sw { width: 44px; height: 44px; }
+.sk-colors-pick .sw.on { box-shadow: 0 0 0 3px var(--navy); }
+.sk-presets button.on { background: var(--navy); color: #fff; }
+#lt-b tr.unplaced td { color: #9a3412; background: #fff7ed; }
+#lt-b tr.add-row td { text-align: center; padding: 8px; background: #fff; }
+.crack-types { grid-template-columns: repeat(2, 1fr) !important; }
+.crack-types .opt { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 12px 6px; }
+.crack-types .opt small { color: #dbeafe; }
+@media (max-width: 520px) { .sk-chips { padding-left: 0; } #skSub button, #skOps button, #pointOpts button { padding: 8px 9px; font-size: 14px; } }
+.list-head > b, #listCount { white-space: nowrap; flex: none; }
+#list.dock-bottom #filters { flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+#list.dock-bottom #filters::-webkit-scrollbar { display: none; }
+#filters button { flex: none; }
+@media (max-width: 520px) { #skOps button { padding: 7px 7px; font-size: 13px; } }
