@@ -169,6 +169,7 @@ async function openBytes(bytes, name) {
   loadSheet(0); setMode(S.mode === "sketch" ? "sketch" : "point");
   persistSoon();
   toast(`${meta.project || ""} — 도면 ${S.sheets.length}장`);
+  if (window.CO) CO.onOpen();
 }
 
 // ---- DXF 없이 만든 도면(빈 도면·사진): 배경 이미지
@@ -223,6 +224,7 @@ function saveRec(rec) {
   rec.updated = nowIso();
   run("INSERT OR REPLACE INTO surveys (uid, sheet_id, updated, deleted, rec) VALUES (?,?,?,0,?)",
     [rec.uid, S.sheet.id, rec.updated, JSON.stringify(rec)]);
+  if (window.CO) CO.mark("rec", rec.uid);
   const i = S.recs.findIndex((r) => r.uid === rec.uid);
   if (i >= 0) S.recs[i] = rec; else S.recs.push(rec);
   persistSoon();
@@ -230,6 +232,7 @@ function saveRec(rec) {
 
 function deleteRec(rec) {
   run("UPDATE surveys SET deleted=1, updated=? WHERE uid=?", [nowIso(), rec.uid]);
+  if (window.CO) CO.mark("rec", rec.uid);
   S.recs = S.recs.filter((r) => r.uid !== rec.uid);
   persistSoon();
 }
@@ -302,6 +305,7 @@ async function addPhotoFiles(files, rec) {
     const blob = await shrinkImage(f, 1600, 0.82);
     const data = new Uint8Array(await blob.arrayBuffer());
     run("INSERT INTO photos (uid, survey_uid, name, mime, data, created) VALUES (?,?,?,?,?,?)", [id, rec.uid, `${nm}.jpg`, "image/jpeg", data, nowIso()]);
+    if (window.CO) CO.mark("ph", id);
     if (origOk) S.origSaved = (S.origSaved || 0) + 1;
     ids.push(id);
   }
@@ -611,7 +615,7 @@ cv.addEventListener("pointerdown", (e) => {
   if (ptrs.size === 1) {
     const [x, y] = s2w(e.offsetX, e.offsetY);
     const hit = bubbleHit(x, y);
-    gesture = { type: "tap", x0: e.offsetX, y0: e.offsetY, moved: false, bubble: hit, view: { ...S.view } };
+    gesture = { type: "tap", x0: e.offsetX, y0: e.offsetY, moved: false, bubble: hit && isMine(hit) ? hit : null, view: { ...S.view } };
   } else if (ptrs.size === 2) {
     const [a, b] = [...ptrs.values()];
     gesture = { type: "pinch", d0: Math.hypot(a[0] - b[0], a[1] - b[1]), c0: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], view: { ...S.view } };
@@ -728,6 +732,7 @@ function placeRec(x, y) {
 }
 function startPlacing(rec) {
   if (!guardEdit()) return;
+  if (!isMine(rec)) { notMineToast(rec); return; }
   if (S.mode === "sketch") $("#modeSeg").querySelector('[data-mode="point"]').click();
   S.placing = rec.uid; closePanel(); draw();
   hint(`도면에서 ${rec.label || "#" + rec.no} 위치를 누르세요`);
@@ -746,6 +751,7 @@ function crackAdd(at) {
   const rec = { id: S.recs.reduce((a, r) => Math.max(a, r.id || 0), 0) + 1, uid: uid(), updated: nowIso(), no: nextNo(),
     purpose, member: null, t0: null, t1: null, x: null, y: null, bx: 26 / S.view.s, by: 30 / S.view.s,
     name: "", size_b: "", size_h: "", length: "", rebar: {}, exist: "", fields: {}, photos: [], memo: "", date: today(), mobile: true, inspector: inspector() };
+  if (window.CO) CO.stamp(rec);
   let type = null;
   const close = () => $("#modal").classList.remove("show");
   const drop = () => { for (const id of rec.photos) { run("DELETE FROM photos WHERE uid=?", [id]); run("DELETE FROM orig WHERE uid=?", [id]); } };
@@ -807,6 +813,7 @@ function newAreaRec(d, poly) {
     purpose: S.purpose, member: null, t0: null, t1: null, x: (x0 + x1) / 2, y: (y0 + y1) / 2, area: [x0, y0, x1, y1],
     bx: -14 / S.view.s, by: 14 / S.view.s, name: "", size_b: "", size_h: "", length: "", rebar: {}, exist: "", fields: {},
     photos: [], memo: "", date: today(), mobile: true, inspector: inspector() };
+  if (window.CO) CO.stamp(rec);
   if (poly) { rec.poly = poly.flatMap((p) => A(...p)).map((v) => Math.round(v)); const c = poly.reduce((a, p) => [a[0] + p[0] / poly.length, a[1] + p[1] / poly.length], [0, 0]); [rec.x, rec.y] = A(...c); }
   saveRec(rec);
   S.sel = rec; S.edit = JSON.parse(JSON.stringify(rec));
@@ -848,6 +855,7 @@ function newRec(m, t0, t1, p, dxy) {
     purpose: S.purpose, member: m ? m.i : null, t0, t1, x: ax, y: ay, bx: 26 / S.view.s, by: 30 / S.view.s,
     name: memberName(m), size_b: "", size_h: "", length: "", rebar: {}, exist: m ? "존재" : "", fields: {},
     photos: [], memo: "", date: today(), mobile: true, inspector: inspector() };
+  if (window.CO) CO.stamp(rec);
   if (dxy) { rec.dx = dxy[0]; rec.dy = dxy[1]; }
   saveRec(rec);
   S.sel = rec; S.edit = JSON.parse(JSON.stringify(rec));
@@ -884,7 +892,9 @@ function guardEdit() {
   if (confirm(`#${S.edit.no} 편집 내용을 저장할까요?\n(취소 = 저장하지 않음)`)) saveEdit(); else S.edit = null;
   return true;
 }
-function beginEdit() { if (!S.sel) return false; if (!S.edit || S.edit.uid !== S.sel.uid) S.edit = JSON.parse(JSON.stringify(S.sel)); return true; }
+function isMine(r) { return !window.CO || CO.mine(r); }
+function notMineToast(r) { toast(`👁 ${window.CO ? CO.ownerName(r) : ""} 님 기록 — 보기만 가능합니다`); }
+function beginEdit() { if (!S.sel) return false; if (!isMine(S.sel)) { notMineToast(S.sel); return false; } if (!S.edit || S.edit.uid !== S.sel.uid) S.edit = JSON.parse(JSON.stringify(S.sel)); return true; }
 function inspector() { try { return localStorage.getItem("inspector") || ""; } catch (e) { return ""; } }
 function showInspector() { const b = $("#btnInsp"), n = inspector(); b.textContent = n ? `👤 ${n}` : "👤 검토자"; b.classList.toggle("none", !n); }
 function askInspector() {
@@ -933,6 +943,8 @@ function renderForm() {
   $("#editFlag").textContent = editing ? "✎ 편집 중 — 저장을 누르세요" : "";
   if (!rec) { $("#pos").textContent = ""; f.append(el("div", { class: "empty" }, "도면에서 검측위치를 누르면 번호가 붙고 여기에서 입력합니다.")); return; }
   $("#pos").textContent = positionText(rec);
+  const ro = !isMine(rec);
+  if (ro) f.append(el("div", { class: "ro-box" }, `👁 ${CO.ownerName(rec)} 님 기록 — 보기만 가능 (고칠 수 없음)`));
   const P = S.purposes[rec.purpose] || DEFAULT_PURPOSES["부재검측"];
   const valTxt = (v, unit) => (v !== "" && v != null ? `${v}${unit && v ? unit : ""}` : "선택");
   const row = (label, ...vals) => f.append(el("div", { class: vals.length > 1 ? "row two" : "row" }, el("div", { class: "lab" }, label), ...vals));
@@ -955,7 +967,7 @@ function renderForm() {
     if (P.crack && k !== "ctype" && ctT && !ctT.f.includes(k) && !(ctT.f[0] === "crack_w" && (k === "shape" || k === "progress"))) continue;
     row(lab, vbtn(k, { field: true, unit, choices: ch || FIELD_CHOICES[k] || (k === "ctype" ? CRACK_TYPES.map((t) => t.k) : CRACK_CHIPS[k] && CRACK_CHIPS[k].map(String)) }));
   }
-  if (P.crack) f.append(el("button", { class: "val wide", onclick: () => startPlacing(rec) }, isPlaced(rec) ? "📍 도면 위치 다시 지정" : "📍 도면에 배치"));
+  if (P.crack && !ro) f.append(el("button", { class: "val wide", onclick: () => startPlacing(rec) }, isPlaced(rec) ? "📍 도면 위치 다시 지정" : "📍 도면에 배치"));
   if (P.area) {
     const t = loadText(rec.fields), A = areaOf(rec);
     f.append(el("div", { class: "load-box" }, el("b", {}, "하중 참고"), el("span", {}, (A ? `면적 ${A.toFixed(1)} m² · ` : "") + (t || "실 용도·마감·천장을 고르면 계산됩니다")),
@@ -973,18 +985,21 @@ function renderForm() {
   const onFiles = async (ev) => { if (!beginEdit()) return; const ids = await addPhotoFiles([...ev.target.files], S.edit);
     S.edit.photos.push(...ids); ev.target.value = ""; renderForm(); toast(`사진 ${ids.length}장 — 저장을 누르세요`); };
   cam.onchange = onFiles; gal.onchange = onFiles;
-  f.append(el("div", { class: "row two" }, el("div", { class: "lab" }, "사진"),
-    el("button", { class: "val", onclick: () => cam.click() }, "📷 촬영"), el("div"), el("button", { class: "val", onclick: () => gal.click() }, "🖼 앨범")), cam, gal, ph);
+  if (!ro) f.append(el("div", { class: "row two" }, el("div", { class: "lab" }, "사진"),
+    el("button", { class: "val", onclick: () => cam.click() }, "📷 촬영"), el("div"), el("button", { class: "val", onclick: () => gal.click() }, "🖼 앨범")), cam, gal);
+  f.append(ph);
   f.append(el("button", { class: "val wide", onclick: memoSheet }, "추가사항" + (rec.memo ? " ✓" : "")));
   if (rec.memo) f.append(el("div", { class: "memo" }, rec.memo));
   f.append(el("div", { class: "row", style: "margin-top:10px" }, el("div", { class: "lab" }, "조사일"), vbtn("date", { choices: [today()] })));
-  const btns = el("div", { class: "btns" }, el("button", { class: "b danger", onclick: delCurrent }, "위치 삭제"), el("div", { class: "sp" }));
-  if (editing) btns.append(el("button", { class: "b gray", onclick: cancelEdit }, "취소"), el("button", { class: "b ok", onclick: saveEdit }, "💾 저장"));
+  const btns = el("div", { class: "btns" }, ro ? "" : el("button", { class: "b danger", onclick: delCurrent }, "위치 삭제"), el("div", { class: "sp" }));
+  if (ro) btns.append(el("button", { class: "b gray", onclick: () => { S.sel = null; closePanel(); renderList(); draw(); } }, "닫기"));
+  else if (editing) btns.append(el("button", { class: "b gray", onclick: cancelEdit }, "취소"), el("button", { class: "b ok", onclick: saveEdit }, "💾 저장"));
   else btns.append(el("button", { class: "b edit", onclick: () => { beginEdit(); renderForm(); } }, "✎ 편집"));
   f.append(btns);
 }
 function delCurrent() {
   const r = S.sel; if (!r) return;
+  if (!isMine(r)) { notMineToast(r); return; }
   if (!confirm(`#${r.no} 검측위치를 삭제할까요?`)) return;
   S.edit = null; deleteRec(r); S.sel = null; closePanel(); renderList(); draw(); toast(`#${r.no} 삭제`);
 }
@@ -1205,8 +1220,8 @@ function renderList() {
   $("#lt-h").innerHTML = ""; $("#lt-h").append(el("tr", {}, cols.map(([, t]) => el("th", {}, t))));
   const tb = $("#lt-b"); tb.innerHTML = "";
   const cur = S.edit || S.sel;
-  for (const r of recs) tb.append(el("tr", { class: (cur && cur.uid === r.uid ? "sel" : "") + (isPlaced(r) ? "" : " unplaced"),
-    onclick: () => (isPlaced(r) ? selectRec(r.uid, true) : startPlacing(r)) }, cols.map(([k]) => el("td", {}, String(listValue(r, k))))));
+  for (const r of recs) tb.append(el("tr", { class: (cur && cur.uid === r.uid ? "sel" : "") + (isPlaced(r) ? "" : " unplaced") + (isMine(r) ? "" : " others"),
+    onclick: () => (isPlaced(r) || !isMine(r) ? selectRec(r.uid, true) : startPlacing(r)) }, cols.map(([k]) => el("td", {}, String(listValue(r, k))))));
   const P = S.purposes[S.filter] || S.purposes[S.purpose] || {};
   if (P.crack && (S.filter === "전체" ? S.purpose : S.filter) && S.db) tb.append(el("tr", { class: "add-row" },
     el("td", { colspan: String(cols.length) }, el("button", { class: "b ok", onclick: (ev) => { ev.stopPropagation(); crackAdd(null); } }, "＋ 균열·손상 추가 (종류 → 크기 → 사진)"))));

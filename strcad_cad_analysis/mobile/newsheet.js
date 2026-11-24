@@ -245,7 +245,7 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
           try {
             await withBusy(kind === "blank" ? "도면 만드는 중…" : "도면 올리는 중…", async () => {
               if (newProject) await createProject(pj, o);
-              else { await addSheet(S.db, o); S.sheets = q("SELECT id, analysis_id, seq, name FROM sheets ORDER BY seq, id"); loadSheet(S.sheets.length - 1); persistSoon(); }
+              else { const nid = await addSheet(S.db, o); if (window.CO) CO.mark("sheet", nid); S.sheets = q("SELECT id, analysis_id, seq, name FROM sheets ORDER BY seq, id"); loadSheet(S.sheets.length - 1); persistSoon(); }
             }, nm);
             toast(`'${nm}' 도면을 만들었습니다 — 검측점을 찍으세요`);
           } catch (e) { toast("만들지 못했습니다: " + (e.message || e), 4000); }
@@ -281,6 +281,12 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
   }
   function rescale(f, ax, ay) {              // 도면 상대좌표 기준 (ax, ay) 중심으로 × f
     const sh = S.sheet, ox = sh.origin.ox, oy = sh.origin.oy;
+    if (window.CO && CO.active()) {           // 협업: 다른 검토자 기록이 있는 도면은 축척을 바꾸지 않음
+      const others = q("SELECT rec FROM surveys WHERE sheet_id=? AND deleted=0", [sh.id]).map((r) => JSON.parse(r.rec)).concat(
+        q("SELECT data AS rec FROM sketches WHERE sheet_id=? AND deleted=0", [sh.id]).map((r) => JSON.parse(r.rec))).filter((o) => !CO.mine(o));
+      if (others.length) { toast(`다른 검토자 기록 ${others.length}개가 있는 도면은 축척을 바꿀 수 없습니다 (도면을 만든 사람만, 공유 전에)`, 4500); return; }
+      CO.mark("sheet", sh.id);
+    }
     const R = (x, y) => [ax + (x - ax) * f, ay + (y - ay) * f];
     const RA = (x, y) => { const [rx, ry] = R(x - ox, y - oy); return [rx + ox, ry + oy]; };   // 절대좌표용
     // 도면 크기: 원점(0,0)과 (w,h) 모두 변환 → 새 원점 이동
@@ -301,6 +307,7 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
       for (const k of ["bx", "by", "dx", "dy"]) if (typeof rec[k] === "number") rec[k] *= f;
       rec.updated = nowIso();
       run("UPDATE surveys SET rec=?, updated=? WHERE uid=?", [JSON.stringify(rec), rec.updated, r.uid]);
+      if (window.CO) CO.mark("rec", r.uid);
     }
     for (const r of q("SELECT uid, data, deleted FROM sketches WHERE sheet_id=?", [sh.id])) {
       const d = JSON.parse(r.data), o = [];
@@ -309,6 +316,7 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
       if (d.kind === "column" && d.b && d.h && o.length >= 4) {         // 기둥 크기(mm)는 그대로, 위치만
         const cx = (o[0] + o[2]) / 2, cy = (o[1] + o[3]) / 2; d.pts = [cx - d.b / 2, cy - d.h / 2, cx + d.b / 2, cy + d.h / 2].map(Math.round); }
       run("UPDATE sketches SET data=?, updated=? WHERE uid=?", [JSON.stringify(d), d.updated, r.uid]);
+      if (window.CO) CO.mark("sk", r.uid);
     }
     persistSoon(); loadSheet(S.sheetIdx);
     toast(`축척을 맞췄습니다 (×${f.toFixed(3)})`);

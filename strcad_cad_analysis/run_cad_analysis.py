@@ -40,6 +40,17 @@ def _selftest(out):
             lines.append(f"OK pdf {im.size}")
         except Exception as e:  # noqa: BLE001
             lines.append(f"MISSING pdf {e}")
+        try:                                   # 협업 서버: 켜고 ping
+            import tempfile
+            import urllib.request
+            from cad_analysis.collab import CollabServer
+            srv = CollabServer(tempfile.mkdtemp(), 0, "127.0.0.1", log=lambda *a: None).start()
+            port = srv.httpd.server_address[1]
+            ok = b'"collab": true' in urllib.request.urlopen(f"http://127.0.0.1:{port}/api/ping", timeout=5).read()
+            srv.stop()
+            lines.append("OK collab" if ok else "MISSING collab ping")
+        except Exception as e:  # noqa: BLE001
+            lines.append(f"MISSING collab {e}")
         r = check.rc_column_check(500, 500, 2000, 280, 60, "8-HD22", "HD10@300")
         lines.append("check " + str(check.summarize(r[0])))
     except Exception as e:  # noqa: BLE001

@@ -554,6 +554,7 @@ class CadAnalysisApp:
         self._big(g, "📱\n모바일로\n내보내기", self.mobile_export, 9)
         self._big(g, "📥\n모바일 DB\n가져오기", self.mobile_import, 9)
         self.wifi_btn = self._big(g, "📶\nWi-Fi\n연결", self.mobile_wifi, 7)
+        self._big(g, "👥\n검토자\n협업", self.collab_dialog, 7)
         g = self._grp(p, "안내")
         self.sv_help = ttk.Label(g, font=(TH.FAM, 8), foreground="#555", justify="left", wraplength=360,
                                  text=SV_HELP["point"])
@@ -3430,6 +3431,197 @@ class CadAnalysisApp:
                    "· 현장(인터넷 없음)에서 쓰려면 앱을 https 주소(예: GitHub Pages)에 올려 홈 화면에 설치하고,\n"
                    "  파일(.strsv)로 주고받으세요. (README 참고)\n\n"
                    "Windows 방화벽이 묻으면 '개인 네트워크' 허용을 눌러 주세요.", "620x330")
+
+    # ---------------------------------------------------------------- 검토자 협업 (StrCAD 협업 서버)
+    def collab_dialog(self):
+        """이 PC에서 협업 서버 열기 · 서버 프로젝트를 PC DB로 가져오기 · PC 프로젝트를 서버에 올리기."""
+        import json as _json
+        import tempfile
+        import urllib.request
+        import urllib.parse
+        from . import collab as CB, sync
+        w = tk.Toplevel(self.root)
+        w.title("검토자 협업 — StrCAD 협업 서버")
+        w.geometry("720x640")
+        w.transient(self.root)
+        st = {"token": self.cfg.get("collab_token", ""), "projects": []}
+        # --- 서버 열기
+        f1 = ttk.LabelFrame(w, text=" ① 이 PC를 협업 서버로 (회사 PC·서버에서 켜 두기) ", padding=8)
+        f1.pack(fill="x", padx=10, pady=(10, 6))
+        r = ttk.Frame(f1)
+        r.pack(fill="x")
+        ttk.Label(r, text="포트").pack(side="left")
+        port = tk.StringVar(value=str(self.cfg.get("collab_port", 8780)))
+        ttk.Entry(r, textvariable=port, width=7).pack(side="left", padx=4)
+        ttk.Label(r, text="데이터 폴더").pack(side="left", padx=(10, 0))
+        ddir = tk.StringVar(value=self.cfg.get("collab_dir") or os.path.join(os.path.expanduser("~"), ".strcad", "collab"))
+        ttk.Entry(r, textvariable=ddir, width=34).pack(side="left", padx=4, fill="x", expand=True)
+        ttk.Button(r, text="…", width=3, command=lambda: ddir.set(filedialog.askdirectory(parent=w) or ddir.get())).pack(side="left")
+        info = tk.Text(f1, height=8, wrap="word", font=(TH.FAM, 9), relief="flat", background="#f8fafc")
+        btn = ttk.Button(f1, text="")
+
+        def show():
+            info.config(state="normal")
+            info.delete("1.0", "end")
+            srv = getattr(self, "_collab", None)
+            if srv:
+                info.insert("end", "● 서버 켜짐\n")
+                for u in srv.urls():
+                    info.insert("end", f"   주소: {u}\n")
+                info.insert("end", f"   팀 코드: {srv.team_code}   (가입할 때 필요 · 처음 가입한 사람이 관리자)\n"
+                            "   휴대폰: 앱 › 메뉴 › 👥 협업 › 위 주소 입력 → 가입/로그인\n"
+                            "   현장(모바일 데이터)에서: 이 PC에서  cloudflared tunnel --url http://localhost:" + str(srv.port) +
+                            "  → 나오는 https://….trycloudflare.com 주소를 앱에 입력 (README 참고)\n"
+                            "   ※ 이 창·프로그램을 닫으면 서버도 꺼집니다. 계속 켜 두려면 collab_server.py 로 실행")
+                btn.config(text="서버 끄기")
+            else:
+                info.insert("end", "○ 꺼져 있음 — [서버 켜기]를 누르면 같은 Wi-Fi·사내망 휴대폰이 접속할 수 있습니다.\n"
+                            "   데이터(계정·기록·사진)는 위 데이터 폴더에 저장됩니다.")
+                btn.config(text="서버 켜기")
+            info.config(state="disabled")
+
+        def toggle():
+            srv = getattr(self, "_collab", None)
+            if srv:
+                srv.stop()
+                self._collab = None
+                self.log("협업 서버 끔")
+            else:
+                try:
+                    self._collab = CB.CollabServer(ddir.get(), int(port.get()), log=lambda m: self.q.put(("call", lambda: self.log(m)))).start()
+                except OSError as e:
+                    messagebox.showerror("협업 서버", f"포트를 열 수 없습니다: {e}", parent=w)
+                    return
+                self.cfg["collab_port"], self.cfg["collab_dir"] = int(port.get()), ddir.get()
+                S.save(self.cfg)
+                self.log(f"협업 서버 켬: {self._collab.urls()[0]} · 팀 코드 {self._collab.team_code}")
+            show()
+        btn.config(command=toggle)
+        btn.pack(anchor="w", pady=4)
+        info.pack(fill="x")
+        show()
+        # --- 서버 ↔ PC
+        f2 = ttk.LabelFrame(w, text=" ② 협업 서버 ↔ 이 PC DB ", padding=8)
+        f2.pack(fill="both", expand=True, padx=10, pady=6)
+        g = ttk.Frame(f2)
+        g.pack(fill="x")
+        url = tk.StringVar(value=self.cfg.get("collab_url") or f"http://localhost:{port.get()}/")
+        uid_ = tk.StringVar(value=self.cfg.get("collab_login", ""))
+        pw = tk.StringVar()
+        for i, (lab, var, show_) in enumerate((("서버 주소", url, ""), ("아이디", uid_, ""), ("비밀번호", pw, "*"))):
+            ttk.Label(g, text=lab).grid(row=i, column=0, sticky="w", pady=2)
+            ttk.Entry(g, textvariable=var, show=show_, width=48).grid(row=i, column=1, sticky="ew", pady=2)
+        g.columnconfigure(1, weight=1)
+        lb = tk.Listbox(f2, height=8, font=(TH.FAM, 10))
+        msg = ttk.Label(f2, text="", foreground=TH.NAVY_L)
+
+        def api(path, body=None, raw=None, binary=False):
+            base = url.get().strip()
+            if not base.startswith("http"):
+                base = "http://" + base
+            base = base.rstrip("/") + "/"
+            data = raw if raw is not None else (_json.dumps(body).encode() if body is not None else None)
+            rq = urllib.request.Request(base + path, data=data, method="POST" if data is not None else "GET")
+            if st["token"]:
+                rq.add_header("Authorization", "Bearer " + st["token"])
+            if body is not None:
+                rq.add_header("Content-Type", "application/json")
+            try:
+                with urllib.request.urlopen(rq, timeout=120) as resp:
+                    b = resp.read()
+                    return b if binary else _json.loads(b.decode("utf-8") or "{}")
+            except urllib.error.HTTPError as e:
+                try:
+                    raise RuntimeError(_json.loads(e.read().decode("utf-8")).get("error") or str(e))
+                except ValueError:
+                    raise RuntimeError(str(e))
+
+        def login():
+            try:
+                r = api("api/login", {"login": uid_.get().strip(), "password": pw.get()})
+            except Exception as e:      # noqa: BLE001
+                msg.config(text=f"로그인 실패: {e}")
+                return False
+            st["token"] = r["token"]
+            self.cfg.update(collab_token=r["token"], collab_url=url.get().strip(), collab_login=uid_.get().strip())
+            S.save(self.cfg)
+            msg.config(text=f"{r['user']['name']} 님 로그인")
+            return True
+
+        def load():
+            try:
+                if not st["token"] and not login():
+                    return
+                try:
+                    ps = api("api/projects")["projects"]
+                except RuntimeError:
+                    if not login():
+                        return
+                    ps = api("api/projects")["projects"]
+            except Exception as e:      # noqa: BLE001
+                msg.config(text=f"서버 연결 실패: {e}")
+                return
+            st["projects"] = ps
+            lb.delete(0, "end")
+            for p in ps:
+                lb.insert("end", f"{p['name']}   —  기록 {p['records']}건 · 검토자 {p['people']}명 · 도면 {p['sheets']}장 · 최근 {str(p['updated'])[:16].replace('T', ' ')}")
+            msg.config(text=f"프로젝트 {len(ps)}개")
+
+        def pull():
+            sel = lb.curselection()
+            if not sel:
+                msg.config(text="가져올 프로젝트를 고르세요")
+                return
+            p = st["projects"][sel[0]]
+            if not self._confirm_discard():
+                return
+            try:
+                data = api(f"api/package?project={p['id']}", binary=True)
+                fd, tmp = tempfile.mkstemp(suffix=".strsv")
+                with os.fdopen(fd, "wb") as f:
+                    f.write(data)
+                rep = sync.import_package(tmp, self.cfg, log=self.log)
+                os.remove(tmp)
+            except Exception as e:      # noqa: BLE001
+                messagebox.showerror("협업 서버에서 가져오기", str(e), parent=w)
+                return
+            self._after_mobile_import(rep)
+            messagebox.showinfo("협업 서버에서 가져오기",
+                                f"'{p['name']}' — 추가 {rep['added']} · 수정 {rep['updated']} · 삭제 {rep['deleted']} · 사진 {rep['photos']}장"
+                                + (f"\n새 도면 {rep['new_sheets']}장 (DB에서 불러오기로 여세요)" if rep.get("new_sheets") else ""), parent=w)
+
+        def push():
+            if not self.project or self.db_id is None:
+                messagebox.showinfo("협업 서버에 올리기", "먼저 DB에 저장된 프로젝트를 여세요.", parent=w)
+                return
+            try:
+                if not st["token"] and not login():
+                    return
+                fd, tmp = tempfile.mkstemp(suffix=".strsv")
+                os.close(fd)
+                sync.export_package(tmp, self.project, self.cfg, log=self.log)
+                with open(tmp, "rb") as f:
+                    data = f.read()
+                os.remove(tmp)
+                r = api("api/projects?name=" + urllib.parse.quote(self.project), raw=data)
+            except Exception as e:      # noqa: BLE001
+                messagebox.showerror("협업 서버에 올리기", str(e), parent=w)
+                return
+            messagebox.showinfo("협업 서버에 올리기", f"협업 프로젝트 '{r['name']}' 를 만들었습니다.\n"
+                                "검토자들은 휴대폰 앱 › 👥 협업 에서 이 프로젝트를 열면 됩니다.", parent=w)
+            load()
+
+        b = ttk.Frame(f2)
+        b.pack(fill="x", pady=6)
+        ttk.Button(b, text="로그인 · 프로젝트 목록", command=lambda: (login() and load())).pack(side="left")
+        ttk.Button(b, text="⬇ 골라서 PC DB로 가져오기", command=pull).pack(side="left", padx=6)
+        ttk.Button(b, text="⬆ 지금 PC 프로젝트를 협업 프로젝트로 올리기", command=push).pack(side="left")
+        lb.pack(fill="both", expand=True)
+        msg.pack(anchor="w", pady=(4, 0))
+        ttk.Label(f2, text="가져오기는 여러 검토자의 기록을 PC DB에 합칩니다 (휴대폰 DB 가져오기와 같음). "
+                           "계정·인원 관리는 휴대폰 앱 › 👥 협업 › 인원 관리(관리자)에서 합니다.",
+                  foreground="#555", wraplength=680, font=(TH.FAM, 8)).pack(anchor="w", pady=(4, 0))
+        ttk.Button(w, text="닫기", command=w.destroy).pack(pady=8)
 
     # ---------------------------------------------------------------- compat / misc
     def survey_edit(self, sid):

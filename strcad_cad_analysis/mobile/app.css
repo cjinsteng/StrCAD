@@ -314,3 +314,31 @@ body.sketching #cv { cursor: crosshair; }
 #list.dock-bottom #filters::-webkit-scrollbar { display: none; }
 #filters button { flex: none; }
 @media (max-width: 520px) { #skOps button { padding: 7px 7px; font-size: 13px; } }
+/* v2.17 — 검토자 협업 */
+.pill.share { position: relative; font-weight: 700; }
+.pill.share.ok { background: #16a34a; color: #fff; }
+.pill.share.wait { background: var(--orange); color: #fff; }
+.pill.share.off { background: #64748b; color: #fff; }
+.pill.share.busy { background: #2563eb; color: #fff; }
+.pill.share .badge { position: absolute; top: -6px; right: -6px; min-width: 18px; height: 18px; border-radius: 9px; background: #dc2626; color: #fff;
+  font-size: 11px; font-style: normal; line-height: 18px; padding: 0 4px; box-shadow: 0 0 0 2px var(--navy); }
+.ro-box { background: #f1f5f9; border: 1px dashed #94a3b8; color: #334155; border-radius: 8px; padding: 8px 10px; margin: 6px 0; font-weight: 700; font-size: 14px; }
+#lt-b tr.others td { color: #64748b; }
+#lt-b tr.others td:first-child::before { content: "👁 "; }
+.co-form { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.co-me { background: #f8fafc; border-radius: 8px; padding: 8px 10px; display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline; }
+.co-me small { flex-basis: 100%; color: var(--muted); word-break: break-all; }
+.co-people { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.co-people span { background: #e2e8f0; border-radius: 14px; padding: 4px 10px; font-size: 13px; }
+.co-people span.me { background: var(--navy); color: #fff; }
+.co-btns { flex-wrap: wrap; }
+.co-code { display: flex; align-items: center; gap: 8px; font-size: 15px; margin: 6px 0; }
+.co-code b { font-size: 22px; letter-spacing: 3px; color: var(--navy); background: #fff7ed; border: 2px dashed var(--orange); border-radius: 8px; padding: 2px 10px; }
+.co-users { display: flex; flex-direction: column; gap: 6px; max-height: 50vh; overflow: auto; margin: 8px 0; }
+.co-user { border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.co-user.off { opacity: .55; }
+.co-user small { display: block; color: var(--muted); }
+.co-user .tag { background: var(--navy); color: #fff; border-radius: 4px; font-size: 11px; padding: 1px 6px; margin-left: 6px; }
+.co-user .tag.off { background: #dc2626; }
+.co-acts { display: flex; gap: 5px; flex-wrap: wrap; }
+.co-acts button { border: 1px solid #cbd5e1; background: #fff; border-radius: 6px; padding: 6px 9px; font-size: 13px; }

@@ -34,15 +34,19 @@ const SK = (() => {
     const out = Object.assign({}, sk, { pts: conv(sk.pts, A).map((v) => Math.round(v)) });
     run("INSERT OR REPLACE INTO sketches (uid, sheet_id, updated, deleted, data) VALUES (?,?,?,?,?)",
       [sk.uid, S.sheet.id, sk.updated, deleted ? 1 : 0, JSON.stringify(out)]);
+    if (window.CO) CO.mark("sk", sk.uid);
     persistSoon();
   }
   function add(sk, record = true) {
-    sk.uid = sk.uid || uid(); sk.inspector = inspector(); sk.date = today();
+    sk.uid = sk.uid || uid(); sk.inspector = inspector(); sk.date = today(); delete sk.owner; if (window.CO) CO.stamp(sk);
     sk.pts = sk.pts.map((v) => Math.round(v));
     write(sk, false); st.list.push(sk); if (record) st.undo.push({ t: "add", sk }); draw(); renderList();
     return sk;
   }
+  const mineSk = (sk) => !window.CO || CO.mine(sk);
+  const roToast = (sk) => toast(`👁 ${CO.ownerName(sk)} 님 스케치 — 보기만 가능 (꾹 눌러 끌면 내 것으로 복사)`);
   function remove(sk, record = true) {
+    if (!mineSk(sk)) { roToast(sk); return; }
     write(sk, true); st.list = st.list.filter((x) => x.uid !== sk.uid);
     if (st.sel === sk.uid) st.sel = null;
     if (record) st.undo.push({ t: "del", sk }); draw(); renderList();
@@ -190,7 +194,7 @@ const SK = (() => {
     const p = st.pend = { sx, sy, x, y, hit: st.op === "erase" ? hitItem(x, y) : hitItem(x, y), moved: false, mode: null };
     clearTimeout(st.lpT);
     if (st.op === "erase") return;
-    if (st.op === "move") { if (p.hit) { p.mode = "move"; p.orig = clone(p.hit); p.ref = refPoint(p.hit, x, y); st.sel = p.hit.uid; draw(); } return; }
+    if (st.op === "move") { if (p.hit && !mineSk(p.hit)) { roToast(p.hit); p.hit = null; return; } if (p.hit) { p.mode = "move"; p.orig = clone(p.hit); p.ref = refPoint(p.hit, x, y); st.sel = p.hit.uid; draw(); } return; }
     if (p.hit && p.hit.kind !== "free") st.lpT = setTimeout(() => {
       if (st.pend !== p || p.moved) return;
       p.mode = "copy"; p.orig = clone(p.hit); p.ref = refPoint(p.hit, x, y); st.sel = p.hit.uid;
@@ -316,6 +320,7 @@ const SK = (() => {
     delete g.uid; delete g.updated;
     if (g.kind === "axis") g.text = nextAxisName(p.orig.text);
     else if (g.auto) g.name = p.orig.name;           // 같은 크기 → 같은 이름
+    delete g.owner; delete g.inspector;
     add(g); toast(`${KIND_NM[g.kind]} 복사${g.kind === "axis" ? ` — 간격 ${Math.round(Math.abs(p.d)).toLocaleString()} mm` : ""}`);
   }
 
@@ -386,6 +391,7 @@ const SK = (() => {
   }
   function editItem(sk) {
     if (!sk) return;
+    if (!mineSk(sk)) { st.sel = sk.uid; draw(); roToast(sk); return; }
     st.sel = sk.uid; draw(); renderList();
     if (sk.kind === "text") { askText(null, sk); return; }
     const prev = clone(sk), w = clone(sk);
