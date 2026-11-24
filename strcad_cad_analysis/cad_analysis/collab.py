@@ -418,32 +418,70 @@ class Store:
     def _owner_ok(self, me, owner):
         return not owner or owner.lower() == me["login"].lower()
 
-    def _renumber(self, pid, suid, rec, uid):
-        """새 기록의 번호(no)·균열번호(label)가 이미 쓰이면 다음 번호로 → (old, new) 목록"""
-        changes = []
-        others = [json.loads(r["rec"]) for r in self.q("SELECT rec FROM records WHERE project_id=? AND suid=? AND deleted=0 AND uid<>?",
-                                                       (pid, suid, uid))]
-        used = {int(o.get("no") or 0) for o in others}
-        try:
-            no = int(rec.get("no") or 0)
-        except (TypeError, ValueError):
-            no = 0
-        if no in used or no <= 0:
-            new = max(used | {0}) + 1
-            changes.append(("no", no, new))
-            rec["no"] = new
+    def _relabel(self, pid, rec, uid, owner, labmap):
+        """균열번호(PW1 …)가 다른 검토자 것과 겹치면 다음 번호로 (같은 사람의 같은 번호 = 여러 위치, 그대로).
+        검측 번호(no)는 겹쳐도 그대로 두고 '번호 정리'(검토자별 000·100·200번대)로 정리."""
         lab = rec.get("label") or ""
         m = re.match(r"^([A-Z]{2})(\d+)$", lab)
-        if m:
-            allrec = [json.loads(r["rec"]) for r in self.q("SELECT rec FROM records WHERE project_id=? AND deleted=0 AND uid<>?", (pid, uid))]
-            labs = {o.get("label") for o in allrec}
-            if lab in labs:
+        if not m:
+            return []
+        if lab not in labmap:
+            other = [json.loads(r["rec"]).get("label") for r in self.q(
+                "SELECT rec FROM records WHERE project_id=? AND deleted=0 AND uid<>? AND lower(owner)<>lower(?)", (pid, uid, owner))]
+            if lab in other:
                 code = m.group(1)
-                nums = [int(x[len(code):]) for x in labs if x and re.match("^" + code + r"\d+$", x)]
-                new = f"{code}{max(nums + [0]) + 1}"
-                changes.append(("label", lab, new))
-                rec["label"] = new
-        return changes
+                allrec = {json.loads(r["rec"]).get("label") for r in self.q("SELECT rec FROM records WHERE project_id=? AND deleted=0", (pid,))}
+                allrec |= set(labmap.values())
+                nums = [int(x[len(code):]) for x in allrec if x and re.match("^" + code + r"\d+$", x)]
+                labmap[lab] = f"{code}{max(nums + [0]) + 1}"
+            else:
+                labmap[lab] = lab
+        new = labmap[lab]
+        if new == lab:
+            return []
+        rec["label"] = new
+        return [("label", lab, new)]
+
+    def renumber(self, me, pid):
+        """번호 정리: 도면마다 검토자별로 000번대 · 100번대 · 200번대 … (사람이 많거나 100건 넘으면 1000번대 단위).
+        사진 이름의 번호도 함께 바뀜 → 휴대폰은 받을 때 원본 사진 이름도 바꿈."""
+        p = self._project(pid)
+        if me["role"] != "admin" and (p["owner"] or "").lower() != me["login"].lower():
+            raise CollabError("번호 정리는 관리자나 프로젝트를 올린 사람만 할 수 있습니다.", 403)
+        with self.lock:
+            rows = self.q("SELECT rowid, uid, suid, owner, rec FROM records WHERE project_id=? AND deleted=0 ORDER BY rowid", (pid,))
+            order = []
+            if p["owner"]:
+                order.append(p["owner"].lower())
+            for r in rows:
+                o = (r["owner"] or "").lower()
+                if o not in order:
+                    order.append(o)
+            groups = {}
+            for r in rows:
+                groups.setdefault((r["suid"], (r["owner"] or "").lower()), []).append(r)
+            mx = max((len(v) for v in groups.values()), default=0)
+            step = 100 if mx < 100 and len(order) <= 9 else 1000
+            rev = self.next_rev()
+            changed = 0
+            names = {u["login"].lower(): u["name"] for u in self.q("SELECT login, name FROM users")}
+            for (suid, owner), lst in groups.items():
+                base = order.index(owner) * step
+                lst.sort(key=lambda r: (int(json.loads(r["rec"]).get("no") or 0), r["rowid"]))
+                for k, r in enumerate(lst, 1):
+                    rec = json.loads(r["rec"])
+                    old, new = int(rec.get("no") or 0), base + k
+                    if old == new:
+                        continue
+                    rec["no"] = new
+                    self.con.execute("UPDATE records SET rec=?, rev=? WHERE project_id=? AND uid=?",
+                                     (json.dumps(rec, ensure_ascii=False), rev, pid, r["uid"]))
+                    self._rename_photos(pid, r["uid"], [("no", old, new)])
+                    self.con.execute("UPDATE photos SET rev=? WHERE project_id=? AND survey_uid=?", (rev, pid, r["uid"]))
+                    changed += 1
+            self.con.commit()
+            return {"changed": changed, "step": step,
+                    "bands": [{"login": o, "name": names.get(o, o), "start": i * step} for i, o in enumerate(order)]}
 
     def _rename_photos(self, pid, uid, changes):
         for kind, old, new in changes:
@@ -462,6 +500,7 @@ class Store:
         since = int(body.get("since") or 0)
         push = body.get("push") or {}
         rejected, renumbered = [], []
+        labmap = {}
         login = me["login"]
         names = {u["login"].lower(): u["name"] for u in self.q("SELECT login, name FROM users")}
         nm = lambda lg: names.get((lg or "").lower(), lg)          # noqa: E731
@@ -512,8 +551,8 @@ class Store:
                     rec["inspector"] = me["name"]
                 if cur and (cur["updated"] or "") > (r.get("updated") or "") and not r.get("deleted"):
                     continue                                  # 같은 사람 다른 기기에서 더 새로 고친 것이 있음
-                if not cur and not r.get("deleted"):
-                    ch = self._renumber(pid, r.get("suid"), rec, uid)
+                if not r.get("deleted"):
+                    ch = self._relabel(pid, rec, uid, rec["owner"], labmap)
                     if ch:
                         renumbered.append({"uid": uid, "changes": ch})
                 self.con.execute("INSERT OR REPLACE INTO records (project_id, uid, suid, owner, updated, deleted, rec, rev) VALUES (?,?,?,?,?,?,?,?)",
@@ -697,6 +736,10 @@ class CollabServer:
                     if u.path == "/api/password":
                         outer.store.change_password(me, body.get("old"), body.get("new"))
                         return self._json(200, {"ok": True})
+                    if u.path == "/api/renumber":
+                        r = outer.store.renumber(me, int(body.get("project") or 0))
+                        outer.log(f"협업: {me['name']} 님이 번호 정리 ({r['changed']}건)")
+                        return self._json(200, r)
                     if u.path == "/api/project_delete":
                         outer.store.delete_project(me, int(body.get("project") or 0))
                         return self._json(200, {"ok": True})

@@ -205,7 +205,7 @@ const CO = (() => {
     let k = 0;
     for (const p of res.photos) {
       const have = q("SELECT name FROM photos WHERE uid=?", [p.uid])[0];
-      if (have) { if (have.name !== p.name) run("UPDATE photos SET name=? WHERE uid=?", [p.name, p.uid]); continue; }
+      if (have) { if (have.name !== p.name) { run("UPDATE photos SET name=? WHERE uid=?", [p.name, p.uid]); await renameOriginal(p.uid, p.name); } continue; }
       k++; if (bz) bz.set("공유하는 중…", `사진 받는 중 ${k}장`);
       try { const data = await api(`api/photo?project=${st.project}&uid=${encodeURIComponent(p.uid)}`, { binary: true });
         run("INSERT OR REPLACE INTO photos (uid, survey_uid, name, mime, data, created) VALUES (?,?,?,?,?,?)", [p.uid, p.survey_uid, p.name, p.mime, data, p.created]); n++; }
@@ -213,6 +213,27 @@ const CO = (() => {
     }
     if (n) refresh(curChanged, sheetsChanged);
     return n;
+  }
+  // 번호 정리·번호 변경으로 사진 이름이 바뀌면 휴대폰의 원본 사진 파일 이름도 같이
+  async function renameOriginal(phUid, newName) {
+    let o = null; try { o = q("SELECT path, dir FROM orig WHERE uid=?", [phUid])[0]; } catch (e) { o = null; }
+    if (!o || !NATIVE) return;
+    const dir = o.path.replace(/[^/]*$/, ""), ext = (o.path.match(/\.[^./]+$/) || [".jpg"])[0];
+    const to = dir + newName.replace(/\.[^.]+$/, "") + ext;
+    if (to === o.path) return;
+    try { await window.Capacitor.Plugins.Filesystem.rename({ from: o.path, to, directory: o.dir, toDirectory: o.dir });
+      run("UPDATE orig SET path=? WHERE uid=?", [to, phUid]); } catch (e) { console.warn("원본 이름 변경 실패", e); }
+  }
+  async function renumber() {
+    if (!active()) return;
+    if (!confirm("번호 정리: 도면마다 검토자별로 번호를 다시 매깁니다.\n(첫 번째 검토자 1~99, 두 번째 101~199, 세 번째 201~ …)\n사진 이름과 휴대폰 원본 사진 이름도 같이 바뀝니다. 진행할까요?")) return;
+    closeModal();
+    try {
+      await sync(true);                                // 내 것 먼저 올리고
+      const r = await withBusy("번호 정리 중…", () => api("api/renumber", { body: { project: st.project } }));
+      await sync(true);                                // 바뀐 번호·사진 이름 받기
+      toast(`번호 정리 ${r.changed}건 — ` + r.bands.map((b) => `${b.name} ${b.start ? b.start + 1 : 1}~`).join(" · "), 5000);
+    } catch (e) { alert("번호 정리 실패: " + (e.message || e)); }
   }
   function refresh(curChanged, sheetsChanged) {
     if (sheetsChanged) { S.sheets = q("SELECT id, analysis_id, seq, name FROM sheets ORDER BY seq, id"); $("#pgLbl").textContent = `${S.sheetIdx + 1}/${S.sheets.length}`; }
@@ -307,7 +328,9 @@ const CO = (() => {
         b.append(el("div", { class: "grp" }, `지금 프로젝트: ${st.name}`),
           el("div", { class: "co-people" }, st.people.length ? st.people.map((p) => el("span", { class: String(p.login).toLowerCase() === u.login.toLowerCase() ? "me" : "" }, `${p.name} ${p.records}건`)) : "아직 공유 기록 없음"),
           el("p", { class: "small" }, `대기 ${pendingCount()}건 · ${st.last ? "마지막 공유 " + st.last.toLocaleTimeString() : "아직 공유 안 함"} · 연결되어 있으면 10초마다 자동으로 주고받습니다. 다른 검토자 기록은 보기만 됩니다.`),
-          el("button", { class: "bigbtn", onclick: () => { closeModal(); sync(false); } }, "🔄 지금 공유"));
+          el("button", { class: "bigbtn", onclick: () => { closeModal(); sync(false); } }, "🔄 지금 공유"),
+          el("button", { class: "bigbtn ghost", onclick: renumber }, "🔢 번호 정리 (검토자별 000·100·200번대)"),
+          el("p", { class: "small" }, "각자 같은 번호로 조사해도 됩니다. 정리하면 검토자마다 번호대가 나뉘고 사진·원본 사진 이름도 바뀝니다 (관리자·프로젝트를 올린 사람)."));
       } else if (S.db) {
         b.append(el("button", { class: "bigbtn navy", onclick: () => upload() }, `⬆ 지금 조사(${S.meta.project || ""})를 협업 프로젝트로 올리기`));
       }
@@ -411,6 +434,6 @@ const CO = (() => {
   $("#miCollab").onclick = () => { $("#menu").classList.remove("show"); hub(); };
   $("#btnCollab").onclick = () => hub();
   $("#btnShare").onclick = () => sync(false);
-  return { onOpen, mark, mine, ownerName, stamp, sync, hub, active, me, suidOf, get people() { return st.people; } };
+  return { onOpen, mark, mine, ownerName, stamp, sync, hub, active, me, suidOf, renumber, get people() { return st.people; } };
 })();
 window.CO = CO;

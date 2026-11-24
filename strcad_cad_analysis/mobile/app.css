@@ -342,3 +342,12 @@ body.sketching #cv { cursor: crosshair; }
 .co-user .tag.off { background: #dc2626; }
 .co-acts { display: flex; gap: 5px; flex-wrap: wrap; }
 .co-acts button { border: 1px solid #cbd5e1; background: #fff; border-radius: 6px; padding: 6px 9px; font-size: 13px; }
+/* v2.18 */
+.mini-add { border: 1px solid var(--orange); background: #fff7ed; color: #c2410c; border-radius: 14px; padding: 3px 8px; font-weight: 700; font-size: 12px; }
+#lt-b tr.tot-row td { background: #f1f5f9; font-weight: 700; color: var(--navy); padding: 6px 8px; }
+.crack-exist button { background: #fff7ed; border-color: var(--orange); }
+#lt-b tr.sk-rowmenu td { background: #fff7ed; padding: 6px 8px; display: table-cell; }
+#lt-b tr.sk-rowmenu .b { margin-right: 6px; padding: 6px 12px; }
+#lt-b tr.sk-rowmenu small { color: var(--muted); }
+#lt-b td.sk-who { color: #475569; font-style: italic; }
+#lt-b tr { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }

@@ -472,7 +472,10 @@ function locate(x, y, only) {     // sheet-relative point → {m, t, dxy, p}
 }
 function memberName(m) { if (!m) return ""; return m.n ? `${KIND_KO[m.k]} ${m.n}` : KIND_KO[m.k]; }
 function memberSize(m) { return m ? m.s : ""; }
-function nextNo() { return S.recs.reduce((a, r) => Math.max(a, +r.no || 0), 0) + 1; }
+function nextNo() {
+  const own = window.CO && CO.active() ? S.recs.filter((r) => CO.mine(r)) : S.recs;
+  return own.reduce((a, r) => Math.max(a, +r.no || 0), 0) + 1;
+}
 
 // ======================================================================= drawing
 const cv = $("#cv"); const ctx = cv.getContext("2d");
@@ -567,6 +570,8 @@ function draw() {
   if (window.NS) NS.drawCalib();
 }
 function drawRec(_r, rec, hl) {
+  const sel = S.edit || S.sel;
+  if (!hl && sel && rec.label && sel.label === rec.label && String(sel.owner || "") === String(rec.owner || "")) hl = "sib";
   const col = purposeColor(rec.purpose), g = geom(rec);
   let px, py;
   ctx.strokeStyle = col; ctx.fillStyle = col;
@@ -595,7 +600,7 @@ function drawRec(_r, rec, hl) {
   const shape = (pad) => { ctx.beginPath(); if (hw > R) { const r = R + pad, w = hw + pad; ctx.moveTo(bx - w + r, by - r); ctx.lineTo(bx + w - r, by - r); ctx.arc(bx + w - r, by, r, -Math.PI / 2, Math.PI / 2);
     ctx.lineTo(bx - w + r, by + r); ctx.arc(bx - w + r, by, r, Math.PI / 2, Math.PI * 1.5); ctx.closePath(); } else ctx.arc(bx, by, R + pad, 0, 7); };
   ctx.fillStyle = "#fff"; ctx.lineWidth = hl ? 4 : 3; shape(0); ctx.fill(); ctx.stroke();
-  if (hl) { ctx.strokeStyle = "#f59e0b"; ctx.lineWidth = 3; shape(5); ctx.stroke(); }
+  if (hl) { ctx.strokeStyle = hl === "sib" ? "#fbbf24" : "#f59e0b"; ctx.lineWidth = 3; if (hl === "sib") ctx.setLineDash([4, 3]); shape(5); ctx.stroke(); ctx.setLineDash([]); }
   ctx.fillStyle = col; ctx.textAlign = "center"; ctx.textBaseline = "middle";
   ctx.fillText(txt, bx, by + 0.5); ctx.textBaseline = "alphabetic";
 }
@@ -719,22 +724,56 @@ function polyFinish() {
   if (polyArea(d.flat()) * S.view.s * S.view.s < 150) { draw(); toast("영역이 너무 작습니다"); return; }
   newAreaRec(null, d);
 }
+// 위치(locate 결과)에 바로 놓기 — 도면을 눌러 연 균열 창에서 기존 번호 고를 때
+function placeAt(L) { placeRec(L.p[0], L.p[1]); }
 // ---- 균열 목록에서 만든 번호를 도면에 놓기
 function placeRec(x, y) {
-  const rec = S.recs.find((r) => r.uid === S.placing); S.placing = null; hint("");
-  if (!rec) { draw(); return; }
+  const src = S.recs.find((r) => r.uid === S.placing) || S.placingRec; S.placing = null; S.placingRec = null; hint("");
+  if (!src) { draw(); return; }
+  let rec = src;
+  if (S.placingAdd && isPlaced(src)) {            // 같은 균열번호를 다른 위치에 하나 더 (개수 집계)
+    rec = JSON.parse(JSON.stringify(src));
+    Object.assign(rec, { id: S.recs.reduce((a, r) => Math.max(a, r.id || 0), 0) + 1, uid: uid(), no: nextNo(), name: "", date: today(), inspector: inspector() });
+    delete rec.calc;
+    if (window.CO) CO.stamp(rec);
+  }
+  S.placingAdd = false;
   const L = locate(x, y), [ax, ay] = A(...L.p);
   Object.assign(rec, { member: L.m ? L.m.i : null, t0: L.t ?? null, t1: null, x: ax, y: ay, bx: 26 / S.view.s, by: 30 / S.view.s });
   if (L.dxy) { rec.dx = L.dxy[0]; rec.dy = L.dxy[1]; } else { delete rec.dx; delete rec.dy; }
   if (!rec.name && L.m) rec.name = memberName(L.m);
   saveRec(rec); if (S.edit && S.edit.uid === rec.uid) S.edit = JSON.parse(JSON.stringify(rec));
-  renderList(); draw(); toast(`${rec.label || "#" + rec.no} 배치 완료`);
+  renderList(); draw();
+  toast(rec.label ? `${rec.label} 배치 — 지금 ${crackCount(rec.label, rec.owner)}곳` : `#${rec.no} 배치 완료`);
 }
-function startPlacing(rec) {
+// 같은 균열번호(같은 검토자)의 모든 위치 — 도면 전체
+function crackSiblings(label, owner) {
+  const out = [];
+  for (const r of q("SELECT sheet_id, rec FROM surveys WHERE deleted=0")) {
+    let o; try { o = JSON.parse(r.rec); } catch (e) { continue; }
+    if (o.label === label && String(o.owner || "") === String(owner || "")) { o._sheet = r.sheet_id; out.push(o); }
+  }
+  return out;
+}
+function crackCount(label, owner) { return crackSiblings(label, owner).filter(isPlaced).length; }
+// 크기·형태·사진·메모를 고치면 같은 번호의 다른 위치에도 똑같이
+function syncCrackSiblings(rec) {
+  if (!rec.label || !(S.purposes[rec.purpose] || {}).crack) return;
+  for (const o of crackSiblings(rec.label, rec.owner)) {
+    if (o.uid === rec.uid) continue;
+    const sh = o._sheet; delete o._sheet;
+    Object.assign(o, { fields: JSON.parse(JSON.stringify(rec.fields || {})), memo: rec.memo, photos: [...(rec.photos || [])], updated: nowIso() });
+    run("UPDATE surveys SET rec=?, updated=? WHERE uid=?", [JSON.stringify(o), o.updated, o.uid]);
+    if (window.CO) CO.mark("rec", o.uid);
+    const i = S.recs.findIndex((r) => r.uid === o.uid); if (i >= 0 && S.sheet && S.sheet.id === sh) S.recs[i] = o;
+  }
+}
+function startPlacing(rec, add) {
   if (!guardEdit()) return;
   if (!isMine(rec)) { notMineToast(rec); return; }
   if (S.mode === "sketch") $("#modeSeg").querySelector('[data-mode="point"]').click();
-  S.placing = rec.uid; closePanel(); draw();
+  S.placing = rec.uid; S.placingRec = rec; S.placingAdd = !!add; closePanel(); draw();
+  if (add && rec.label) { hint(`도면에서 ${rec.label} 위치를 하나 더 누르세요 (지금 ${crackCount(rec.label, rec.owner)}곳)`); return; }
   hint(`도면에서 ${rec.label || "#" + rec.no} 위치를 누르세요`);
 }
 function crackNextNo(code) {
@@ -759,7 +798,10 @@ function crackAdd(at) {
     const render = () => {
       b.innerHTML = "";
       if (!type) {
-        b.append(el("h3", {}, "균열·손상 종류"), el("div", { class: "grid crack-types" }, CRACK_TYPES.map((t) => el("button", { class: "opt",
+        const mineLabels = [...new Map(S.recs.filter((r) => r.label && isMine(r) && (S.purposes[r.purpose] || {}).crack).map((r) => [r.label, r])).values()];
+        if (at && mineLabels.length) b.append(el("h3", {}, "기존 번호를 여기에 하나 더"), el("div", { class: "sk-chips crack-exist" }, mineLabels.map((r) => el("button", { onclick: () => {
+          close(); S.placing = r.uid; S.placingRec = r; S.placingAdd = isPlaced(r); placeAt(at, r); } }, `${r.label} ${r.fields.ctype || ""} · ${crackCount(r.label, r.owner)}곳`))));
+        b.append(el("h3", {}, mineLabels.length && at ? "새 번호 만들기" : "균열·손상 종류"), el("div", { class: "grid crack-types" }, CRACK_TYPES.map((t) => el("button", { class: "opt",
           onclick: () => { type = t; rec.fields.ctype = t.k; rec.label = t.code + crackNextNo(t.code); render(); } }, el("b", {}, t.k), el("small", {}, t.code + crackNextNo(t.code))))),
           el("div", { class: "btns" }, el("span", { class: "sp" }), el("button", { class: "b gray", onclick: close }, "취소")));
         return;
@@ -902,7 +944,7 @@ function askInspector() {
   if (v == null) return; try { localStorage.setItem("inspector", v.trim()); } catch (e) { /* private */ }
   showInspector(); toast(v.trim() ? `검토자: ${v.trim()}` : "검토자 지움");
 }
-function saveEdit() { if (!S.edit) return; if (!S.edit.inspector) S.edit.inspector = inspector(); saveRec(S.edit); S.sel = S.edit; S.edit = null; toast(`#${S.sel.no} 저장`); renderForm(); renderList(); draw(); }
+function saveEdit() { if (!S.edit) return; if (!S.edit.inspector) S.edit.inspector = inspector(); saveRec(S.edit); syncCrackSiblings(S.edit); S.sel = S.edit; S.edit = null; toast(`#${S.sel.no} 저장`); renderForm(); renderList(); draw(); }
 function cancelEdit() { S.edit = null; renderForm(); draw(); }
 
 function summary(r) {
@@ -967,7 +1009,13 @@ function renderForm() {
     if (P.crack && k !== "ctype" && ctT && !ctT.f.includes(k) && !(ctT.f[0] === "crack_w" && (k === "shape" || k === "progress"))) continue;
     row(lab, vbtn(k, { field: true, unit, choices: ch || FIELD_CHOICES[k] || (k === "ctype" ? CRACK_TYPES.map((t) => t.k) : CRACK_CHIPS[k] && CRACK_CHIPS[k].map(String)) }));
   }
-  if (P.crack && !ro) f.append(el("button", { class: "val wide", onclick: () => startPlacing(rec) }, isPlaced(rec) ? "📍 도면 위치 다시 지정" : "📍 도면에 배치"));
+  if (P.crack && rec.label) f.append(el("div", { class: "load-box" }, el("b", {}, `${rec.label} — 지금 ${crackCount(rec.label, rec.owner)}곳`),
+    el("small", {}, "같은 번호를 여러 곳에 표시하면 개수가 집계됩니다 (크기·사진은 모든 위치 공통)")));
+  if (P.crack && !ro) {
+    if (isPlaced(rec)) f.append(el("div", { class: "row two" }, el("button", { class: "val", onclick: () => startPlacing(rec, true) }, `📍＋ 같은 번호 위치 추가`), el("div"),
+      el("button", { class: "val", onclick: () => startPlacing(rec) }, "↻ 이 위치 다시 지정")));
+    else f.append(el("button", { class: "val wide", onclick: () => startPlacing(rec) }, "📍 도면에 배치"));
+  }
   if (P.area) {
     const t = loadText(rec.fields), A = areaOf(rec);
     f.append(el("div", { class: "load-box" }, el("b", {}, "하중 참고"), el("span", {}, (A ? `면적 ${A.toFixed(1)} m² · ` : "") + (t || "실 용도·마감·천장을 고르면 계산됩니다")),
@@ -1194,7 +1242,7 @@ function listColumns() {
   if (!$("#list").classList.contains("dock-bottom")) return [["label", "번호"], ["name", "부재명"], ["summary", "내용"]];
   const P = S.purposes[S.filter];
   if (!P) return [["no", "번호"], ["purpose", "용도"], ["name", "부재명"], ["summary", "내용"], ["inspector", "검토자"], ["ph", "사진"]];
-  if (P.crack) return [["label", "번호"], ["f:ctype", "종류"], ["csize", "크기"], ["name", "부재"], ["f:shape", "형태"], ["placed", "위치"], ["inspector", "검토자"], ["ph", "사진"]];
+  if (P.crack) return [["label", "번호"], ["f:ctype", "종류"], ["csize", "크기"], ["count", "개수"], ["f:shape", "형태"], ["inspector", "검토자"], ["ph", "사진"], ["add", ""]];
   const c = [["no", "번호"], ["name", P.area ? "구역" : "부재명"]];
   if (P.area) c.push(["areaM2", "면적(m²)"]);
   if (P.size) c.push(["size", "치수"]); if (P.length) c.push(["length", "길이(m)"]); if (P.rebar) c.push(["rebar", "철근"]); if (P.exist) c.push(["exist", "부재유무"]);
@@ -1205,6 +1253,7 @@ function listColumns() {
 function rebarText(r) { const rb = r.rebar || {}; const cols = ["I단", "단부", "중앙", "J단", "수직근", "수평근"].filter((c) => Object.keys(rb).some((k) => k.endsWith("|" + c)));
   return cols.map((c) => `[${c}] ` + Object.entries(rb).filter(([k, v]) => k.endsWith("|" + c) && v).map(([k, v]) => (k.startsWith("주근배치") ? "배치" : k.split("|")[0].endsWith("2") ? k[0] + "2" : k[0]) + ":" + v).join(" ")).join(" "); }
 function listValue(r, k) {
+  if (k === "count") return r.label ? `${crackCount(r.label, r.owner)}곳` : "";
   if (k === "label") return r.label || r.no; if (k === "csize") return crackSize(r.fields); if (k === "placed") return isPlaced(r) ? "배치" : "📍미배치";
   if (k === "summary") return summary(r); if (k === "ph") return (r.photos || []).length || "";
   if (k === "size") return r.size_b || r.size_h ? `${r.size_b || "?"}×${r.size_h || "?"}` : ""; if (k === "rebar") return rebarText(r);
@@ -1214,6 +1263,7 @@ function listValue(r, k) {
 }
 function renderList() {
   if (S.mode === "sketch" && window.SK) { SK.renderList(); return; }
+  if ((S.purposes[S.filter] || {}).crack) { renderCrackList(); return; }
   const recs = S.recs.filter((r) => S.filter === "전체" || r.purpose === S.filter).sort((a, b) => (isPlaced(a) - isPlaced(b)) || a.no - b.no);
   $("#listCount").textContent = `${recs.length}건`;
   const cols = listColumns();
@@ -1225,6 +1275,34 @@ function renderList() {
   const P = S.purposes[S.filter] || S.purposes[S.purpose] || {};
   if (P.crack && (S.filter === "전체" ? S.purpose : S.filter) && S.db) tb.append(el("tr", { class: "add-row" },
     el("td", { colspan: String(cols.length) }, el("button", { class: "b ok", onclick: (ev) => { ev.stopPropagation(); crackAdd(null); } }, "＋ 균열·손상 추가 (종류 → 크기 → 사진)"))));
+}
+// 균열 목록: 번호(PW1 …)마다 한 줄 + 개수, 맨 아래 종류별 합계
+function renderCrackList() {
+  const groups = new Map();
+  for (const r of S.recs.filter((x) => x.purpose === S.filter).sort((a, b) => a.no - b.no)) {
+    const key = r.label ? `${r.owner || ""}|${r.label}` : r.uid;
+    if (!groups.has(key)) groups.set(key, []); groups.get(key).push(r);
+  }
+  const cols = listColumns();
+  $("#listCount").textContent = `${groups.size}종 · ${S.recs.filter((x) => x.purpose === S.filter && isPlaced(x)).length}곳`;
+  $("#lt-h").innerHTML = ""; $("#lt-h").append(el("tr", {}, cols.map(([, t]) => el("th", {}, t))));
+  const tb = $("#lt-b"); tb.innerHTML = "";
+  const cur = S.edit || S.sel;
+  const sorted = [...groups.values()].sort((a, b) => String(a[0].label).localeCompare(String(b[0].label), "ko", { numeric: true }));
+  for (const lst of sorted) {
+    const r = lst.find(isPlaced) || lst[0], placed = lst.some(isPlaced), mine = isMine(r);
+    tb.append(el("tr", { class: (cur && lst.some((x) => x.uid === cur.uid) ? "sel" : "") + (placed ? "" : " unplaced") + (mine ? "" : " others"),
+      onclick: () => (placed || !mine ? selectRec(r.uid, true) : startPlacing(r)) },
+      cols.map(([k]) => el("td", {}, k === "add" ? (mine && placed ? el("button", { class: "mini-add", onclick: (ev) => { ev.stopPropagation(); startPlacing(r, true); } }, "📍＋") : "")
+        : k === "count" ? (placed ? `${crackCount(r.label, r.owner)}곳` : "📍미배치") : String(listValue(r, k))))));
+  }
+  // 종류별 합계 (추후 균열 면적·개수 집계용)
+  const tot = {};
+  for (const r of S.recs.filter((x) => x.purpose === S.filter && isPlaced(x))) { const t = (r.fields || {}).ctype || "기타"; tot[t] = (tot[t] || 0) + 1; }
+  if (Object.keys(tot).length) tb.append(el("tr", { class: "tot-row" }, el("td", { colspan: String(cols.length) },
+    "합계 — " + Object.entries(tot).map(([t, n]) => `${t} ${n}곳`).join(" · "))));
+  if (S.db) tb.append(el("tr", { class: "add-row" }, el("td", { colspan: String(cols.length) },
+    el("button", { class: "b ok", onclick: (ev) => { ev.stopPropagation(); crackAdd(null); } }, "＋ 균열·손상 추가 (종류 → 크기 → 사진)"))));
 }
 function toggleIcon() {
   const L = $("#list"), c = L.classList.contains("collapsed"), d = listDock();

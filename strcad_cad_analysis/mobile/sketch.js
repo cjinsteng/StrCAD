@@ -8,16 +8,19 @@
 
 const SK = (() => {
   const COLORS = ["#e11d48", "#F28C28", "#eab308", "#16a34a", "#2563eb", "#7c3aed", "#111827", "#ec4899"];
+  const MEMBER_KINDS = ["beam", "column", "wall"];
   const TEXT_PRESETS = ["G1", "B1", "C1", "W1", "추가", "철거", "개구부", "도면과 다름"];
   const PREFIX = { beam: "G", column: "C", wall: "W" };
   const KIND_NM = { beam: "보", column: "기둥", wall: "벽체", axis: "축", dim: "치수", text: "글자", free: "자유선" };
   const DEF = { tool: "member", mem: "beam", dbl: false, beamW: 400, colB: 500, colH: 500, colStep: 10, wallT: 200,
-    autoName: true, ortho: true, snap: true, color: COLORS[0] };
+    autoName: true, ortho: true, snap: true, color: COLORS[0], memColor: "#2563eb" };
   const st = Object.assign({ list: [], op: null, cur: null, pend: null, undo: [], sel: null, snapMark: null, ghost: null }, DEF);
   try { Object.assign(st, JSON.parse(localStorage.getItem("skOpts") || "{}")); } catch (e) { /* ignore */ }
   st.op = null;
   const saveOpts = () => { try { localStorage.setItem("skOpts", JSON.stringify(Object.fromEntries(Object.keys(DEF).map((k) => [k, st[k]])))); } catch (e) { /* ignore */ } };
   const clone = (o) => JSON.parse(JSON.stringify(o));
+  const colorFor = (kind) => (MEMBER_KINDS.includes(kind) ? st.memColor || "#2563eb" : st.color);      // 보·기둥·벽 기본 파랑
+  const curColorKey = () => (st.tool === "member" ? "memColor" : "color");
 
   // ------------------------------------------------------------------ storage
   const conv = (pts, f) => { const o = []; for (let i = 0; i + 1 < pts.length; i += 2) o.push(...f(pts[i], pts[i + 1])); return o; };
@@ -233,7 +236,7 @@ const SK = (() => {
     if (st.tool === "member" && st.mem === "column") {
       if (hit && hit.kind === "column") { editItem(hit); return; }
       const [cx, cy] = startPoint(x, y); st.snapMark = null;
-      const sk = { kind: "column", color: st.color, b: st.colB, h: st.colH, pts: colPts(cx, cy, st.colB, st.colH) };
+      const sk = { kind: "column", color: colorFor("column"), b: st.colB, h: st.colH, pts: colPts(cx, cy, st.colB, st.colH) };
       applyAuto(sk); add(sk); toast(`기둥 ${sk.name ? sk.name + " " : ""}${st.colB}×${st.colH}`); return;
     }
     if (hit) { editItem(hit); return; }
@@ -245,7 +248,7 @@ const SK = (() => {
   function beginDraw(p) {
     const kind = st.tool === "member" ? st.mem : st.tool;
     const s = kind === "free" ? [p.x, p.y] : startPoint(p.x, p.y);
-    st.cur = { kind, color: st.color, pts: [s[0], s[1], s[0], s[1]] };
+    st.cur = { kind, color: colorFor(kind), pts: [s[0], s[1], s[0], s[1]] };
   }
   function updDraw(x, y) {
     const c = st.cur; if (!c) return;
@@ -398,6 +401,7 @@ const SK = (() => {
     const close = () => { $("#modal").classList.remove("show"); };
     sheet((b) => {
       b.append(el("h3", {}, `${KIND_NM[sk.kind]} 수정` + (sk.name ? ` — ${sk.name}` : sk.text ? ` — ${sk.text}` : "")));
+      if (sk.inspector) b.append(el("p", { class: "small" }, `✍ 작성: ${sk.inspector}${sk.date ? " · " + sk.date : ""}`));
       let nameInp = null;
       if (PREFIX[sk.kind]) {
         nameInp = el("input", { type: "text", class: "sk-input", value: w.name || "", placeholder: `예: ${PREFIX[sk.kind]}1` });
@@ -478,6 +482,19 @@ const SK = (() => {
     const L = Math.hypot(p[2] - p[0], p[3] - p[1]) || 1, nx = -(p[3] - p[1]) / L * half, ny = (p[2] - p[0]) / L * half;
     return [scr(p[0] + nx, p[1] + ny), scr(p[2] + nx, p[3] + ny), scr(p[2] - nx, p[3] - ny), scr(p[0] - nx, p[1] - ny)];
   }
+  function signature(sk) {                      // 누가 그렸는지 (작성자 서명) — 확대했을 때 작게
+    if (!sk.inspector || !showSign()) return;
+    const p = sk.pts; let at = null;
+    if (sk.kind === "column") { const a = scr(p[0], p[1]), b = scr(p[2], p[3]); if (Math.abs(b[0] - a[0]) > 18) at = [(a[0] + b[0]) / 2, Math.max(a[1], b[1]) + 9]; }
+    else if (sk.kind === "text") { const v = scr(p[0], p[1]); at = [v[0], v[1] + 15]; }
+    else if (p.length >= 4) { const n = p.length, a = scr(p[n - 4], p[n - 3]), b = scr(p[n - 2], p[n - 1]);
+      if (Math.hypot(b[0] - scr(p[0], p[1])[0], b[1] - scr(p[0], p[1])[1]) > 40) at = [b[0] + (b[0] - a[0] >= 0 ? 6 : -6), b[1] + 12]; }
+    if (!at || at[0] < -40 || at[1] < -40 || at[0] > VW + 40 || at[1] > VH + 40) return;
+    ctx.save(); ctx.font = "italic 10px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.globalAlpha = 0.85;
+    const t = "✍ " + sk.inspector; ctx.lineWidth = 3; ctx.strokeStyle = "#fff"; ctx.strokeText(t, at[0], at[1]); ctx.fillStyle = "#475569"; ctx.fillText(t, at[0], at[1]);
+    ctx.restore();
+  }
+  function showSign() { try { return localStorage.getItem("skSign") !== "0"; } catch (e) { return true; } }
   function drawOne(sk, live, sel) {
     const p = sk.pts, col = sk.color || COLORS[0];
     ctx.save(); ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineCap = "round"; ctx.lineJoin = "round";
@@ -593,7 +610,7 @@ const SK = (() => {
   function drawAll() {
     if (!S.sheet || (hidden() && S.mode !== "sketch")) return;
     drawAxisGaps();
-    for (const sk of st.list) drawOne(sk, false, S.mode === "sketch" && sk.uid === st.sel);
+    for (const sk of st.list) { drawOne(sk, false, sk.uid === st.sel); if (sk.kind !== "axis" && sk.kind !== "dim") signature(sk); }
     if (st.ghost) { ctx.save(); ctx.globalAlpha = 0.6; drawOne(st.ghost, true); ctx.restore(); }
     if (st.cur) drawOne(st.cur, true);
     drawSnap();
@@ -609,14 +626,31 @@ const SK = (() => {
     if (S.mode !== "sketch" || typeof $ !== "function" || !$("#lt-b")) return;
     const ms = members();
     $("#listCount").textContent = `스케치 ${ms.length}개`;
-    $("#lt-h").innerHTML = ""; $("#lt-h").append(el("tr", {}, ["이름", "종류", "크기", "길이(m)"].map((t) => el("th", {}, t))));
+    $("#lt-h").innerHTML = ""; $("#lt-h").append(el("tr", {}, ["이름", "종류", "크기", "길이(m)", "작성자"].map((t) => el("th", {}, t))));
     const tb = $("#lt-b"); tb.innerHTML = "";
     if (!ms.length) { tb.append(el("tr", {}, el("td", { colspan: "4", class: "empty" }, "부재·축·치수를 그리면 여기에 목록이 나옵니다 (자동네임: 보 G1~ · 기둥 C1~ · 벽 W1~)"))); return; }
     for (const sk of ms) {
       const L = isLine(sk) ? (Math.hypot(sk.pts[2] - sk.pts[0], sk.pts[3] - sk.pts[1]) / 1000).toFixed(2) : "";
-      tb.append(el("tr", { class: sk.uid === st.sel ? "sel" : "", onclick: () => { focus(sk); editItem(sk); } },
-        el("td", {}, el("b", { style: `color:${sk.color || COLORS[0]}` }, sk.name || sk.text || "-")), el("td", {}, KIND_NM[sk.kind]), el("td", {}, sizeText(sk)), el("td", {}, L)));
+      const tr = el("tr", { class: sk.uid === st.sel ? "sel" : "" },
+        el("td", {}, el("b", { style: `color:${sk.color || COLORS[0]}` }, sk.name || sk.text || "-")), el("td", {}, KIND_NM[sk.kind]), el("td", {}, sizeText(sk)), el("td", {}, L),
+        el("td", { class: "sk-who" }, sk.inspector || ""));
+      let lp = null, longed = false;
+      tr.addEventListener("pointerdown", () => { longed = false; clearTimeout(lp); lp = setTimeout(() => { longed = true; rowMenu(tr, sk); }, 500); });
+      for (const ev of ["pointerup", "pointerleave", "pointercancel"]) tr.addEventListener(ev, () => clearTimeout(lp));
+      tr.addEventListener("contextmenu", (e) => e.preventDefault());
+      tr.addEventListener("click", () => { if (longed) return;
+        if (st.sel === sk.uid) { st.sel = null; draw(); renderList(); } else { focus(sk); renderList(); } });      // 한 번 더 누르면 선택 해제
+      tb.append(tr);
+      if (st.rowMenu === sk.uid) tb.append(el("tr", { class: "sk-rowmenu" }, el("td", { colspan: "5" },
+        el("button", { class: "b edit", onclick: () => { st.rowMenu = null; renderList(); editItem(sk); } }, "✎ 수정"),
+        mineSk(sk) ? el("button", { class: "b danger", onclick: () => { st.rowMenu = null; remove(sk); toast(`${KIND_NM[sk.kind]} 삭제 — ↶ 되돌리기 가능`); } }, "삭제") : "",
+        el("button", { class: "b gray", onclick: () => { st.rowMenu = null; renderList(); } }, "닫기"),
+        el("small", {}, sk.inspector ? `✍ ${sk.inspector}${sk.date ? " · " + sk.date : ""}` : ""))));
     }
+  }
+  function rowMenu(tr, sk) {                     // 목록을 길게 누르면 수정·삭제 버튼
+    try { navigator.vibrate && navigator.vibrate(25); } catch (e) { /* ignore */ }
+    st.rowMenu = sk.uid; focus(sk); renderList();
   }
   function focus(sk) {
     st.sel = sk.uid;
@@ -662,7 +696,7 @@ const SK = (() => {
   }
   function buildOps() {
     const box = $("#skOps"); if (!box) return; box.innerHTML = "";
-    box.append(el("button", { onclick: pickColor }, el("i", { class: "sk-dot", style: `background:${st.color}` }), "색깔"),
+    box.append(el("button", { onclick: pickColor }, el("i", { class: "sk-dot", style: `background:${st[curColorKey()]}` }), "색깔"),
       chip("✥ 이동", st.op === "move", () => { st.op = st.op === "move" ? null : "move"; buildOps(); hint(hintFor()); setTimeout(() => hint(""), 1600); }),
       chip("⌫ 지우기", st.op === "erase", () => { st.op = st.op === "erase" ? null : "erase"; buildOps(); hint(hintFor()); setTimeout(() => hint(""), 1600); }),
       el("button", { onclick: undo }, "↶ 되돌리기"),
@@ -672,9 +706,10 @@ const SK = (() => {
   function pickColor() {
     sheet((b) => {
       const cs = el("div", { class: "sk-colors-pick big" });
-      for (const c of COLORS) cs.append(el("button", { class: "sw" + (c === st.color ? " on" : ""), style: `--c:${c}`,
-        onclick: () => { st.color = c; saveOpts(); buildOps(); $("#modal").classList.remove("show"); } }));
-      b.append(el("h3", {}, "스케치 색깔"), cs, el("p", { class: "small" }, "도면과 다른 부분을 색으로 나눠 그리세요 (예: 빨강 = 추가, 파랑 = 철거)."));
+      const key = curColorKey();
+      for (const c of COLORS) cs.append(el("button", { class: "sw" + (c === st[key] ? " on" : ""), style: `--c:${c}`,
+        onclick: () => { st[key] = c; saveOpts(); buildOps(); $("#modal").classList.remove("show"); } }));
+      b.append(el("h3", {}, st.tool === "member" ? "부재(보·기둥·벽체) 색깔 — 기본 파랑" : "스케치 색깔"), cs, el("p", { class: "small" }, "도면과 다른 부분을 색으로 나눠 그리세요 (예: 빨강 = 추가, 파랑 = 철거)."));
     });
   }
   $("#skTools").addEventListener("click", (e) => {
@@ -682,6 +717,7 @@ const SK = (() => {
     for (const x of $("#skTools").children) x.classList.toggle("on", x === b);
     buildSub(); buildOps(); hint(hintFor()); setTimeout(() => hint(""), 1800);
   });
+  if (!st.memColor) st.memColor = "#2563eb";
   for (const x of $("#skTools").children) x.classList.toggle("on", x.dataset.tool === st.tool);
   buildSub(); buildOps();
 

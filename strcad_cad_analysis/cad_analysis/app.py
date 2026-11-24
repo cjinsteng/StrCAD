@@ -1546,6 +1546,11 @@ class CadAnalysisApp:
                 elif kind == "text" and len(p) >= 2:
                     x, y = self.w2s(p[0], p[1])
                     cv.create_text(x, y, text=sk.get("text", ""), fill=col, font=(TH.FAM, 10, "bold"), tags=tag)
+                if sk.get("inspector") and kind not in ("axis", "dim") and len(p) >= 2:        # 작성자 서명
+                    ex, ey = self.w2s(p[-2], p[-1]) if kind != "column" else self.w2s((p[0] + p[2]) / 2, min(p[1], p[3]))
+                    sx0, sy0 = self.w2s(p[0], p[1])
+                    if kind in ("column", "text") or math.hypot(ex - sx0, ey - sy0) > 40:
+                        cv.create_text(ex, ey + 11, text="✍ " + sk["inspector"], fill="#64748b", font=(TH.FAM, 7, "italic"), tags=tag)
             except tk.TclError:
                 pass
 
