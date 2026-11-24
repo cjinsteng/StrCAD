@@ -568,9 +568,10 @@ const SK = (() => {
     ctx.restore();
   }
   // 평행한 축 사이 간격 자동 표시
-  function drawAxisGaps() {
-    const ax = st.list.filter((a) => a.kind === "axis");
-    if (ax.length < 2) return;
+  // 평행한 축 사이 간격 [{p1, p2, d}] — offW: 축 끝(버블)에서 바깥으로 띄울 거리 (도면 단위)
+  function axisGaps(offW, minD = 0) {
+    const ax = st.list.filter((a) => a.kind === "axis"), out = [];
+    if (ax.length < 2) return out;
     const groups = [];
     for (const a of ax) {
       const p = a.pts, L = Math.hypot(p[2] - p[0], p[3] - p[1]); if (L < 1) continue;
@@ -579,22 +580,27 @@ const SK = (() => {
       if (!g) groups.push(g = { ux, uy, items: [] });
       g.items.push(a);
     }
-    ctx.save();
     for (const g of groups) {
       if (g.items.length < 2) continue;
       const nx = -g.uy, ny = g.ux;
       const rows = g.items.map((a) => { const p = a.pts, s0 = p[0] * g.ux + p[1] * g.uy, s1 = p[2] * g.ux + p[3] * g.uy;
-        return { a, off: p[0] * nx + p[1] * ny, smax: Math.max(s0, s1), smin: Math.min(s0, s1) }; }).sort((A1, B1) => A1.off - B1.off);
-      const top = Math.max(...rows.map((r) => r.smax)) + 46 / S.view.s;          // 버블 바깥쪽에 간격 표시
+        return { a, off: p[0] * nx + p[1] * ny, smax: Math.max(s0, s1) }; }).sort((A1, B1) => A1.off - B1.off);
+      const top = Math.max(...rows.map((r) => r.smax)) + offW;
       for (let i = 0; i + 1 < rows.length; i++) {
-        const d = rows[i + 1].off - rows[i].off; if (d * S.view.s < 14) continue;
-        const P1 = [g.ux * top + nx * rows[i].off, g.uy * top + ny * rows[i].off], P2 = [g.ux * top + nx * rows[i + 1].off, g.uy * top + ny * rows[i + 1].off];
-        const a = scr(...P1), b = scr(...P2);
-        ctx.strokeStyle = "#475569"; ctx.lineWidth = 1.2; ctx.beginPath(); segTo(a, b); ctx.stroke();
-        for (const v of [a, b]) { ctx.beginPath(); ctx.arc(v[0], v[1], 2.5, 0, 7); ctx.fillStyle = "#475569"; ctx.fill(); }
-        const ang = Math.atan2(b[1] - a[1], b[0] - a[0]), upA = ang > Math.PI / 2 || ang < -Math.PI / 2 ? ang + Math.PI : ang;
-        ctx.save(); ctx.translate((a[0] + b[0]) / 2, (a[1] + b[1]) / 2); ctx.rotate(upA); label(Math.round(d).toLocaleString(), 0, -9, "#334155", 11); ctx.restore();
+        const d = rows[i + 1].off - rows[i].off; if (d < minD) continue;
+        out.push({ p1: [g.ux * top + nx * rows[i].off, g.uy * top + ny * rows[i].off], p2: [g.ux * top + nx * rows[i + 1].off, g.uy * top + ny * rows[i + 1].off], d });
       }
+    }
+    return out;
+  }
+  function drawAxisGaps() {
+    ctx.save();
+    for (const { p1, p2, d } of axisGaps(46 / S.view.s, 14 / S.view.s)) {
+      const a = scr(...p1), b = scr(...p2);
+      ctx.strokeStyle = "#475569"; ctx.lineWidth = 1.2; ctx.beginPath(); segTo(a, b); ctx.stroke();
+      for (const v of [a, b]) { ctx.beginPath(); ctx.arc(v[0], v[1], 2.5, 0, 7); ctx.fillStyle = "#475569"; ctx.fill(); }
+      const ang = Math.atan2(b[1] - a[1], b[0] - a[0]), upA = ang > Math.PI / 2 || ang < -Math.PI / 2 ? ang + Math.PI : ang;
+      ctx.save(); ctx.translate((a[0] + b[0]) / 2, (a[1] + b[1]) / 2); ctx.rotate(upA); label(Math.round(d).toLocaleString(), 0, -9, "#334155", 11); ctx.restore();
     }
     ctx.restore();
   }
@@ -730,7 +736,7 @@ const SK = (() => {
     st.cur = null; st.pend = null; if (!on) st.sel = null;
   }
 
-  return { load, draw: drawAll, toggleHidden, setHidden, hidden, down, move, up, cancel, mode, undo, renderList, dimAt, calibrateWith, snapPoint,
+  return { load, draw: drawAll, axisGaps, toggleHidden, setHidden, hidden, down, move, up, cancel, mode, undo, renderList, dimAt, calibrateWith, snapPoint,
     get list() { return st.list; }, get busy() { return !!(st.pend || st.cur); }, COLORS };
 })();
 window.SK = SK;

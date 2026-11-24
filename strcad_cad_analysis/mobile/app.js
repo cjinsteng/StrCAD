@@ -906,6 +906,32 @@ function newRec(m, t0, t1, p, dxy) {
 }
 
 // ======================================================================= selection / panel
+// ---- 목록 줄: 누르면 위치만 표시(한 번 더 누르면 해제), 길게 누르면 수정·삭제 버튼
+function rowGestures(tr, onTap, onLong) {
+  let t = null, longed = false;
+  tr.addEventListener("pointerdown", () => { longed = false; clearTimeout(t); t = setTimeout(() => { longed = true; try { navigator.vibrate && navigator.vibrate(25); } catch (e) { /* ignore */ } onLong(); }, 500); });
+  for (const ev of ["pointerup", "pointerleave", "pointercancel"]) tr.addEventListener(ev, () => clearTimeout(t));
+  tr.addEventListener("contextmenu", (e) => e.preventDefault());
+  tr.addEventListener("click", (e) => { if (longed || e.target.closest("button")) return; onTap(); });
+}
+function showRec(u, keep) {              // 창을 열지 않고 위치만 (선택 표시)
+  if (S.edit && !guardEdit()) return;
+  if (!keep && S.sel && S.sel.uid === u && $("#panel").classList.contains("hidden")) { S.sel = null; S.rowMenu = null; renderList(); draw(); return; }
+  S.sel = S.recs.find((r) => r.uid === u) || null; S.rowMenu = null;
+  if (S.sel && isPlaced(S.sel)) { const a = anchor(S.sel), [sx, sy] = w2s(...a), r = cv.getBoundingClientRect();
+    if (sx < 40 || sy < 40 || sx > r.width - 40 || sy > r.height - 40) { S.view.ox = a[0] - r.width / 2 / S.view.s; S.view.oy = a[1] + r.height / 2 / S.view.s; } }
+  closePanel(); renderList(); draw();
+}
+function rowMenuRow(r, ncol, extra) {
+  const mine = isMine(r);
+  return el("tr", { class: "sk-rowmenu" }, el("td", { colspan: String(ncol) },
+    mine ? el("button", { class: "b edit", onclick: () => { S.rowMenu = null; selectRec(r.uid, true); beginEdit(); renderForm(); } }, "✎ 수정") :
+      el("button", { class: "b gray", onclick: () => { S.rowMenu = null; selectRec(r.uid, true); } }, "👁 보기"),
+    mine ? el("button", { class: "b danger", onclick: () => { S.rowMenu = null; S.sel = r; delCurrent(); } }, "삭제") : "",
+    extra || "",
+    el("button", { class: "b gray", onclick: () => { S.rowMenu = null; renderList(); } }, "닫기"),
+    el("small", {}, `${r.inspector || ""}${r.date ? " · " + r.date : ""}`)));
+}
 function selectRec(u, center) {
   if (S.edit && S.edit.uid !== u && !guardEdit()) return;
   S.sel = S.recs.find((r) => r.uid === u) || null;
@@ -1270,8 +1296,13 @@ function renderList() {
   $("#lt-h").innerHTML = ""; $("#lt-h").append(el("tr", {}, cols.map(([, t]) => el("th", {}, t))));
   const tb = $("#lt-b"); tb.innerHTML = "";
   const cur = S.edit || S.sel;
-  for (const r of recs) tb.append(el("tr", { class: (cur && cur.uid === r.uid ? "sel" : "") + (isPlaced(r) ? "" : " unplaced") + (isMine(r) ? "" : " others"),
-    onclick: () => (isPlaced(r) || !isMine(r) ? selectRec(r.uid, true) : startPlacing(r)) }, cols.map(([k]) => el("td", {}, String(listValue(r, k))))));
+  for (const r of recs) {
+    const tr = el("tr", { class: (cur && cur.uid === r.uid ? "sel" : "") + (isPlaced(r) ? "" : " unplaced") + (isMine(r) ? "" : " others") },
+      cols.map(([k]) => el("td", {}, String(listValue(r, k)))));
+    rowGestures(tr, () => (isPlaced(r) || !isMine(r) ? showRec(r.uid) : startPlacing(r)), () => { showRec(r.uid, true); S.rowMenu = r.uid; renderList(); });
+    tb.append(tr);
+    if (S.rowMenu === r.uid) tb.append(rowMenuRow(r, cols.length));
+  }
   const P = S.purposes[S.filter] || S.purposes[S.purpose] || {};
   if (P.crack && (S.filter === "전체" ? S.purpose : S.filter) && S.db) tb.append(el("tr", { class: "add-row" },
     el("td", { colspan: String(cols.length) }, el("button", { class: "b ok", onclick: (ev) => { ev.stopPropagation(); crackAdd(null); } }, "＋ 균열·손상 추가 (종류 → 크기 → 사진)"))));
@@ -1291,10 +1322,20 @@ function renderCrackList() {
   const sorted = [...groups.values()].sort((a, b) => String(a[0].label).localeCompare(String(b[0].label), "ko", { numeric: true }));
   for (const lst of sorted) {
     const r = lst.find(isPlaced) || lst[0], placed = lst.some(isPlaced), mine = isMine(r);
-    tb.append(el("tr", { class: (cur && lst.some((x) => x.uid === cur.uid) ? "sel" : "") + (placed ? "" : " unplaced") + (mine ? "" : " others"),
-      onclick: () => (placed || !mine ? selectRec(r.uid, true) : startPlacing(r)) },
+    const tr = el("tr", { class: (cur && lst.some((x) => x.uid === cur.uid) ? "sel" : "") + (placed ? "" : " unplaced") + (mine ? "" : " others") },
       cols.map(([k]) => el("td", {}, k === "add" ? (mine && placed ? el("button", { class: "mini-add", onclick: (ev) => { ev.stopPropagation(); startPlacing(r, true); } }, "📍＋") : "")
-        : k === "count" ? (placed ? `${crackCount(r.label, r.owner)}곳` : "📍미배치") : String(listValue(r, k))))));
+        : k === "count" ? (placed ? `${crackCount(r.label, r.owner)}곳` : "📍미배치") : String(listValue(r, k)))));
+    const curIn = cur && lst.find((x) => x.uid === cur.uid);
+    rowGestures(tr, () => {
+      if (!placed && mine) { startPlacing(r); return; }
+      // 같은 번호가 여러 곳이면 누를 때마다 다음 위치로, 마지막 다음엔 해제
+      const pl = lst.filter(isPlaced), i = curIn ? pl.findIndex((x) => x.uid === curIn.uid) : -1;
+      if (i >= 0 && i === pl.length - 1 && $("#panel").classList.contains("hidden")) { S.sel = null; renderList(); draw(); return; }
+      showRec((pl[i + 1] || pl[0] || r).uid);
+    }, () => { showRec((curIn || r).uid, true); S.rowMenu = (curIn || r).uid; renderList(); });
+    tb.append(tr);
+    if (S.rowMenu && lst.some((x) => x.uid === S.rowMenu)) tb.append(rowMenuRow(lst.find((x) => x.uid === S.rowMenu), cols.length,
+      mine && placed ? el("button", { class: "b ok", onclick: () => { S.rowMenu = null; startPlacing(r, true); } }, "📍＋ 위치 추가") : ""));
   }
   // 종류별 합계 (추후 균열 면적·개수 집계용)
   const tot = {};

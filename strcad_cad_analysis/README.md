@@ -331,3 +331,13 @@ kind, name, size, 길이, 좌표, 절점 i/j) — 다른 모듈에서 `SELECT * 
 - **스케치 작성자 서명**: 그린 것 옆에 ✍ 이름, 스케치 목록에 작성자 열 (PC 화면에도 표시)
 - 스케치 **보·기둥·벽체 기본색 파랑** (부재 도구에서 고른 색은 부재에만, 다른 도구 색과 따로)
 - 스케치 목록: 누르면 위치만 표시, 한 번 더 누르면 선택 해제, **길게 누르면 ✎ 수정 · 삭제** 버튼
+
+## v2.19.0 — 조사 목록 탭/길게누르기 · DXF 내보내기
+- 검측점 조사 목록도 스케치 목록과 같게: **누르면 위치만 표시**, 한 번 더 누르면 해제, **길게 누르면 ✎ 수정 · 삭제**
+  (다른 검토자 것은 👁 보기). 균열 목록은 누를 때마다 같은 번호의 다음 위치로, 길게 누르면 📍＋ 위치 추가도
+- **📐 DXF로 내보내기** (휴대폰: 메뉴, PC: 현장조사 › 📐 검측·스케치 DXF) — 원래 도면 좌표(mm)
+  - 검측: SV-SEC · SV-CRACK-<종류 CR/PW/LK…> · SV-LOAD · SV-ETC (+ -TXT 내용 글자) — 번호 원·지시선·위치·영역
+  - 스케치: SK-<종류>-<색> (SK-BEAM-BLUE, SK-COLUMN-RED, SK-WALL-…, SK-AXIS-…(+ -BUBBLE), SK-FREE-…, SK-DIM-…, SK-TEXT-…),
+    복선 보 중심선 SK-BEAM-<색>-CL, 축 간격 SK-AXIS-GAP, 작성자 SK-SIGN
+  - 바탕: BASE-GRID · BASE-LINE · BASE-COLUMN/GIRDER/BEAM/WALL · BASE-NAME · BASE-FRAME (사진 도면은 배경 그림 파일도 같이 저장)
+  - 휴대폰은 AutoCAD R12 형식(한글은 \U+ 코드 — AutoCAD·ZWCAD에서 한글로 표시), PC는 AutoCAD 2010 형식(한글 그대로)

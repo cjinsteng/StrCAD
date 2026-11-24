@@ -541,6 +541,7 @@ class CadAnalysisApp:
         self._big(g, "📏\n축척\n맞추기", self.calibrate_scale, 7)
         g = self._grp(p, "기록")
         self._big(g, "📤\n조사표 CSV", self.survey_export, 10)
+        self._big(g, "📐\n검측·스케치\nDXF", self.survey_dxf, 10)
         self._big(g, "📑\n도면 LIST", self._sv_sheet_list, 9)
         ttk.Checkbutton(g, text="검측위치\n표시", variable=self.show_survey, command=self.redraw).pack(side="left", padx=4)
         self.sv_vis_mb = ttk.Menubutton(g, text="👁 표시할\n조사 ▾", direction="below")
@@ -3659,6 +3660,26 @@ class CadAnalysisApp:
         if path:
             n = SV.export_csv(path, self.res.surveys, self.res.by_id(), self.P, floor=self.db_name)
             self.log(f"조사표 저장: 검측위치 {n}개 → {path}")
+
+    def survey_dxf(self):
+        """검측점(용도별 레이어) · 스케치(종류·색별 레이어) → DXF (원래 도면 좌표)."""
+        if not self.res or not (self.res.surveys or getattr(self.res, "sketches", None)):
+            messagebox.showinfo("DXF", "검측위치·스케치가 없습니다.", parent=self.root)
+            return
+        base = (self.db_name or os.path.splitext(os.path.basename(self.res.source_file or "현장조사"))[0]) + "_검측스케치.dxf"
+        path = filedialog.asksaveasfilename(parent=self.root, defaultextension=".dxf", initialfile=base, filetypes=[("DXF", "*.dxf")])
+        if not path:
+            return
+        base_too = messagebox.askyesno("DXF", "바탕 도면(분석한 부재·격자선)도 함께 넣을까요?\n"
+                                       "(아니요 = 검측점·스케치만 — 원본 DXF에 겹쳐 쓸 때)", parent=self.root)
+        try:
+            from . import survey_dxf
+            n = survey_dxf.export(path, self.res, self.P, include_base=base_too)
+        except Exception as e:      # noqa: BLE001
+            messagebox.showerror("DXF", str(e), parent=self.root)
+            return
+        self.log(f"검측·스케치 DXF 저장 (레이어 {n}개) → {path}")
+        messagebox.showinfo("DXF", f"저장했습니다 — 레이어 {n}개\n검측: SV-SEC · SV-CRACK-종류 · SV-LOAD · SV-ETC\n스케치: SK-종류-색", parent=self.root)
 
     # ======================================================================= 도움말
     def help_usage(self):
