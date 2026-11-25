@@ -71,8 +71,11 @@ def rec_point(rec, byid):
 
 
 # --------------------------------------------------------------------------- 조사 → 항목
-def items(res, P, purposes=("균열검토", "기타"), sheet="", with_unplaced=False):
-    """검측위치 → 손상 항목 목록. 같은 균열번호(같은 검토자)는 한 줄로 묶고 개소 = 위치 수."""
+def items(res, P, purposes=("균열검토", "기타"), sheet="", with_unplaced=False, group=True):
+    """검측위치 → 손상 항목 목록.
+    group=True: 같은 균열번호(같은 검토자)는 한 줄로 묶고 개소 = 위치 수.
+    group=False: 위치마다 한 줄 (개소 1, 사진·위치도 그 위치 것).
+    항목마다 key(고르기 기억용)·uids(묶인 검측위치) 포함."""
     out, groups = [], {}
     byid = res.by_id()
     for r in sorted(res.surveys, key=lambda r: int(r.get("no") or 0)):
@@ -80,7 +83,7 @@ def items(res, P, purposes=("균열검토", "기타"), sheet="", with_unplaced=F
             continue
         if not with_unplaced and not SV.is_placed(r):
             continue
-        key = (r.get("owner") or "", r["label"]) if r.get("label") else r["uid"]
+        key = (r.get("owner") or "", r["label"]) if (group and r.get("label")) else r["uid"]
         groups.setdefault(key, []).append(r)
     for lst in groups.values():
         r = lst[0]
@@ -89,7 +92,8 @@ def items(res, P, purposes=("균열검토", "기타"), sheet="", with_unplaced=F
         ct = fl.get("ctype") if p.get("crack") else None
         it = {"no": r.get("label") or r.get("no"), "seq": 0, "member": "", "desc": "", "E": None, "F": None, "H": None, "I": None,
               "J": "m", "count": len([x for x in lst if SV.is_placed(x)]) or 1, "kind": "", "photos": [], "memo": r.get("memo", ""),
-              "sheet": sheet, "inspector": r.get("inspector", ""), "purpose": r.get("purpose")}
+              "sheet": sheet, "inspector": r.get("inspector", ""), "purpose": r.get("purpose"),
+              "uids": [x["uid"] for x in lst], "key": f"{sheet}|" + "|".join(str(v) for v in (key if isinstance(key, tuple) else (key,)))}
         m = byid.get(r.get("member"))
         placed = next((x for x in lst if SV.is_placed(x)), None)
         it["axis"] = axis_loc(res, *rec_point(placed, byid)) if placed else ""
@@ -121,6 +125,29 @@ def items(res, P, purposes=("균열검토", "기타"), sheet="", with_unplaced=F
         out.append(it)
     for k, it in enumerate(out, 1):
         it["seq"] = k
+    return out
+
+
+def apply_pick(groups, off_uids=(), photo_off=()):
+    """목록에서 고른 것만: off_uids(뺀 검측위치) · photo_off(뺀 사진) 반영한 새 groups."""
+    off_uids, photo_off = set(off_uids), set(photo_off)
+    out = []
+    for name, its in groups:
+        keep = []
+        for it in its:
+            uids = it.get("uids") or []
+            on = [u for u in uids if u not in off_uids]
+            if uids and not on:
+                continue
+            n = dict(it)
+            if uids and len(on) < len(uids):
+                n["count"] = max(1, min(it["count"], len(on)))
+            n["photos"] = [p for p in it["photos"] if p not in photo_off]
+            keep.append(n)
+        for k, it in enumerate(keep, 1):
+            it["seq"] = k
+        if keep:
+            out.append((name, keep))
     return out
 
 

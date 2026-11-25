@@ -13,7 +13,8 @@ const SK = (() => {
   const PREFIX = { beam: "G", column: "C", wall: "W" };
   const KIND_NM = { beam: "보", column: "기둥", wall: "벽체", axis: "축", dim: "치수", text: "글자", free: "자유선" };
   const DEF = { tool: "member", mem: "beam", dbl: false, beamW: 400, colB: 500, colH: 500, colStep: 10, wallT: 200,
-    autoName: true, ortho: true, snap: true, color: COLORS[0], memColor: "#2563eb" };
+    autoName: true, ortho: true, snap: true, color: COLORS[0], memColor: "#2563eb",
+    freeMode: "free", grid: false, gridStep: 1000, gridSnap: true };
   const st = Object.assign({ list: [], op: null, cur: null, pend: null, undo: [], sel: null, snapMark: null, ghost: null }, DEF);
   try { Object.assign(st, JSON.parse(localStorage.getItem("skOpts") || "{}")); } catch (e) { /* ignore */ }
   st.op = null;
@@ -92,8 +93,13 @@ const SK = (() => {
   const isLine = (sk) => sk.kind === "beam" || sk.kind === "wall" || sk.kind === "axis" || sk.kind === "dim";
 
   // ---- 스냅: 끝점 · 기둥 중심/모서리 · 축 교점 > (직교 꺼짐일 때) 축·보 선 위
+  // 격자 — 도면 상대좌표 (0,0) 기준, 스케치 모드에서만
+  const gridOn = () => !!(st.grid && S.mode === "sketch" && st.gridStep > 0);
+  const gridSnapOn = () => gridOn() && st.gridSnap;
+  const gRound = (v) => Math.round(v / st.gridStep) * st.gridStep;
+  const gridPt = (x, y) => (gridSnapOn() ? { p: [gRound(x), gRound(y)], type: "grid" } : null);
   function snapPoint(x, y, exclude) {
-    if (!st.snap) return null;
+    if (!st.snap) return gridPt(x, y);
     const lim = tolW(16); let best = null, bd = lim;
     const tryP = (px, py, type) => { const d = Math.hypot(px - x, py - y); if (d < bd) { bd = d; best = { p: [px, py], type }; } };
     const axes = [];
@@ -104,6 +110,7 @@ const SK = (() => {
       if (isLine(sk)) { tryP(p[0], p[1], "end"); tryP(p[2], p[3], "end"); }
       else if (sk.kind === "column") { const c = colCenter(sk); tryP(c[0], c[1], "mid");
         tryP(p[0], p[1], "end"); tryP(p[2], p[3], "end"); tryP(p[0], p[3], "end"); tryP(p[2], p[1], "end"); }
+      else if (sk.kind === "free" && p.length === 4) { tryP(p[0], p[1], "end"); tryP(p[2], p[3], "end"); }   // 직선
     }
     for (let i = 0; i < axes.length; i++) for (let j = i + 1; j < axes.length; j++) { const c = interLines(axes[i], axes[j]); if (c) tryP(c[0], c[1], "int"); }
     for (const m of S.sheet.members) if (m.k === "c") tryP(m.c[0], m.c[1], "mid");
@@ -117,7 +124,7 @@ const SK = (() => {
       if (sk.kind !== "axis" && (t < 0 || t > 1)) continue;
       const d = Math.hypot(fx - x, fy - y); if (d < bd) { bd = d; best = { p: [fx, fy], type: "on" }; }
     }
-    return best;
+    return best || gridPt(x, y);
   }
   function orthoPt(x0, y0, x, y) {                // 직교: 수평 또는 수직으로
     return Math.abs(x - x0) >= Math.abs(y - y0) ? [x, y0] : [x0, y];
@@ -125,9 +132,12 @@ const SK = (() => {
   // 시작점 기준 끝점: 스냅(점) > 직교 > 스냅(선)
   function endPoint(x0, y0, x, y, exclude) {
     const s = snapPoint(x, y, exclude);
-    if (s && s.type !== "on") { st.snapMark = s; return s.p; }
+    if (s && s.type !== "on" && s.type !== "grid") { st.snapMark = s; return s.p; }
     if (st.ortho) {
       let q = orthoPt(x0, y0, x, y);
+      if (gridSnapOn()) {                         // 직교 + 격자: 움직이는 방향만 격자에 맞춤
+        if (q[1] === y0) q = [gRound(q[0]), y0]; else q = [x0, gRound(q[1])];
+      }
       if (st.snap) {                              // 직교 방향 그대로 축·보 선과 만나는 점에 붙임
         const ray = q[0] === x0 && q[1] !== y0 ? [x0, y0, x0, y0 + 1] : [x0, y0, x0 + 1, y0];
         let bd = tolW(12), hitp = null;
@@ -247,11 +257,14 @@ const SK = (() => {
   // ---- 새로 그리기
   function beginDraw(p) {
     const kind = st.tool === "member" ? st.mem : st.tool;
-    const s = kind === "free" ? [p.x, p.y] : startPoint(p.x, p.y);
+    const straight = kind === "free" && st.freeMode === "line";
+    const s = kind === "free" && !straight ? [p.x, p.y] : startPoint(p.x, p.y);
     st.cur = { kind, color: colorFor(kind), pts: [s[0], s[1], s[0], s[1]] };
+    if (straight) st.cur.straight = true;
   }
   function updDraw(x, y) {
     const c = st.cur; if (!c) return;
+    if (c.kind === "free" && c.straight) { const q = endPoint(c.pts[0], c.pts[1], x, y); c.pts = [c.pts[0], c.pts[1], q[0], q[1]]; return; }
     if (c.kind === "free") { const n = c.pts.length; if (Math.hypot(x - c.pts[n - 2], y - c.pts[n - 1]) * S.view.s >= 3) c.pts.push(x, y); return; }
     if (c.kind === "column") {                     // 시작 모서리에서 끌기 — 크기는 5/10/50 단위
       const stp = st.colStep || 10, x0 = c.pts[0], y0 = c.pts[1];
@@ -264,6 +277,11 @@ const SK = (() => {
   function finishDraw() {
     const c = st.cur; st.cur = null; if (!c) return;
     const L = Math.hypot(c.pts[2] - c.pts[0], c.pts[3] - c.pts[1]);
+    if (c.kind === "free" && c.straight) {        // 직선 — 자유선 2점으로 저장 (PC·DXF 그대로 호환)
+      delete c.straight;
+      if (L * S.view.s < 6) { hint("끌어서 직선을 그리세요"); setTimeout(() => hint(""), 1200); return; }
+      add(c); return;
+    }
     if (c.kind === "free") { if (c.pts.length < 6) c.pts.push(c.pts[0] + 1 / S.view.s, c.pts[1]); c.pts = c.pts.slice(2); add(c); return; }
     if (c.kind === "column") {
       const [cx, cy] = colCenter(c); Object.assign(c, { pts: colPts(cx, cy, c.b, c.h) });
@@ -613,8 +631,34 @@ const SK = (() => {
     else ctx.strokeRect(x - 6, y - 6, 12, 12);
     ctx.restore();
   }
+  function drawGrid() {
+    if (!gridOn()) return;
+    const r = $("#cv").getBoundingClientRect(), v = S.view;
+    let g = st.gridStep, k = 1;
+    while (g * k * v.s < 8 && k < 1e6) k *= (String(k)[0] === "1" ? 5 : 2);   // 너무 촘촘하면 ×5, ×10, ×50 …
+    const step = g * k;
+    const x0 = v.ox, x1 = v.ox + r.width / v.s, y1 = v.oy, y0 = v.oy - r.height / v.s;
+    ctx.save(); ctx.lineWidth = 1;
+    for (const pass of [0, 1]) {
+      ctx.strokeStyle = pass ? "rgba(71,85,105,.30)" : "rgba(100,116,139,.14)"; ctx.beginPath();
+      for (let x = Math.ceil(x0 / step) * step; x <= x1; x += step) {
+        if (!!pass !== (Math.abs(Math.round(x / step) % 5) === 0)) continue;
+        const sx = Math.round((x - v.ox) * v.s) + 0.5; ctx.moveTo(sx, 0); ctx.lineTo(sx, r.height);
+      }
+      for (let y = Math.ceil(y0 / step) * step; y <= y1; y += step) {
+        if (!!pass !== (Math.abs(Math.round(y / step) % 5) === 0)) continue;
+        const sy = Math.round((v.oy - y) * v.s) + 0.5; ctx.moveTo(0, sy); ctx.lineTo(r.width, sy);
+      }
+      ctx.stroke();
+    }
+    ctx.fillStyle = "rgba(51,65,85,.75)"; ctx.font = "11px sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+    ctx.fillText(`격자 ${step.toLocaleString()}${k > 1 ? ` (설정 ${g.toLocaleString()})` : ""}${st.gridSnap ? " · 스냅" : ""}`, 8, r.height - 8);
+    ctx.restore();
+  }
   function drawAll() {
-    if (!S.sheet || (hidden() && S.mode !== "sketch")) return;
+    if (!S.sheet) return;
+    drawGrid();
+    if (hidden() && S.mode !== "sketch") return;
     drawAxisGaps();
     for (const sk of st.list) { drawOne(sk, false, sk.uid === st.sel); if (sk.kind !== "axis" && sk.kind !== "dim") signature(sk); }
     if (st.ghost) { ctx.save(); ctx.globalAlpha = 0.6; drawOne(st.ghost, true); ctx.restore(); }
@@ -672,7 +716,7 @@ const SK = (() => {
     if (st.op === "erase") return "지울 스케치를 누르세요";
     return { member: { beam: `끌어서 보 그리기 (${st.dbl ? "복선" : "단선"} B${st.beamW})`, column: `누르면 ${st.colB}×${st.colH} 기둥 · 끌면 ${st.colStep}단위 크기`,
       wall: `끌어서 벽 그리기 (두께 ${st.wallT})` }[st.mem],
-      axis: "끌어서 축선 → 이름 · 꾹 눌러 끌면 평행 복사(간격 표시)", free: "자유롭게 그리기", dim: "끌어서 거리 재기 · 치수를 누르면 수정/축척 맞추기",
+      axis: "끌어서 축선 → 이름 · 꾹 눌러 끌면 평행 복사(간격 표시)", free: st.freeMode === "line" ? "끌어서 직선 그리기 (직교·스냅 적용)" : "자유롭게 그리기", dim: "끌어서 거리 재기 · 치수를 누르면 수정/축척 맞추기",
       text: "글자 넣을 곳을 누르세요" }[st.tool];
   }
   function chip(text, on, fn, cls = "") { return el("button", { class: (on ? "on " : "") + cls, onclick: fn }, text); }
@@ -688,9 +732,13 @@ const SK = (() => {
   }
   function buildSub() {
     const box = $("#skSub"); if (!box) return; box.innerHTML = "";
-    box.classList.toggle("hidden", st.tool !== "member");
-    if (st.tool !== "member") return;
+    box.classList.toggle("hidden", st.tool !== "member" && st.tool !== "free");
     const set = (k, v) => { st[k] = v; saveOpts(); buildSub(); hint(hintFor()); setTimeout(() => hint(""), 1600); };
+    if (st.tool === "free") {
+      box.append(chip("〰 자유선", st.freeMode !== "line", () => set("freeMode", "free")), chip("╱ 직선", st.freeMode === "line", () => set("freeMode", "line")));
+      return;
+    }
+    if (st.tool !== "member") return;
     box.append(chip("━ 보", st.mem === "beam", () => set("mem", "beam")), chip("■ 기둥", st.mem === "column", () => set("mem", "column")),
       chip("▬ 벽체", st.mem === "wall", () => set("mem", "wall")), el("i", { class: "sk-sep" }));
     if (st.mem === "beam") box.append(chip("단선", !st.dbl, () => set("dbl", false)), chip("복선", !!st.dbl, () => set("dbl", true)),
@@ -707,7 +755,36 @@ const SK = (() => {
       chip("⌫ 지우기", st.op === "erase", () => { st.op = st.op === "erase" ? null : "erase"; buildOps(); hint(hintFor()); setTimeout(() => hint(""), 1600); }),
       el("button", { onclick: undo }, "↶ 되돌리기"),
       chip(`⊾ 직교 ${st.ortho ? "켬" : "끔"}`, st.ortho, () => { st.ortho = !st.ortho; saveOpts(); buildOps(); }),
-      chip(`🧲 스냅 ${st.snap ? "켬" : "끔"}`, st.snap, () => { st.snap = !st.snap; saveOpts(); buildOps(); }));
+      chip(`🧲 스냅 ${st.snap ? "켬" : "끔"}`, st.snap, () => { st.snap = !st.snap; saveOpts(); buildOps(); }),
+      chip(`▦ 격자 ${st.grid ? "켬" : "끔"}`, st.grid, () => { st.grid = !st.grid; saveOpts(); buildOps(); draw();
+        toast(st.grid ? `격자 ${st.gridStep.toLocaleString()}mm${st.gridSnap ? " · 격자 스냅" : ""} (간격은 메뉴 › 설정)` : "격자 끔"); }));
+  }
+  // ---- 설정 (메뉴 › ⚙ 설정): 격자 켬/끔 · 간격 · 격자 스냅
+  const GRID_STEPS = [100, 250, 500, 1000, 2000, 5000];
+  function settings() {
+    sheet((b) => {
+      const render = () => {
+        b.innerHTML = "";
+        const row = (label, ...kids) => el("div", { class: "set-row" }, el("span", { class: "set-lbl" }, label), el("div", { class: "sk-presets" }, ...kids));
+        const tog = (k, on, off) => [el("button", { class: st[k] ? "on" : "", onclick: () => { st[k] = true; saveOpts(); render(); buildOps(); draw(); } }, on),
+          el("button", { class: st[k] ? "" : "on", onclick: () => { st[k] = false; saveOpts(); render(); buildOps(); draw(); } }, off)];
+        const inp = el("input", { type: "number", class: "sk-input", value: st.gridStep, inputmode: "numeric", placeholder: "직접 입력 (mm)" });
+        const setStep = (v) => { v = Math.round(+v); if (!(v > 0)) { toast("간격을 mm로 입력하세요"); return; } st.gridStep = v; saveOpts(); render(); draw(); };
+        inp.addEventListener("change", () => setStep(inp.value));
+        b.append(el("h3", {}, "⚙ 설정"),
+          el("div", { class: "set-sec" }, "스케치 격자"),
+          row("격자", ...tog("grid", "▦ 켬", "끔")),
+          row("간격 (mm)", ...GRID_STEPS.map((n) => el("button", { class: st.gridStep === n ? "on" : "", onclick: () => setStep(n) }, n.toLocaleString()))),
+          row("직접 입력", inp),
+          row("격자 스냅", ...tog("gridSnap", "🧲 켬", "끔")),
+          el("p", { class: "set-note" }, "격자를 켜면 스케치 화면에 격자가 보이고, 격자 스냅이 켜져 있으면 점이 격자 교점에 붙습니다 (기둥·축 교점 같은 그린 점이 우선). 기준점은 도면 원점, 화면에서 너무 촘촘하면 5·10배 간격으로 굵게 보입니다."),
+          el("div", { class: "set-sec" }, "스케치 그리기"),
+          row("직교", ...tog("ortho", "⊾ 켬", "끔")),
+          row("스냅", ...tog("snap", "🧲 켬", "끔")),
+          el("div", { class: "btns" }, el("span", { class: "sp" }), el("button", { class: "b ok", onclick: () => $("#modal").classList.remove("show") }, "닫기")));
+      };
+      render();
+    });
   }
   function pickColor() {
     sheet((b) => {
@@ -736,7 +813,7 @@ const SK = (() => {
     st.cur = null; st.pend = null; if (!on) st.sel = null;
   }
 
-  return { load, draw: drawAll, axisGaps, toggleHidden, setHidden, hidden, down, move, up, cancel, mode, undo, renderList, dimAt, calibrateWith, snapPoint,
+  return { settings, load, draw: drawAll, axisGaps, toggleHidden, setHidden, hidden, down, move, up, cancel, mode, undo, renderList, dimAt, calibrateWith, snapPoint,
     get list() { return st.list; }, get busy() { return !!(st.pend || st.cur); }, COLORS };
 })();
 window.SK = SK;

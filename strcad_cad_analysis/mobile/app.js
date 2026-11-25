@@ -1427,6 +1427,7 @@ $("#btnMenu").onclick = () => { $("#menuInfo").textContent = S.db ? `${S.fileNam
 $("#menu").addEventListener("click", (e) => { if (e.target.id === "menu" || e.target.hasAttribute("data-close")) $("#menu").classList.remove("show"); });
 $("#miSave").onclick = () => { $("#menu").classList.remove("show"); saveFile(); };
 $("#miPurpose").onclick = () => { $("#menu").classList.remove("show"); if (S.db) addPurpose(); };
+$("#miSettings").onclick = () => { $("#menu").classList.remove("show"); if (window.SK) SK.settings(); };
 $("#miCsv").onclick = () => { $("#menu").classList.remove("show"); if (S.db) exportCsv(); };
 $("#btnLayers").onclick = () => showLayers();
 $("#miSketch").onclick = () => { $("#menu").classList.remove("show"); if (window.SK) SK.toggleHidden(); };

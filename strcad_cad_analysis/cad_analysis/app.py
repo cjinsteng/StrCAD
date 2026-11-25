@@ -3680,10 +3680,15 @@ class CadAnalysisApp:
             return
         w = tk.Toplevel(self.root)
         w.title("손상물량표 · 현황조사 사진첩")
-        w.geometry("640x560")
+        w.geometry("1280x720")
+        w.minsize(1000, 560)
         w.transient(self.root)
-        f = ttk.Frame(w, padding=12)
-        f.pack(fill="both", expand=True)
+        pw = ttk.PanedWindow(w, orient="horizontal")
+        pw.pack(fill="both", expand=True)
+        f = ttk.Frame(pw, padding=12)
+        right = ttk.Frame(pw, padding=(6, 12, 12, 12))
+        pw.add(f, weight=0)
+        pw.add(right, weight=1)
         ttk.Label(f, text="넣을 조사 용도", font=(TH.FAM, 10, "bold")).pack(anchor="w")
         pf = ttk.Frame(f)
         pf.pack(fill="x", pady=(2, 8))
@@ -3691,38 +3696,245 @@ class CadAnalysisApp:
         for k, name in enumerate(self.P):
             v = tk.BooleanVar(value=name in ("균열검토", "기타") or self.P[name].get("crack", False))
             pvars[name] = v
-            ttk.Checkbutton(pf, text=name, variable=v).grid(row=k // 4, column=k % 4, sticky="w", padx=(0, 12))
+            ttk.Checkbutton(pf, text=name, variable=v, command=lambda: reload()).grid(row=k // 3, column=k % 3, sticky="w", padx=(0, 12))
         scope = tk.StringVar(value="all" if self.project else "cur")
         sf = ttk.Frame(f)
         sf.pack(fill="x")
-        ttk.Label(sf, text="범위").pack(side="left")
-        ttk.Radiobutton(sf, text=f"지금 도면 ({self.db_name or '열린 도면'})", variable=scope, value="cur").pack(side="left", padx=6)
+        ttk.Label(sf, text="범위").grid(row=0, column=0, sticky="w")
+        ttk.Radiobutton(sf, text=f"지금 도면 ({self.db_name or '열린 도면'})", variable=scope, value="cur",
+                        command=lambda: reload()).grid(row=0, column=1, sticky="w", padx=6)
         if self.project:
-            ttk.Radiobutton(sf, text=f"프로젝트 전체 도면 ({self.project})", variable=scope, value="all").pack(side="left")
+            ttk.Radiobutton(sf, text=f"프로젝트 전체 도면 ({self.project})", variable=scope, value="all",
+                            command=lambda: reload()).grid(row=1, column=1, sticky="w", padx=6)
         ttk.Separator(f).pack(fill="x", pady=8)
         do_x, do_h = tk.BooleanVar(value=True), tk.BooleanVar(value=True)
-        ttk.Checkbutton(f, text="📊 손상물량표 (엑셀) — D~K 조사 내용 · O열부터 사진 이름 · L 손상물량·G 단위는 식", variable=do_x).pack(anchor="w")
+        ttk.Checkbutton(f, text="📊 손상물량표 (엑셀)", variable=do_x).pack(anchor="w")
+        ttk.Label(f, text="   D~K 조사 내용 · O열부터 사진 이름 · L 손상물량·G 단위는 식", foreground="#666",
+                  font=(TH.FAM, 8)).pack(anchor="w")
         tf = ttk.Frame(f)
-        tf.pack(fill="x", padx=(22, 0), pady=(2, 6))
+        tf.pack(fill="x", padx=(22, 0), pady=(2, 2))
         tpl = tk.StringVar(value=self.cfg.get("damage_xlsx_template") or "")
         ttk.Label(tf, text="양식").pack(side="left")
-        ttk.Entry(tf, textvariable=tpl, width=48).pack(side="left", padx=4, fill="x", expand=True)
+        ttk.Entry(tf, textvariable=tpl, width=30).pack(side="left", padx=4, fill="x", expand=True)
         ttk.Button(tf, text="…", width=3, command=lambda: tpl.set(filedialog.askopenfilename(
             parent=w, filetypes=[("엑셀", "*.xlsx")]) or tpl.get())).pack(side="left")
-        ttk.Label(f, text="   (비우면 기본 양식 — 첫 번째 보이는 시트의 1행 머리글·2행 서식을 도면마다 복사)", foreground="#666",
+        ttk.Label(f, text="   (비우면 기본 양식)", foreground="#666", font=(TH.FAM, 8)).pack(anchor="w")
+        ttk.Checkbutton(f, text="🖼 현황조사 사진첩 (한글)", variable=do_h).pack(anchor="w", pady=(8, 0))
+        ttk.Label(f, text="   한 쪽 6칸 · 칸마다 사진·위치·내용 · 넘치면 쪽 추가", foreground="#666",
                   font=(TH.FAM, 8)).pack(anchor="w")
-        ttk.Checkbutton(f, text="🖼 현황조사 사진첩 (한글) — 한 쪽 6칸, 칸마다 사진·위치·내용, 넘치면 쪽 추가", variable=do_h).pack(anchor="w", pady=(8, 0))
         hf = ttk.Frame(f)
         hf.pack(fill="x", padx=(22, 0), pady=2)
         title = tk.StringVar(value=self.cfg.get("album_title") or f"{self.project or ''} 정밀안전진단 용역".strip())
         header = tk.StringVar(value=self.cfg.get("album_header") or f"현황조사 사진첩({self.project or ''})")
         sect = tk.StringVar(value=self.cfg.get("album_section") or "손상현황")
         nophoto = tk.BooleanVar(value=False)
-        for i, (lab, var) in enumerate((("제목(●)", title), ("머리말(오른쪽 위)", header), ("구분 <>", sect))):
+        for i, (lab, var) in enumerate((("제목(●)", title), ("머리말", header), ("구분 <>", sect))):
             ttk.Label(hf, text=lab).grid(row=i, column=0, sticky="w", pady=1)
-            ttk.Entry(hf, textvariable=var, width=46).grid(row=i, column=1, sticky="ew", pady=1)
+            ttk.Entry(hf, textvariable=var, width=30).grid(row=i, column=1, sticky="ew", pady=1)
         ttk.Checkbutton(hf, text="사진 없는 항목도 칸 넣기", variable=nophoto).grid(row=3, column=1, sticky="w")
-        msg = ttk.Label(f, text="", foreground=TH.NAVY_L, wraplength=600)
+        msg = ttk.Label(f, text="", foreground=TH.NAVY_L, wraplength=330)
+
+        # ---------------------------------------------------------------- 오른쪽: 조사 목록 (고르기)
+        st = {"rows": [], "off": set(), "ph_off": set(), "cache": {}, "imgs": []}
+        group = tk.BooleanVar(value=self.cfg.get("damage_group", True))
+        hd = ttk.Frame(right)
+        hd.pack(fill="x")
+        ttk.Label(hd, text="조사 목록 — 가져올 것 고르기", font=(TH.FAM, 10, "bold")).pack(side="left")
+        cnt = ttk.Label(hd, text="", foreground=TH.NAVY)
+        cnt.pack(side="left", padx=10)
+        ttk.Checkbutton(hd, text="같은 균열 묶기", variable=group, command=lambda: reload()).pack(side="right")
+        bar = ttk.Frame(right)
+        bar.pack(fill="x", pady=(4, 4))
+        cols = ("chk", "sheet", "no", "member", "desc", "size", "count", "ph", "axis")
+        heads = {"chk": "✓", "sheet": "도면", "no": "번호", "member": "부재", "desc": "손상내용", "size": "크기",
+                 "count": "개소", "ph": "사진", "axis": "위치(축)"}
+        widths = {"chk": 34, "sheet": 90, "no": 70, "member": 70, "desc": 170, "size": 140, "count": 44, "ph": 60, "axis": 110}
+        lf = ttk.Frame(right)
+        lf.pack(fill="both", expand=True)
+        tv = ttk.Treeview(lf, columns=cols, show="headings", selectmode="browse", height=12)
+        for c in cols:
+            tv.heading(c, text=heads[c])
+            tv.column(c, width=widths[c], anchor="center" if c in ("chk", "count", "ph", "no") else "w",
+                      stretch=c in ("desc", "axis"))
+        vs = ttk.Scrollbar(lf, orient="vertical", command=tv.yview)
+        tv.configure(yscrollcommand=vs.set)
+        tv.pack(side="left", fill="both", expand=True)
+        vs.pack(side="right", fill="y")
+        tv.tag_configure("off", foreground="#A0A7B4")
+        # 사진 고르기 (고른 줄의 사진 — 체크한 사진만 엑셀 O열·사진첩에)
+        phf = ttk.LabelFrame(right, text=" 사진 — 줄을 고르면 그 항목 사진이 보입니다. 넣을 사진만 체크 ", padding=6)
+        phf.pack(fill="x", pady=(8, 0))
+        phbar = ttk.Frame(phf)
+        phbar.pack(fill="x")
+        phinfo = ttk.Label(phbar, text="", foreground=TH.NAVY)
+        phinfo.pack(side="left")
+        phc = tk.Canvas(phf, height=172, bg="white", highlightthickness=0)
+        phs = ttk.Scrollbar(phf, orient="horizontal", command=phc.xview)
+        phc.configure(xscrollcommand=phs.set)
+        phc.pack(fill="x")
+        phs.pack(fill="x")
+        phin = tk.Frame(phc, bg="white")
+        phc.create_window(0, 0, window=phin, anchor="nw")
+        phin.bind("<Configure>", lambda e: phc.configure(scrollregion=phc.bbox("all")))
+
+        def is_on(it):
+            return any(u not in st["off"] for u in it["uids"]) if it["uids"] else True
+
+        def ph_on(it):
+            return [p for p in it["photos"] if p not in st["ph_off"]]
+
+        def row_vals(nm, it):
+            n_all, n_on = len(it["photos"]), len(ph_on(it))
+            on_u = [u for u in it["uids"] if u not in st["off"]]
+            c = it["count"] if len(on_u) == len(it["uids"]) else f"{len(on_u)}/{it['count']}"
+            return ("☑" if is_on(it) else "☐", nm, it["no"], it["member"], it["desc"], RO.size_text(it), c,
+                    f"{n_on}/{n_all}" if n_all else "-", it.get("axis") or "")
+
+        def refresh_counts():
+            on = [it for _nm, it in st["rows"] if is_on(it)]
+            nph = sum(len(ph_on(it)) for it in on)
+            cnt.config(text=f"고른 항목 {len(on)} / {len(st['rows'])}  ·  사진 {nph}장")
+
+        def load_groups():
+            purposes = [k for k, v in pvars.items() if v.get()]
+            out = []
+            if not purposes:
+                return out
+            g = group.get()
+            if scope.get() == "all" and self.project:
+                for aid, nm in db.project_sheets(self.project):
+                    if aid == self.db_id:
+                        res = self.res
+                    else:
+                        if aid not in st["cache"]:
+                            try:
+                                st["cache"][aid] = db.load(aid)[:2]
+                            except Exception:  # noqa: BLE001
+                                st["cache"][aid] = None
+                        if not st["cache"][aid]:
+                            continue
+                        nm, res = st["cache"][aid]
+                    its = RO.items(res, self.P, purposes, sheet=nm, group=g)
+                    if its:
+                        out.append((nm, its))
+            else:
+                its = RO.items(self.res, self.P, purposes, sheet=self.db_name, group=g)
+                if its:
+                    out.append((self.db_name or "도면", its))
+            return out
+
+        def reload():
+            sel = tv.selection()
+            keep = tv.item(sel[0], "values")[1:3] if sel else None
+            st["rows"] = [(nm, it) for nm, its in load_groups() for it in its]
+            tv.delete(*tv.get_children())
+            for i, (nm, it) in enumerate(st["rows"]):
+                tv.insert("", "end", iid=str(i), values=row_vals(nm, it), tags=() if is_on(it) else ("off",))
+            refresh_counts()
+            again = next((str(i) for i, (nm, it) in enumerate(st["rows"]) if keep and (nm, str(it["no"])) == tuple(map(str, keep))), None)
+            if again:
+                tv.selection_set(again)
+                tv.see(again)
+            show_photos()
+
+        def update_row(i):
+            nm, it = st["rows"][int(i)]
+            tv.item(i, values=row_vals(nm, it), tags=() if is_on(it) else ("off",))
+            refresh_counts()
+
+        def toggle(i):
+            _nm, it = st["rows"][int(i)]
+            if is_on(it):
+                st["off"].update(it["uids"])
+            else:
+                st["off"].difference_update(it["uids"])
+            update_row(i)
+
+        def set_all(on):
+            for _nm, it in st["rows"]:
+                (st["off"].difference_update if on else st["off"].update)(it["uids"])
+            for i in tv.get_children():
+                update_row(i)
+
+        def on_click(e):
+            if tv.identify_region(e.x, e.y) == "cell" and tv.identify_column(e.x) == "#1":
+                i = tv.identify_row(e.y)
+                if i:
+                    toggle(i)
+                    return "break"
+            return None
+
+        def on_key(_e):
+            for i in tv.selection():
+                toggle(i)
+            return "break"
+
+        tv.bind("<Button-1>", on_click)
+        tv.bind("<space>", on_key)
+        tv.bind("<Double-1>", lambda e: (tv.identify_column(e.x) != "#1" and tv.identify_row(e.y)
+                                          and toggle(tv.identify_row(e.y))) or "break")
+        tv.bind("<<TreeviewSelect>>", lambda e: show_photos())
+
+        def set_photos(on):
+            sel = tv.selection()
+            if not sel:
+                return
+            _nm, it = st["rows"][int(sel[0])]
+            (st["ph_off"].difference_update if on else st["ph_off"].update)(it["photos"])
+            update_row(sel[0])
+            show_photos()
+
+        def show_photos():
+            for c in phin.winfo_children():
+                c.destroy()
+            st["imgs"] = []
+            sel = tv.selection()
+            if not sel:
+                phinfo.config(text="(줄을 고르세요)")
+                return
+            i = sel[0]
+            _nm, it = st["rows"][int(i)]
+            phinfo.config(text=f"[{it['no']}] {it['member']} {it['desc']} — 사진 {len(it['photos'])}장"
+                               + (" · 묶음: 사진첩에 넣을 사진을 고르세요" if len(it["uids"]) > 1 else ""))
+            if not it["photos"]:
+                tk.Label(phin, text="(사진 없음)", bg="white", fg="#888").pack(padx=20, pady=40)
+                return
+            try:
+                from PIL import Image, ImageTk
+            except ImportError:
+                Image = None
+            for k, ph in enumerate(it["photos"]):
+                cell = tk.Frame(phin, bg="white", bd=1, relief="solid")
+                cell.grid(row=0, column=k, padx=4, pady=4, sticky="n")
+                img = None
+                if Image is not None and os.path.isfile(str(ph)):
+                    try:
+                        im = Image.open(ph)
+                        im.thumbnail((170, 120))
+                        img = ImageTk.PhotoImage(im)
+                        st["imgs"].append(img)
+                    except Exception:  # noqa: BLE001
+                        img = None
+                lab = tk.Label(cell, image=img, bg="white", cursor="hand2") if img else \
+                    tk.Label(cell, text="(파일 없음)" if not os.path.isfile(str(ph)) else "(미리보기 없음)",
+                             width=20, height=6, bg="#f3f4f6", fg="#888")
+                lab.pack()
+                v = tk.BooleanVar(value=ph not in st["ph_off"])
+
+                def flip(p=ph, var=v):
+                    (st["ph_off"].discard if var.get() else st["ph_off"].add)(p)
+                    update_row(i)
+
+                cb = tk.Checkbutton(cell, text=RO.photo_stem(ph)[:24], variable=v, command=flip, bg="white",
+                                    font=(TH.FAM, 8), anchor="w")
+                cb.pack(fill="x")
+                lab.bind("<Button-1>", lambda e, var=v, fn=flip: (var.set(not var.get()), fn()))
+
+        ttk.Button(bar, text="모두 선택", command=lambda: set_all(True)).pack(side="left")
+        ttk.Button(bar, text="모두 해제", command=lambda: set_all(False)).pack(side="left", padx=4)
+        ttk.Label(bar, text="✓칸 클릭 / 더블클릭 / Space = 넣기·빼기", foreground="#666", font=(TH.FAM, 8)).pack(side="left", padx=8)
+        ttk.Button(phbar, text="사진 모두 해제", command=lambda: set_photos(False)).pack(side="right")
+        ttk.Button(phbar, text="사진 모두 선택", command=lambda: set_photos(True)).pack(side="right", padx=4)
 
         def go():
             purposes = [k for k, v in pvars.items() if v.get()]
@@ -3731,32 +3943,22 @@ class CadAnalysisApp:
                 return
             if not (do_x.get() or do_h.get()):
                 return
+            order, grouped = [], {}
+            for nm, it in st["rows"]:
+                if nm not in grouped:
+                    order.append(nm)
+                    grouped[nm] = []
+                grouped[nm].append(it)
+            groups = RO.apply_pick([(nm, grouped[nm]) for nm in order], st["off"], st["ph_off"])
+            if not groups:
+                msg.config(text="고른 항목이 없습니다. 오른쪽 목록에서 ✓ 하세요.")
+                return
             folder = filedialog.askdirectory(parent=w, title="저장할 폴더", initialdir=self.cfg.get("last_dir") or None)
             if not folder:
                 return
             self.cfg.update(damage_xlsx_template=tpl.get().strip(), album_title=title.get(), album_header=header.get(),
-                            album_section=sect.get())
+                            album_section=sect.get(), damage_group=bool(group.get()))
             S.save(self.cfg)
-            groups = []
-            if scope.get() == "all" and self.project:
-                for aid, nm in db.project_sheets(self.project):
-                    if aid == self.db_id:
-                        res = self.res
-                    else:
-                        try:
-                            nm, res, _cs = db.load(aid)
-                        except Exception:  # noqa: BLE001
-                            continue
-                    its = RO.items(res, self.P, purposes, sheet=nm)
-                    if its:
-                        groups.append((nm, its))
-            else:
-                its = RO.items(self.res, self.P, purposes, sheet=self.db_name)
-                if its:
-                    groups.append((self.db_name or "도면", its))
-            if not groups:
-                msg.config(text="고른 용도의 조사 내용이 없습니다.")
-                return
             base = os.path.join(folder, f"{self.project or self.db_name or '현장조사'}")
             done, n = [], sum(len(g[1]) for g in groups)
             try:
@@ -3784,6 +3986,7 @@ class CadAnalysisApp:
             except Exception as e:  # noqa: BLE001
                 messagebox.showerror("손상물량표·사진첩", str(e), parent=w)
                 return
+            msg.config(text="")
             self.log(f"손상물량표·사진첩: 항목 {n}개 → " + " / ".join(done))
             messagebox.showinfo("손상물량표·사진첩", f"항목 {n}개 (도면 {len(groups)}장)\n\n" + "\n".join(done), parent=w)
             try:
@@ -3793,9 +3996,14 @@ class CadAnalysisApp:
 
         ttk.Button(f, text="만들기", command=go).pack(anchor="e", pady=(12, 4))
         msg.pack(anchor="w")
-        ttk.Label(f, text="· 같은 균열번호(PW1 등)는 한 줄, 개소 = 표시한 위치 수 · M(보수방안)·N(발생요인)은 비워 둡니다\n"
-                          "· 위치는 '도면명 축(X1~X2, Y1) 부재'로 — 스케치로 축을 그려 두면 들어갑니다",
+        ttk.Label(f, text="· 오른쪽 목록에서 ✓한 항목·체크한 사진만 들어갑니다\n"
+                          "· '같은 균열 묶기'를 켜면 같은 균열번호(PW1 등)는 한 줄,\n  개소 = 표시한 위치 수 (끄면 위치마다 한 줄)\n"
+                          "· M(보수방안)·N(발생요인)은 비워 둡니다\n"
+                          "· 위치는 '도면명 축(X1~X2, Y1) 부재' — 스케치 축이 있으면 들어갑니다",
                   foreground="#666", font=(TH.FAM, 8), justify="left").pack(anchor="w", pady=(6, 0))
+        reload()
+        if tv.get_children():
+            tv.selection_set(tv.get_children()[0])
 
     def survey_dxf(self):
         """검측점(용도별 레이어) · 스케치(종류·색별 레이어) → DXF (원래 도면 좌표)."""
