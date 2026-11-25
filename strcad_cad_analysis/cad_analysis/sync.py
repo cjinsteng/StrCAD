@@ -351,6 +351,7 @@ def import_package(path, cfg, log=print, originals_dir="auto"):
             if created:
                 report["new_sheets"] = report.get("new_sheets", 0) + 1
             lname, res, cs = db.load(aid)
+        report.setdefault("aids", []).append(aid)
         mt = db.meta(aid)
         folder = SV.photo_folder(cfg, mt[1] if mt else project, lname)
         local = {}

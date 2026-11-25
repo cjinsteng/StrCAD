@@ -542,6 +542,7 @@ class CadAnalysisApp:
         g = self._grp(p, "기록")
         self._big(g, "📤\n조사표 CSV", self.survey_export, 10)
         self._big(g, "📐\n검측·스케치\nDXF", self.survey_dxf, 10)
+        self._big(g, "📑\n손상물량표\n·사진첩", self.damage_report, 10)
         self._big(g, "📑\n도면 LIST", self._sv_sheet_list, 9)
         ttk.Checkbutton(g, text="검측위치\n표시", variable=self.show_survey, command=self.redraw).pack(side="left", padx=4)
         self.sv_vis_mb = ttk.Menubutton(g, text="👁 표시할\n조사 ▾", direction="below")
@@ -762,7 +763,7 @@ class CadAnalysisApp:
             return
         path = filedialog.askopenfilename(
             parent=self.root, title="구조평면도 열기", initialdir=self.cfg.get("last_dir") or None,
-            filetypes=[("DXF / DWG / PDF / 도면 사진", "*.dxf *.dwg *.pdf *.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp"),
+            filetypes=[("DXF / DWG / PDF / 도면 사진 / 현장조사(.strsv)", "*.dxf *.dwg *.pdf *.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp *.strsv"),
                        ("DXF", "*.dxf"), ("PDF 도면", "*.pdf"), ("도면 사진·이미지", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp"),
                        ("모든 파일", "*.*")])
         if not path:
@@ -771,6 +772,9 @@ class CadAnalysisApp:
         self._save_cfg()
         if os.path.splitext(path)[1].lower() in IMG_EXT:
             self.new_field_sheet(path=path, mode="recognize", confirmed=True)
+            return
+        if path.lower().endswith(".strsv"):                 # 휴대폰 현장조사 파일 → 가져와서 바로 열기
+            self.mobile_import(path=path, confirmed=True)
             return
         self.load_path(path)
 
@@ -3370,12 +3374,12 @@ class CadAnalysisApp:
                             "이 파일을 휴대폰/패드로 옮겨(카카오톡·메일·드라이브·USB) 현장조사 앱에서 여세요.",
                             parent=self.root)
 
-    def mobile_import(self):
-        if not self._confirm_discard():
+    def mobile_import(self, path=None, confirmed=False):
+        if not confirmed and not self._confirm_discard():
             return
         from . import sync
-        path = filedialog.askopenfilename(parent=self.root, title="모바일 DB 가져오기",
-                                          filetypes=[("현장조사 파일", "*.strsv"), ("모든 파일", "*.*")])
+        path = path or filedialog.askopenfilename(parent=self.root, title="모바일 DB 가져오기",
+                                                  filetypes=[("현장조사 파일", "*.strsv"), ("모든 파일", "*.*")])
         if not path:
             return
         try:
@@ -3384,11 +3388,18 @@ class CadAnalysisApp:
             messagebox.showerror("모바일 DB 가져오기", str(e), parent=self.root)
             return
         self._after_mobile_import(rep)
+        aids = rep.get("aids") or []
+        if aids and self.db_id not in aids:                  # 가져온 도면을 바로 열기
+            try:
+                self._open_db_id(aids[0])
+                self.fit()
+            except Exception as e:  # noqa: BLE001
+                self.log(f"가져온 도면 열기 실패: {e}")
         messagebox.showinfo("모바일 DB 가져오기",
                             f"추가 {rep['added']} · 수정 {rep['updated']} · 삭제 {rep['deleted']} · 그대로 {rep['kept']}\n"
                             f"사진 {rep['photos']}장" + (f"\n번호 겹침으로 바뀐 번호 {rep['renumbered']}건 (추가사항에 기록)"
                                                        if rep["renumbered"] else "")
-                            + (f"\n휴대폰에서 새로 만든 도면 {rep['new_sheets']}장 추가 (DB에서 불러오기로 여세요)"
+                            + (f"\n휴대폰에서 새로 만든 도면 {rep['new_sheets']}장 추가" + (" (나머지는 DB에서 불러오기)" if len(aids) > 1 else "")
                                if rep.get("new_sheets") else "")
                             + (f"\n스케치 {rep['sketches']}건" if rep.get("sketches") else "")
                             + (f"\n\nPC DB에 없는 도면: {', '.join(rep['missing'])}" if rep["missing"] else ""),
@@ -3660,6 +3671,131 @@ class CadAnalysisApp:
         if path:
             n = SV.export_csv(path, self.res.surveys, self.res.by_id(), self.P, floor=self.db_name)
             self.log(f"조사표 저장: 검측위치 {n}개 → {path}")
+
+    def damage_report(self):
+        """조사 내용 → 손상물량표(엑셀, 회사 양식) · 현황조사 사진첩(한글, 한 쪽 6칸)."""
+        from . import report_out as RO
+        if not self.res:
+            messagebox.showinfo("손상물량표·사진첩", "도면을 먼저 여세요.", parent=self.root)
+            return
+        w = tk.Toplevel(self.root)
+        w.title("손상물량표 · 현황조사 사진첩")
+        w.geometry("640x560")
+        w.transient(self.root)
+        f = ttk.Frame(w, padding=12)
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, text="넣을 조사 용도", font=(TH.FAM, 10, "bold")).pack(anchor="w")
+        pf = ttk.Frame(f)
+        pf.pack(fill="x", pady=(2, 8))
+        pvars = {}
+        for k, name in enumerate(self.P):
+            v = tk.BooleanVar(value=name in ("균열검토", "기타") or self.P[name].get("crack", False))
+            pvars[name] = v
+            ttk.Checkbutton(pf, text=name, variable=v).grid(row=k // 4, column=k % 4, sticky="w", padx=(0, 12))
+        scope = tk.StringVar(value="all" if self.project else "cur")
+        sf = ttk.Frame(f)
+        sf.pack(fill="x")
+        ttk.Label(sf, text="범위").pack(side="left")
+        ttk.Radiobutton(sf, text=f"지금 도면 ({self.db_name or '열린 도면'})", variable=scope, value="cur").pack(side="left", padx=6)
+        if self.project:
+            ttk.Radiobutton(sf, text=f"프로젝트 전체 도면 ({self.project})", variable=scope, value="all").pack(side="left")
+        ttk.Separator(f).pack(fill="x", pady=8)
+        do_x, do_h = tk.BooleanVar(value=True), tk.BooleanVar(value=True)
+        ttk.Checkbutton(f, text="📊 손상물량표 (엑셀) — D~K 조사 내용 · O열부터 사진 이름 · L 손상물량·G 단위는 식", variable=do_x).pack(anchor="w")
+        tf = ttk.Frame(f)
+        tf.pack(fill="x", padx=(22, 0), pady=(2, 6))
+        tpl = tk.StringVar(value=self.cfg.get("damage_xlsx_template") or "")
+        ttk.Label(tf, text="양식").pack(side="left")
+        ttk.Entry(tf, textvariable=tpl, width=48).pack(side="left", padx=4, fill="x", expand=True)
+        ttk.Button(tf, text="…", width=3, command=lambda: tpl.set(filedialog.askopenfilename(
+            parent=w, filetypes=[("엑셀", "*.xlsx")]) or tpl.get())).pack(side="left")
+        ttk.Label(f, text="   (비우면 기본 양식 — 첫 번째 보이는 시트의 1행 머리글·2행 서식을 도면마다 복사)", foreground="#666",
+                  font=(TH.FAM, 8)).pack(anchor="w")
+        ttk.Checkbutton(f, text="🖼 현황조사 사진첩 (한글) — 한 쪽 6칸, 칸마다 사진·위치·내용, 넘치면 쪽 추가", variable=do_h).pack(anchor="w", pady=(8, 0))
+        hf = ttk.Frame(f)
+        hf.pack(fill="x", padx=(22, 0), pady=2)
+        title = tk.StringVar(value=self.cfg.get("album_title") or f"{self.project or ''} 정밀안전진단 용역".strip())
+        header = tk.StringVar(value=self.cfg.get("album_header") or f"현황조사 사진첩({self.project or ''})")
+        sect = tk.StringVar(value=self.cfg.get("album_section") or "손상현황")
+        nophoto = tk.BooleanVar(value=False)
+        for i, (lab, var) in enumerate((("제목(●)", title), ("머리말(오른쪽 위)", header), ("구분 <>", sect))):
+            ttk.Label(hf, text=lab).grid(row=i, column=0, sticky="w", pady=1)
+            ttk.Entry(hf, textvariable=var, width=46).grid(row=i, column=1, sticky="ew", pady=1)
+        ttk.Checkbutton(hf, text="사진 없는 항목도 칸 넣기", variable=nophoto).grid(row=3, column=1, sticky="w")
+        msg = ttk.Label(f, text="", foreground=TH.NAVY_L, wraplength=600)
+
+        def go():
+            purposes = [k for k, v in pvars.items() if v.get()]
+            if not purposes:
+                msg.config(text="용도를 하나 이상 고르세요")
+                return
+            if not (do_x.get() or do_h.get()):
+                return
+            folder = filedialog.askdirectory(parent=w, title="저장할 폴더", initialdir=self.cfg.get("last_dir") or None)
+            if not folder:
+                return
+            self.cfg.update(damage_xlsx_template=tpl.get().strip(), album_title=title.get(), album_header=header.get(),
+                            album_section=sect.get())
+            S.save(self.cfg)
+            groups = []
+            if scope.get() == "all" and self.project:
+                for aid, nm in db.project_sheets(self.project):
+                    if aid == self.db_id:
+                        res = self.res
+                    else:
+                        try:
+                            nm, res, _cs = db.load(aid)
+                        except Exception:  # noqa: BLE001
+                            continue
+                    its = RO.items(res, self.P, purposes, sheet=nm)
+                    if its:
+                        groups.append((nm, its))
+            else:
+                its = RO.items(self.res, self.P, purposes, sheet=self.db_name)
+                if its:
+                    groups.append((self.db_name or "도면", its))
+            if not groups:
+                msg.config(text="고른 용도의 조사 내용이 없습니다.")
+                return
+            base = os.path.join(folder, f"{self.project or self.db_name or '현장조사'}")
+            done, n = [], sum(len(g[1]) for g in groups)
+            try:
+                if do_x.get():
+                    path = base + "_손상물량표.xlsx"
+                    RO.write_excel(path, groups, template=tpl.get().strip() or None, log=self.log)
+                    done.append(path)
+                if do_h.get():
+                    blocks = RO.album_blocks(groups, with_nophoto=nophoto.get())
+                    dx = base + "_현황조사사진첩.docx"
+                    pages = RO.write_album_docx(dx, blocks, title=title.get().strip(), header=header.get().strip(),
+                                                section=sect.get().strip(), log=self.log)
+                    hw = base + "_현황조사사진첩.hwp"
+                    msg.config(text="한글로 변환 중…")
+                    w.update()
+                    if RO.docx_to_hwp(dx, hw, log=self.log):
+                        done.append(hw)
+                        try:
+                            os.remove(dx)
+                        except OSError:
+                            pass
+                    else:
+                        done.append(dx + "  (한글 자동화를 쓸 수 없어 Word 파일로 저장 — 한글에서 열어 '다른 이름으로 저장 → 한글 문서')")
+                    self.log(f"사진첩: 사진 {len(blocks)}칸 · {pages}쪽")
+            except Exception as e:  # noqa: BLE001
+                messagebox.showerror("손상물량표·사진첩", str(e), parent=w)
+                return
+            self.log(f"손상물량표·사진첩: 항목 {n}개 → " + " / ".join(done))
+            messagebox.showinfo("손상물량표·사진첩", f"항목 {n}개 (도면 {len(groups)}장)\n\n" + "\n".join(done), parent=w)
+            try:
+                os.startfile(folder)  # noqa: S606 — Windows 탐색기로 폴더 열기
+            except Exception:  # noqa: BLE001
+                pass
+
+        ttk.Button(f, text="만들기", command=go).pack(anchor="e", pady=(12, 4))
+        msg.pack(anchor="w")
+        ttk.Label(f, text="· 같은 균열번호(PW1 등)는 한 줄, 개소 = 표시한 위치 수 · M(보수방안)·N(발생요인)은 비워 둡니다\n"
+                          "· 위치는 '도면명 축(X1~X2, Y1) 부재'로 — 스케치로 축을 그려 두면 들어갑니다",
+                  foreground="#666", font=(TH.FAM, 8), justify="left").pack(anchor="w", pady=(6, 0))
 
     def survey_dxf(self):
         """검측점(용도별 레이어) · 스케치(종류·색별 레이어) → DXF (원래 도면 좌표)."""
