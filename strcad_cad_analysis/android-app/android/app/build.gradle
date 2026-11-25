@@ -7,8 +7,8 @@ android {
         applicationId "kr.strcad.survey"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 19
-        versionName "2.20.0"
+        versionCode 20
+        versionName "2.20.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,7 +16,20 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // 고정 서명키 — 빌드마다 키가 바뀌면 업데이트 설치가 안 되고(앱 삭제 후 재설치 필요),
+    // 다시 설치한 앱은 예전 앱이 Documents에 만든 파일을 덮어쓰지 못함 → 저장 위치가 바뀌는 문제
+    signingConfigs {
+        debug {
+            storeFile file('strcad-survey-debug.jks')
+            storePassword 'strcad-debug'
+            keyAlias 'strcad'
+            keyPassword 'strcad-debug'
+        }
+    }
     buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'

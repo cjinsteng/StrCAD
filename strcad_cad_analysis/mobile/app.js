@@ -298,7 +298,7 @@ async function addPhotoFiles(files, rec) {
       try {
         const rel = `StrCAD/사진/${safeName(S.meta.project)}/${nm}.${ext}`;
         const r = await saveToDevice(rel, new Uint8Array(await f.arrayBuffer()));
-        run("INSERT OR REPLACE INTO orig (uid, path, dir, size, sent) VALUES (?,?,?,?,0)", [id, rel, r.dir, f.size]);
+        run("INSERT OR REPLACE INTO orig (uid, path, dir, size, sent) VALUES (?,?,?,?,0)", [id, r.rel || rel, r.dir, f.size]);
         origOk = true;
       } catch (e) { toast("원본 저장 실패 — 축소본만 저장: " + (e.message || e), 4000); }
     }
@@ -348,14 +348,21 @@ async function writeBytesNative(path, bytes, directory) {
   }
   return (await FSP().getUri({ path, directory })).uri;
 }
+// 저장은 항상 내 파일 › Documents › StrCAD.
+// 앱을 지우고 다시 설치하면 예전 앱이 만든 같은 이름 파일은 덮어쓸 수 없음(안드로이드 저장소 규칙) → 이름 뒤에 시각을 붙여 Documents에 저장.
+// Documents 자체에 못 쓸 때만 앱 전용 폴더로.
 async function saveToDevice(rel, bytes) {
   await ensureStorage();
+  const DOC = "내 파일 › Documents › ", where = (r) => DOC + r.split("/").join(" › ");
+  const stamp = () => { const d = new Date(); return `${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}${String(d.getSeconds()).padStart(2, "0")}`; };
+  const alt = rel.replace(/(\.[^./]+)?$/, (ext) => `_${stamp()}${ext || ""}`);
   let last;
-  for (const [dir, label] of [["DOCUMENTS", "내 파일 › Documents › "], ["EXTERNAL", "내 파일 › Android › data › kr.strcad.survey › files › "]]) {
-    try { const uri = await writeBytesNative(rel, bytes, dir); return { uri, dir, where: label + rel.split("/").join(" › ") }; }
-    catch (e) { last = e; }
+  for (const r of [rel, alt]) {
+    try { const uri = await writeBytesNative(r, bytes, "DOCUMENTS"); return { uri, dir: "DOCUMENTS", rel: r, where: where(r) }; }
+    catch (e) { last = e; console.warn("Documents 저장 실패", r, e); }
   }
-  throw last;
+  try { const uri = await writeBytesNative(rel, bytes, "EXTERNAL"); return { uri, dir: "EXTERNAL", rel, where: "내 파일 › Android › data › kr.strcad.survey › files › " + rel.split("/").join(" › ") + "  (Documents에 저장할 수 없어 앱 폴더에 저장)" }; }
+  catch (e) { throw last || e; }
 }
 function shareUri(uri, title) {
   return window.Capacitor.Plugins.Share.share({ title, dialogTitle: title, url: uri })

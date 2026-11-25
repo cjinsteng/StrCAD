@@ -179,6 +179,14 @@ def write_excel(path, groups, template=None, log=print):
     base = next((w for w in wb.worksheets if w.sheet_state == "visible"), wb.worksheets[0])
     originals = list(wb.worksheets)
     style = {c.column: c for c in base[2]}                     # 2행 서식을 모든 줄에
+    from openpyxl.utils import column_index_from_string as CI
+    widths = {}                                                # 양식의 열 너비 (A:B 처럼 묶인 범위도 펼침)
+    for key, cd in base.column_dimensions.items():
+        if cd.width:
+            lo = cd.min or CI(key)
+            hi = cd.max or lo
+            for col in range(lo, min(hi, 60) + 1):
+                widths[col] = cd.width
     ocol = style.get(15)
     h2 = base.row_dimensions[2].height
     used, total = set(), 0
@@ -201,8 +209,15 @@ def write_excel(path, groups, template=None, log=print):
                 c.value = f"사진{k + 1}"
                 src = base.cell(row=1, column=15)
                 c.font, c.alignment, c.border, c.fill = copy(src.font), copy(src.alignment), copy(src.border), copy(src.fill)
-                ws.column_dimensions[CL(15 + k)].width = max(ws.column_dimensions[CL(15)].width or 12, 14)
-        ws.column_dimensions[CL(15)].width = max(ws.column_dimensions[CL(15)].width or 7, 14)
+        # 열 너비 = 양식 그대로 (사진 열이 양식보다 많으면 O열 너비로)
+        from openpyxl.worksheet.dimensions import ColumnDimension, DimensionHolder
+        ws.column_dimensions = DimensionHolder(worksheet=ws)        # 겹치는 열 범위(G:H 등) 없이 한 열씩 새로
+        for col in range(1, max(20, 15 + maxph)):
+            w = widths.get(col)
+            if w is None and col > 15:
+                w = widths.get(15)
+            if w:
+                ws.column_dimensions[CL(col)] = ColumnDimension(ws, index=CL(col), width=w, customWidth=True)
         for i, it in enumerate(its):
             r = 2 + i
             for col, src in style.items():
@@ -233,6 +248,12 @@ def write_excel(path, groups, template=None, log=print):
     for w in originals:
         wb.remove(w)
     wb.active = 0
+    for v in wb.views:                                         # 양식의 숨긴 첫 시트 흔적 → 엑셀 '손상됨' 경고 방지
+        v.firstSheet = 0
+        v.activeTab = 0
+    for i, w in enumerate(wb.worksheets):
+        for sv in w.views.sheetView:
+            sv.tabSelected = i == 0
     wb.save(path)
     return total
 
