@@ -1,2 +1,2 @@
 """StrCAD — CAD Analysis (Ollama-assisted structural plan reader)."""
-__version__ = "2.22.0"
+__version__ = "2.23.0"

@@ -561,7 +561,7 @@ function draw() {
     for (let i = 0; i + 3 < m.l.length; i += 2) line(m.l, i); ctx.stroke(); } }
   if (window.SK) SK.draw();
   // survey bubbles
-  for (const rec of S.recs) if (purposeVisible(rec.purpose) && isPlaced(cur && rec.uid === cur.uid ? (S.edit || rec) : rec)) drawRec(rec, cur && rec.uid === cur.uid ? (S.edit || rec) : rec, cur && rec.uid === cur.uid);
+  for (const rec of S.recs) if (purposeVisible(rec.purpose) && ownerVisible(rec) && isPlaced(cur && rec.uid === cur.uid ? (S.edit || rec) : rec)) drawRec(rec, cur && rec.uid === cur.uid ? (S.edit || rec) : rec, cur && rec.uid === cur.uid);
   if (S.areaDraft) { const [x0, y0, x1, y1] = S.areaDraft, a = w2s(Math.min(x0, x1), Math.max(y0, y1)), b = w2s(Math.max(x0, x1), Math.min(y0, y1));
     ctx.save(); ctx.strokeStyle = purposeColor(S.purpose); ctx.lineWidth = 2; ctx.setLineDash([6, 4]); ctx.strokeRect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
     const A = Math.abs((x1 - x0) * (y1 - y0)) / 1e6; ctx.setLineDash([]); ctx.font = "bold 12px sans-serif"; ctx.fillStyle = purposeColor(S.purpose);
@@ -613,13 +613,38 @@ function drawRec(_r, rec, hl) {
 }
 
 // ======================================================================= touch / mouse
-const ptrs = new Map(); let gesture = null;
+const ptrs = new Map(), ptrType = new Map(); let gesture = null;
+// ---- 편집/뷰어 · 펜 전용 (손가락은 이동·확대만)
+S.viewOnly = (() => { try { return localStorage.getItem("viewOnly") === "1"; } catch (e) { return false; } })();
+S.penOnly = (() => { try { return localStorage.getItem("penOnly") !== "0"; } catch (e) { return true; } })();
+function syncInputBtns() {
+  const m = $("#btnEditMode"), p = $("#btnPen");
+  const lab = (ic, tx) => [el("span", {}, ic), el("span", { class: "tx" }, " " + tx)];
+  if (m) { m.replaceChildren(...lab(S.viewOnly ? "👁" : "✎", S.viewOnly ? "뷰어" : "편집")); m.classList.toggle("viewing", S.viewOnly); }
+  if (p) { p.replaceChildren(...lab(S.penOnly ? "🖊" : "☝", S.penOnly ? "펜" : "손")); p.classList.toggle("hand", !S.penOnly); p.title = S.penOnly ? "펜 전용 — 손가락은 이동·확대만" : "손으로도 입력"; }
+  document.body.classList.toggle("viewonly", S.viewOnly);
+}
+function setViewOnly(v) { S.viewOnly = v; try { localStorage.setItem("viewOnly", v ? "1" : "0"); } catch (e) { /* ignore */ }
+  if (v) { if (S.edit && !guardEdit()) { S.viewOnly = false; return; } S.placing = null; S.spanStart = null; S.polyDraft = null; closePanel(); if (window.SK) SK.cancel(); }
+  syncInputBtns(); hint(v ? "👁 뷰어 — 눌러도 입력되지 않습니다 (보기·이동·확대만)" : "✎ 편집 — 입력할 수 있습니다"); setTimeout(() => hint(""), 2200); draw(); }
+function setPenOnly(v) { S.penOnly = v; try { localStorage.setItem("penOnly", v ? "1" : "0"); } catch (e) { /* ignore */ }
+  syncInputBtns(); toast(v ? "🖊 펜 전용 — 손가락은 이동·확대만 (입력 안 됨)" : "☝ 손 입력 켬 — 손가락으로도 찍고 그립니다", 2600); }
+let penHintAt = 0;
+function penHint() { if (Date.now() - penHintAt < 4000) return; penHintAt = Date.now();
+  toast("🖊 펜 전용 — 손가락은 이동·확대만. 손으로 입력하려면 위쪽 🖊 버튼을 눌러 ☝ 손으로 바꾸세요", 3000); }
 cv.addEventListener("pointerdown", (e) => {
-  cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, [e.offsetX, e.offsetY]);
-  if (ptrs.size === 1 && S.mode === "sketch" && window.SK && !(window.NS && NS.calibrating)) { gesture = { type: "sketch", view: { ...S.view } }; SK.down(e.offsetX, e.offsetY); return; }
+  const touch = e.pointerType === "touch";
+  if (S.penOnly && touch && [...ptrType.values()].includes("pen")) return;          // 펜으로 쓰는 중 손바닥 무시
+  if (S.penOnly && e.pointerType === "pen") {                                        // 펜이 닿으면 손가락 제스처는 버림
+    for (const [id, t] of [...ptrType]) if (t === "touch") { ptrs.delete(id); ptrType.delete(id); }
+    if (gesture && gesture.type !== "sketch") gesture = null;
+  }
+  cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, [e.offsetX, e.offsetY]); ptrType.set(e.pointerId, e.pointerType);
+  const noInput = S.viewOnly || (S.penOnly && touch);
+  if (ptrs.size === 1 && !noInput && S.mode === "sketch" && window.SK && !(window.NS && NS.calibrating)) { gesture = { type: "sketch", view: { ...S.view } }; SK.down(e.offsetX, e.offsetY); return; }
   if (ptrs.size === 2 && gesture && gesture.type === "sketch") SK.cancel();
   if (ptrs.size === 2 && gesture && gesture.type === "area") { S.areaDraft = null; }
-  if (ptrs.size === 1 && (S.mode === "point" || S.mode === "span") && (S.purposes[S.purpose] || {}).area && areaShape() === "rect" && !S.placing && !(window.NS && NS.calibrating)) {
+  if (ptrs.size === 1 && !noInput && (S.mode === "point" || S.mode === "span") && (S.purposes[S.purpose] || {}).area && areaShape() === "rect" && !S.placing && !(window.NS && NS.calibrating)) {
     const [x, y] = s2w(e.offsetX, e.offsetY);
     const hit = bubbleHit(x, y);
     if (!hit) { gesture = { type: "area", x0: e.offsetX, y0: e.offsetY, w0: [x, y], moved: false }; return; }
@@ -627,7 +652,7 @@ cv.addEventListener("pointerdown", (e) => {
   if (ptrs.size === 1) {
     const [x, y] = s2w(e.offsetX, e.offsetY);
     const hit = bubbleHit(x, y);
-    gesture = { type: "tap", x0: e.offsetX, y0: e.offsetY, moved: false, bubble: hit && isMine(hit) ? hit : null, view: { ...S.view } };
+    gesture = { type: "tap", x0: e.offsetX, y0: e.offsetY, moved: false, bubble: hit && isMine(hit) && !noInput ? hit : null, view: { ...S.view }, noTap: S.penOnly && touch && !S.viewOnly };
   } else if (ptrs.size === 2) {
     const [a, b] = [...ptrs.values()];
     gesture = { type: "pinch", d0: Math.hypot(a[0] - b[0], a[1] - b[1]), c0: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], view: { ...S.view } };
@@ -658,7 +683,7 @@ cv.addEventListener("pointermove", (e) => {
 });
 function endPtr(e) {
   if (!ptrs.has(e.pointerId)) return;
-  ptrs.delete(e.pointerId);
+  ptrs.delete(e.pointerId); ptrType.delete(e.pointerId);
   if (!gesture) return;
   if (gesture.type === "pinch") { if (ptrs.size === 0) gesture = null; return; }
   if (gesture.type === "sketch") { gesture = null; SK.up(e.offsetX, e.offsetY, e.type === "pointercancel"); return; }
@@ -671,7 +696,7 @@ function endPtr(e) {
   const g = gesture; gesture = null;
   if (g.bubble && g.moved) {                     // 번호 옮기기: 저장만 하고 현장조사 창은 열지 않음
     const rec = g.bubbleRec; if (rec && !(S.edit && S.edit.uid === rec.uid)) saveRec(rec); draw(); return; }
-  if (!g.moved) tap(...s2w(e.offsetX, e.offsetY));
+  if (!g.moved) { if (g.noTap) { if (S.sheet && !S.placing) penHint(); else if (S.placing) tap(...s2w(e.offsetX, e.offsetY)); return; } tap(...s2w(e.offsetX, e.offsetY)); }
 }
 cv.addEventListener("pointerup", endPtr); cv.addEventListener("pointercancel", endPtr);
 cv.addEventListener("wheel", (e) => { e.preventDefault(); const k = e.deltaY < 0 ? 1.2 : 1 / 1.2; const [wx, wy] = s2w(e.offsetX, e.offsetY);
@@ -680,7 +705,7 @@ cv.addEventListener("wheel", (e) => { e.preventDefault(); const k = e.deltaY < 0
 function bubbleHit(x, y) {
   for (let i = S.recs.length - 1; i >= 0; i--) {
     const r = S.edit && S.edit.uid === S.recs[i].uid ? S.edit : S.recs[i];
-    if (!purposeVisible(r.purpose) || !isPlaced(r)) continue;
+    if (!purposeVisible(r.purpose) || !ownerVisible(r) || !isPlaced(r)) continue;
     const [bx, by] = bubble(r);
     if (Math.hypot(x - bx, y - by) * S.view.s <= 18) return S.recs[i];
   }
@@ -692,6 +717,12 @@ function tap(x, y) {
   if (!S.sheet) return;
   if (window.NS && NS.tapCalib(x, y)) return;
   if (S.placing) { placeRec(x, y); return; }
+  if (S.viewOnly) {                               // 뷰어: 번호를 누르면 위치·내용만, 입력 없음
+    const h = bubbleHit(x, y);
+    if (h) { showRec(h.uid, true); hint(`${h.label || "#" + h.no} ${listValue(h, "summary")}`.slice(0, 60)); setTimeout(() => hint(""), 2500); }
+    else if (S.sel) { S.sel = null; draw(); renderList(); }
+    return;
+  }
   const PP = S.purposes[S.purpose] || {};
   if ((S.mode === "point" || S.mode === "span") && PP.area && areaShape() === "poly") {
     const h0 = !S.polyDraft && bubbleHit(x, y); if (h0) { selectRec(h0.uid); return; }
@@ -874,6 +905,44 @@ function newAreaRec(d, poly) {
 // ---- 용도별 도면 표시 (부재검측 / 균열검토 / 하중조사 … 따로 또는 같이)
 function hiddenPurposes() { try { return new Set(JSON.parse(localStorage.getItem("hidePurposes") || "[]")); } catch (e) { return new Set(); } }
 function purposeVisible(p) { return !hiddenPurposes().has(p); }
+// ---- 검토자별 보기 켬/끔 (👤 버튼)
+function ownerKey(o) { return o.owner ? "@" + o.owner : "~" + (o.inspector || ""); }
+let _hidOwn = null;
+function hiddenOwners() { if (_hidOwn) return _hidOwn; try { _hidOwn = new Set(JSON.parse(localStorage.getItem("hideOwners") || "[]")); } catch (e) { _hidOwn = new Set(); } return _hidOwn; }
+function ownerVisible(o) { const h = hiddenOwners(); return !h.size || !h.has(ownerKey(o)); }
+function setHiddenOwners(set) { _hidOwn = set; try { localStorage.setItem("hideOwners", JSON.stringify([...set])); } catch (e) { /* ignore */ }
+  if (S.sel && !ownerVisible(S.sel)) { S.sel = null; closePanel(); } draw(); renderList(); }
+function showInspectors() {
+  const meKey = window.CO && CO.me() ? "@" + CO.me().login : "~" + inspector();
+  const people = new Map();
+  const add = (o, t) => { const k = ownerKey(o); if (!people.has(k)) people.set(k, { k, name: (o.owner && window.CO ? CO.ownerName(o) : o.inspector) || o.inspector || "(이름 없음)", rec: 0, sk: 0 }); if (t) people.get(k)[t]++; };
+  add(window.CO && CO.me() ? { owner: CO.me().login, inspector: CO.me().name } : { inspector: inspector() });
+  for (const r of S.recs) add(r, "rec");
+  if (window.SK) for (const k of SK.list) add(k, "sk");
+  const pal = ["#2563eb", "#e11d48", "#16a34a", "#f28c28", "#7c3aed", "#0891b2", "#ca8a04", "#db2777"];
+  sheet((b) => {
+    const render = () => {
+      b.innerHTML = ""; const hid = hiddenOwners();
+      const list = [...people.values()].sort((a, c) => (c.k === meKey) - (a.k === meKey) || a.name.localeCompare(c.name));
+      const box = el("div", { class: "lay-box" });
+      list.forEach((p, i) => { const on = !hid.has(p.k);
+        box.append(el("button", { class: "lay" + (on ? " on" : ""), style: `--c:${pal[i % pal.length]}`, onclick: () => { const h = new Set(hiddenOwners()); if (on) h.add(p.k); else h.delete(p.k); setHiddenOwners(h); render(); } },
+          el("i"), `👤 ${p.name}${p.k === meKey ? " (나)" : ""}`, el("small", {}, `검측 ${p.rec} · 스케치 ${p.sk}`))); });
+      const co = window.CO && CO.me();
+      b.append(el("h3", {}, "👥 검토자 — 도면에 보기 켬/끔"),
+        el("p", { class: "small" }, co ? `${CO.me().name} 님 로그인${CO.active() ? " · 협업 중" : ""} — 끄면 그 사람의 검측점·스케치가 도면과 목록에서 숨겨집니다.` : "끄면 그 사람의 검측점·스케치가 도면과 목록에서 숨겨집니다."),
+        box,
+        el("div", { class: "btns" },
+          el("button", { class: "b gray", onclick: () => { setHiddenOwners(new Set()); render(); } }, "모두 보기"),
+          el("button", { class: "b gray", onclick: () => { setHiddenOwners(new Set(list.map((p) => p.k).filter((k) => k !== meKey))); render(); } }, "나만 보기"),
+          el("span", { class: "sp" }),
+          co ? el("button", { class: "b edit", onclick: () => { $("#modal").classList.remove("show"); CO.hub(); } }, "👥 협업 창") :
+            el("button", { class: "b edit", onclick: () => { $("#modal").classList.remove("show"); askInspector(); } }, "이름 변경"),
+          el("button", { class: "b ok", onclick: () => $("#modal").classList.remove("show") }, "닫기")));
+    };
+    render();
+  });
+}
 function showLayers() {
   sheet((b) => {
     const hid = hiddenPurposes();
@@ -1308,7 +1377,7 @@ function listValue(r, k) {
 function renderList() {
   if (S.mode === "sketch" && window.SK) { SK.renderList(); return; }
   if ((S.purposes[S.filter] || {}).crack) { renderCrackList(); return; }
-  const recs = S.recs.filter((r) => S.filter === "전체" || r.purpose === S.filter).sort((a, b) => (isPlaced(a) - isPlaced(b)) || a.no - b.no);
+  const recs = S.recs.filter((r) => (S.filter === "전체" || r.purpose === S.filter) && ownerVisible(r)).sort((a, b) => (isPlaced(a) - isPlaced(b)) || a.no - b.no);
   $("#listCount").textContent = `${recs.length}건`;
   const cols = listColumns();
   $("#lt-h").innerHTML = ""; $("#lt-h").append(el("tr", {}, cols.map(([, t]) => el("th", {}, t))));
@@ -1344,7 +1413,7 @@ function renderList() {
 // 균열 목록: 번호(PW1 …)마다 한 줄 + 개수, 맨 아래 종류별 합계
 function renderCrackList() {
   const groups = new Map();
-  for (const r of S.recs.filter((x) => x.purpose === S.filter).sort((a, b) => a.no - b.no)) {
+  for (const r of S.recs.filter((x) => x.purpose === S.filter && ownerVisible(x)).sort((a, b) => a.no - b.no)) {
     const key = r.label ? `${r.owner || ""}|${r.label}` : r.uid;
     if (!groups.has(key)) groups.set(key, []); groups.get(key).push(r);
   }
@@ -1587,7 +1656,10 @@ async function sendOriginals() {
   bz.close(); persistSoon();
   toast(`원본 사진 ${ok}장 PC 전송` + (fail ? ` · 실패 ${fail}장 (다음에 다시 보냄)` : ""), 4000);
 }
-$("#btnInsp").onclick = () => (window.CO && CO.me() ? CO.hub() : askInspector());
+$("#btnInsp").onclick = () => (S.db ? showInspectors() : (window.CO && CO.me() ? CO.hub() : askInspector()));
+$("#btnEditMode").onclick = () => setViewOnly(!S.viewOnly);
+$("#btnPen").onclick = () => setPenOnly(!S.penOnly);
+syncInputBtns();
 $("#btnPcGet").onclick = pcGet; $("#miPcGet").onclick = pcGet; $("#miPcPut").onclick = pcPut;
 $("#miPcAddr").onclick = () => { $("#menu").classList.remove("show"); askPcAddress(); };
 

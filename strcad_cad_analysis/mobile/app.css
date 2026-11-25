@@ -416,3 +416,15 @@ body.sketching #cv { cursor: crosshair; }
 .lg-off .sk-input { flex: 1; min-width: 0; font-size: 16px; padding: 10px 12px; }
 .lg-off .b { white-space: nowrap; }
 #toast { z-index: 70; }
+
+/* 편집/뷰어 · 펜 전용 */
+.pill.mode { background: #16a34a; }
+.pill.mode.viewing { background: #64748b; }
+.pill.pen { background: var(--navy-2); }
+.pill.pen.hand { background: var(--orange); }
+body.viewonly #sketchBar, body.viewonly #pointOpts { display: none !important; }
+body.viewonly #stage::after { content: "👁 뷰어 — 입력 안 됨"; position: absolute; right: 10px; bottom: 10px; background: #334155d9; color: #fff;
+  font-size: 12px; padding: 4px 10px; border-radius: 12px; pointer-events: none; }
+@media (max-width: 560px) { #brand { display: none; } #top { gap: 4px; } #top .pill { padding: 7px 8px; font-size: 13px; } #pgLbl { min-width: 30px; }
+  #top .pill .tx { display: none; } #floorBtn { max-width: 104px; overflow: hidden; text-overflow: ellipsis; }
+  .pill.insp { max-width: 84px; flex: none; } #proj { display: none; } }

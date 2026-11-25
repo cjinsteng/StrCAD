@@ -209,7 +209,12 @@ const SK = (() => {
     clearTimeout(st.lpT);
     if (st.op === "erase") return;
     if (st.op === "move") { if (p.hit && !mineSk(p.hit)) { roToast(p.hit); p.hit = null; return; } if (p.hit) { p.mode = "move"; p.orig = clone(p.hit); p.ref = refPoint(p.hit, x, y); st.sel = p.hit.uid; draw(); } return; }
-    if (p.hit && p.hit.kind !== "free") st.lpT = setTimeout(() => {
+    if (p.hit && p.hit.kind === "axis") st.lpT = setTimeout(() => {   // 축: 꾹 누르면 바로 축 창 (간격 맞추기·평행 복사) — 눌러서는 반응 없음
+      if (st.pend !== p || p.moved) return;
+      st.pend = null; try { navigator.vibrate && navigator.vibrate(30); } catch (e) { /* ignore */ }
+      editItem(p.hit);
+    }, 450);
+    else if (p.hit && p.hit.kind !== "free") st.lpT = setTimeout(() => {
       if (st.pend !== p || p.moved) return;
       p.mode = "copy"; p.orig = clone(p.hit); p.ref = refPoint(p.hit, x, y); st.sel = p.hit.uid;
       try { navigator.vibrate && navigator.vibrate(30); } catch (e) { /* ignore */ }
@@ -239,10 +244,11 @@ const SK = (() => {
   function restore(p) { const i = st.list.findIndex((o) => o.uid === p.orig.uid); if (i >= 0) st.list[i] = clone(p.orig); }
 
   function tapAt(p) {
-    const { x, y, hit } = p;
+    let { x, y, hit } = p;
+    if (hit && hit.kind === "axis" && st.op !== "erase") hit = null;   // 축은 눌러도 반응 없음 (꾹 = 축 창)
     if (p.mode === "copy") { editItem(hit); return; }                 // 꾹 눌렀다 뗌 → 수정
     if (st.op === "erase") { if (hit) { remove(hit); toast(`${KIND_NM[hit.kind]} 삭제 — ↶ 되돌리기 가능`); } else hint("지울 스케치를 누르세요"); return; }
-    if (st.op === "move") { if (hit) editItem(hit); else hint("옮길 스케치를 끌거나, 눌러서 수정하세요"); return; }
+    if (st.op === "move") { if (hit) editItem(hit); else hint("옮길 스케치를 끌거나, 눌러서 수정하세요 (축은 꾹 눌러 간격 입력)"); return; }
     if (st.tool === "text") { if (hit && hit.kind === "text") editItem(hit); else askText([x, y]); return; }
     if (st.tool === "member" && st.mem === "column") {
       if (hit && hit.kind === "column") { editItem(hit); return; }
@@ -346,6 +352,31 @@ const SK = (() => {
     add(g); toast(`${KIND_NM[g.kind]} 복사${g.kind === "axis" ? ` — 간격 ${Math.round(Math.abs(p.d)).toLocaleString()} mm` : ""}`);
   }
 
+  // ---- 축 간격: 평행한 축까지의 거리 (법선 +x/+y 쪽이 +)
+  function axisN(sk) {
+    const q = sk.pts, L = Math.hypot(q[2] - q[0], q[3] - q[1]) || 1;
+    let nx = -(q[3] - q[1]) / L, ny = (q[2] - q[0]) / L; if (nx < -1e-9 || (Math.abs(nx) < 1e-9 && ny < 0)) { nx = -nx; ny = -ny; }
+    return [nx, ny];
+  }
+  function axisNeighbors(sk) {                    // { prev: {o, d<0}, next: {o, d>0} } 가장 가까운 평행 축
+    const [nx, ny] = axisN(sk), q = sk.pts; let prev = null, next = null;
+    for (const o of st.list) {
+      if (o.kind !== "axis" || o.uid === sk.uid || !shown(o)) continue;
+      const op = o.pts, ol = Math.hypot(op[2] - op[0], op[3] - op[1]) || 1;
+      if (Math.abs((op[2] - op[0]) * nx + (op[3] - op[1]) * ny) / ol > 0.02) continue;   // 평행만
+      const d = (op[0] - q[0]) * nx + (op[1] - q[1]) * ny;
+      if (d < -1 && (!prev || d > prev.d)) prev = { o, d };
+      if (d > 1 && (!next || d < next.d)) next = { o, d };
+    }
+    return { prev, next, n: [nx, ny] };
+  }
+  // 기준 축(ref)에서 sk까지 간격을 gap으로 (sk를 법선 방향으로 평행 이동)
+  function setAxisGap(sk, ref, gap) {
+    const [nx, ny] = axisN(sk), q = sk.pts;
+    const d = (q[0] - ref.pts[0]) * nx + (q[1] - ref.pts[1]) * ny, sign = d < 0 ? -1 : 1, mv = sign * gap - d;
+    return shifted(sk, nx * mv, ny * mv);
+  }
+
   // ------------------------------------------------------------------ 축 이름
   function nextAxisName(t) {
     const used = new Set(st.list.filter((a) => a.kind === "axis").map((a) => a.text));
@@ -371,14 +402,21 @@ const SK = (() => {
   function askAxis(sk) {
     let inp;
     const sug = nextAxisNames(sk);
+    const nb = axisNeighbors(sk), near = [nb.prev, nb.next].filter(Boolean).sort((a, b) => Math.abs(a.d) - Math.abs(b.d))[0];
+    let gap = near ? Math.round(Math.abs(near.d) / 10) * 10 : 0, gapInp = null;
     sheet((b) => {
       inp = el("input", { type: "text", class: "sk-input", value: sug[0], placeholder: "예: X1, Y2, 1, A" });
       const done = () => { const t = inp.value.trim(); $("#modal").classList.remove("show");
-        add(Object.assign(sk, { text: t || sug[0] })); hint("축을 꾹 눌러 끌면 평행 복사 — 축 간격이 표시됩니다"); setTimeout(() => hint(""), 2600); };
+        if (near && gapInp && +gapInp.value > 0) { const g = Math.round(+gapInp.value); sk.pts = setAxisGap(sk, near.o, g).pts; }
+        add(Object.assign(sk, { text: t || sug[0] })); hint("축을 꾹 누르면 간격 입력·평행 복사 창"); setTimeout(() => hint(""), 2600); };
       inp.addEventListener("keydown", (e) => { if (e.key === "Enter") done(); });
       b.append(el("h3", {}, "축(그리드) 이름"), inp,
-        el("div", { class: "sk-presets" }, sug.map((t) => el("button", { onclick: () => { inp.value = t; } }, t))),
-        el("p", { class: "small" }, "축 하나를 그린 뒤 꾹 눌러 끌면 복사되고, 축 사이 간격이 자동으로 표시됩니다. 축 교점·축선에 스냅됩니다."),
+        el("div", { class: "sk-presets" }, sug.map((t) => el("button", { onclick: () => { inp.value = t; } }, t))));
+      if (near) {
+        const row = numRow(`${near.o.text || "옆 축"}과 간격`, gap, 10, [3000, 4000, 5000, 6000, 7000, 8000, 9000], (v) => { gap = v; });
+        gapInp = row.querySelector("input"); b.append(row);
+      }
+      b.append(el("p", { class: "small" }, near ? "간격(mm)을 넣으면 그 거리에 정확히 놓입니다. 나중에 축을 꾹 누르면 간격 수정·평행 복사." : "축을 꾹 누르면 이름·간격·평행 복사 창이 열립니다. 축 교점·축선에 스냅됩니다."),
         el("div", { class: "btns" }, el("button", { class: "b gray", onclick: () => { $("#modal").classList.remove("show"); draw(); } }, "취소"),
           el("span", { class: "sp" }), el("button", { class: "b ok", onclick: done }, "넣기")));
     });
@@ -444,7 +482,21 @@ const SK = (() => {
         const ti = el("input", { type: "text", class: "sk-input", value: w.text || "" });
         ti.oninput = () => { w.text = ti.value.trim(); };
         b.append(el("div", { class: "sk-numrow" }, el("span", { class: "sk-lab" }, "축 이름"), ti));
-        let gap = 6000, cnt = 1, dir = 1;
+        const nb = axisNeighbors(sk);
+        if (nb.prev || nb.next) {                    // 옆 축과 간격 — 숫자로 정확히 (이 축을 평행 이동)
+          b.append(el("div", { class: "grp" }, "옆 축과 간격 (이 축을 옮김)"));
+          for (const side of [nb.prev, nb.next]) {
+            if (!side) continue;
+            let g = Math.round(Math.abs(side.d));
+            const row = numRow(`${side.o.text || "축"} ↔ ${w.text || "이 축"}`, g, 10, [], (v) => { g = v; });
+            row.append(el("button", { class: "b edit", onclick: () => {
+              if (!(g > 0)) return; const prevA = clone(sk); sk.pts = setAxisGap(sk, side.o, g).pts; if (w.text) sk.text = w.text;
+              modify(sk, prevA); close(); toast(`${side.o.text || "축"} ↔ ${sk.text}: ${g.toLocaleString()} mm`);
+            } }, "적용"));
+            b.append(row);
+          }
+        }
+        let gap = nb.next ? Math.round(nb.next.d / 10) * 10 : nb.prev ? Math.round(-nb.prev.d / 10) * 10 : 6000, cnt = 1, dir = 1;
         b.append(el("div", { class: "grp" }, "평행 복사 (간격을 알 때)"),
           numRow("간격", gap, 100, [3000, 4000, 5000, 6000, 7000, 8000, 9000], (v) => { gap = v; }),
           numRow("개수", cnt, 1, [1, 2, 3, 4, 5, 6], (v) => { cnt = v; }),
@@ -825,7 +877,7 @@ const SK = (() => {
   const lsSet = (k) => { try { return new Set(JSON.parse(localStorage.getItem(k) || "[]")); } catch (e) { return new Set(); } };
   const hideK = lsSet("skHideKinds"), hideC = lsSet("skHideColors");
   const colKey = (sk) => String(sk.color || COLORS[0]).toLowerCase();
-  function shown(sk) { return !hideK.has(sk.kind) && !hideC.has(colKey(sk)); }
+  function shown(sk) { return !hideK.has(sk.kind) && !hideC.has(colKey(sk)) && (!window.ownerVisible || ownerVisible(sk)); }
   function setLayer(type, key, show) {
     const set = type === "kind" ? hideK : hideC, k = type === "kind" ? key : String(key).toLowerCase();
     if (show) set.delete(k); else set.add(k);
