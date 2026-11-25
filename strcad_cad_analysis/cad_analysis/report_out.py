@@ -116,12 +116,18 @@ def items(res, P, purposes=("균열검토", "기타"), sheet="", with_unplaced=F
         else:
             it["desc"] = " ".join(x for x in (fl.get("item"), fl.get("desc")) if x) or SV.summary(r, P) or r.get("purpose", "")
             it.update(J=None, kind="etc")
-        seen = []
+        seen, ph_loc = [], {}
         for x in lst:
+            ax = None
             for ph in x.get("photos") or []:
                 if ph not in seen:
                     seen.append(ph)
+                    if len(lst) > 1 and SV.is_placed(x):      # 위치마다 찍은 사진 → 그 위치의 축
+                        if ax is None:
+                            ax = axis_loc(res, *rec_point(x, byid))
+                        ph_loc[ph] = ax
         it["photos"] = seen
+        it["photo_axis"] = ph_loc
         out.append(it)
     for k, it in enumerate(out, 1):
         it["seq"] = k
@@ -299,7 +305,10 @@ def album_blocks(groups, with_nophoto=False):
                 if with_nophoto:
                     out.append({"photo": None, "loc": loc, "body": body, "name": ""})
                 continue
+            pax = it.get("photo_axis") or {}
             for k, p in enumerate(phs):
+                if p in pax:
+                    loc = " ".join(x for x in (name, pax[p] or it.get("axis"), it["member"]) if x)
                 out.append({"photo": p, "loc": loc, "body": body + (f"-{k + 1}" if len(phs) > 1 else ""), "name": photo_stem(p)})
     return out
 

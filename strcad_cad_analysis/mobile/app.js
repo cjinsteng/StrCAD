@@ -740,7 +740,7 @@ function placeRec(x, y) {
   let rec = src;
   if (S.placingAdd && isPlaced(src)) {            // 같은 균열번호를 다른 위치에 하나 더 (개수 집계)
     rec = JSON.parse(JSON.stringify(src));
-    Object.assign(rec, { id: S.recs.reduce((a, r) => Math.max(a, r.id || 0), 0) + 1, uid: uid(), no: nextNo(), name: "", date: today(), inspector: inspector() });
+    Object.assign(rec, { id: S.recs.reduce((a, r) => Math.max(a, r.id || 0), 0) + 1, uid: uid(), no: nextNo(), name: "", date: today(), inspector: inspector(), photos: [] });
     delete rec.calc;
     if (window.CO) CO.stamp(rec);
   }
@@ -750,7 +750,9 @@ function placeRec(x, y) {
   if (L.dxy) { rec.dx = L.dxy[0]; rec.dy = L.dxy[1]; } else { delete rec.dx; delete rec.dy; }
   if (!rec.name && L.m) rec.name = memberName(L.m);
   saveRec(rec); if (S.edit && S.edit.uid === rec.uid) S.edit = JSON.parse(JSON.stringify(rec));
+  const added = rec !== src;
   renderList(); draw();
+  if (added) { selectRec(rec.uid); toast(`${rec.label} 위치 추가 — 지금 ${crackCount(rec.label, rec.owner)}곳 · 이 위치 사진을 찍으세요`, 3000); return; }
   toast(rec.label ? `${rec.label} 배치 — 지금 ${crackCount(rec.label, rec.owner)}곳` : `#${rec.no} 배치 완료`);
 }
 // 같은 균열번호(같은 검토자)의 모든 위치 — 도면 전체
@@ -763,13 +765,13 @@ function crackSiblings(label, owner) {
   return out;
 }
 function crackCount(label, owner) { return crackSiblings(label, owner).filter(isPlaced).length; }
-// 크기·형태·사진·메모를 고치면 같은 번호의 다른 위치에도 똑같이
+// 크기·형태·메모를 고치면 같은 번호의 다른 위치에도 똑같이 (사진은 위치마다 따로)
 function syncCrackSiblings(rec) {
   if (!rec.label || !(S.purposes[rec.purpose] || {}).crack) return;
   for (const o of crackSiblings(rec.label, rec.owner)) {
     if (o.uid === rec.uid) continue;
     const sh = o._sheet; delete o._sheet;
-    Object.assign(o, { fields: JSON.parse(JSON.stringify(rec.fields || {})), memo: rec.memo, photos: [...(rec.photos || [])], updated: nowIso() });
+    Object.assign(o, { fields: JSON.parse(JSON.stringify(rec.fields || {})), memo: rec.memo, updated: nowIso() });
     run("UPDATE surveys SET rec=?, updated=? WHERE uid=?", [JSON.stringify(o), o.updated, o.uid]);
     if (window.CO) CO.mark("rec", o.uid);
     const i = S.recs.findIndex((r) => r.uid === o.uid); if (i >= 0 && S.sheet && S.sheet.id === sh) S.recs[i] = o;
@@ -885,12 +887,21 @@ function showLayers() {
       }
       if (window.SK) { const on = !SK.hidden();
         box.append(el("button", { class: "lay" + (on ? " on" : ""), style: "--c:#e11d48", onclick: () => { SK.setHidden(on); render(); } },
-          el("i"), "✎ 스케치", el("small", {}, `${SK.list.length}개`))); }
+          el("i"), "✎ 스케치 전체", el("small", {}, `${SK.list.length}개`)));
+        const ls = SK.layerStats();
+        if (ls.kinds.length) box.append(el("div", { class: "lay-sec" }, "스케치 — 종류별"), el("div", { class: "lay-grid" + (on ? "" : " dim") },
+          ls.kinds.map((k) => el("button", { class: "lay sm" + (k.on ? " on" : ""), style: "--c:#2563eb", onclick: () => { SK.setLayer("kind", k.key, !k.on); render(); } },
+            el("i"), k.name, el("small", {}, String(k.n))))));
+        if (ls.colors.length) box.append(el("div", { class: "lay-sec" }, "스케치 — 색깔별"), el("div", { class: "lay-grid" + (on ? "" : " dim") },
+          ls.colors.map((c) => el("button", { class: "lay sm" + (c.on ? " on" : ""), style: `--c:${c.key}`, onclick: () => { SK.setLayer("color", c.key, !c.on); render(); } },
+            el("i"), ({ "#e11d48": "빨강", "#f28c28": "주황", "#eab308": "노랑", "#16a34a": "초록", "#2563eb": "파랑", "#7c3aed": "보라", "#111827": "검정", "#ec4899": "분홍" })[c.key] || "",
+            el("small", {}, String(c.n))))));
+      }
     };
     const box = el("div", { class: "lay-box" });
     b.append(el("h3", {}, "도면에 표시할 조사"), box,
       el("div", { class: "btns" },
-        el("button", { class: "b gray", onclick: () => { hid.clear(); try { localStorage.setItem("hidePurposes", "[]"); } catch (e) { /* ignore */ } if (window.SK) SK.setHidden(false); render(); draw(); } }, "모두 보기"),
+        el("button", { class: "b gray", onclick: () => { hid.clear(); try { localStorage.setItem("hidePurposes", "[]"); } catch (e) { /* ignore */ } if (window.SK) { SK.setHidden(false); SK.showAllLayers(); } render(); draw(); } }, "모두 보기"),
         el("span", { class: "sp" }), el("button", { class: "b ok", onclick: () => $("#modal").classList.remove("show") }, "닫기")));
     render();
   });
@@ -1043,7 +1054,7 @@ function renderForm() {
     row(lab, vbtn(k, { field: true, unit, choices: ch || FIELD_CHOICES[k] || (k === "ctype" ? CRACK_TYPES.map((t) => t.k) : CRACK_CHIPS[k] && CRACK_CHIPS[k].map(String)) }));
   }
   if (P.crack && rec.label) f.append(el("div", { class: "load-box" }, el("b", {}, `${rec.label} — 지금 ${crackCount(rec.label, rec.owner)}곳`),
-    el("small", {}, "같은 번호를 여러 곳에 표시하면 개수가 집계됩니다 (크기·사진은 모든 위치 공통)")));
+    el("small", {}, "같은 번호를 여러 곳에 표시하면 개수가 집계됩니다 (크기·형태는 모든 위치 공통, 사진은 위치마다 따로 — 이 위치 사진만 여기에)")));
   if (P.crack && !ro) {
     if (isPlaced(rec)) f.append(el("div", { class: "btn-pair" }, el("button", { class: "val", onclick: () => startPlacing(rec, true) }, "📍＋ 같은 번호 위치 추가"),
       el("button", { class: "val", onclick: () => startPlacing(rec) }, "↻ 이 위치 다시 지정")));
@@ -1303,13 +1314,29 @@ function renderList() {
   $("#lt-h").innerHTML = ""; $("#lt-h").append(el("tr", {}, cols.map(([, t]) => el("th", {}, t))));
   const tb = $("#lt-b"); tb.innerHTML = "";
   const cur = S.edit || S.sel;
-  for (const r of recs) {
-    const tr = el("tr", { class: (cur && cur.uid === r.uid ? "sel" : "") + (isPlaced(r) ? "" : " unplaced") + (isMine(r) ? "" : " others") },
-      cols.map(([k]) => el("td", {}, String(listValue(r, k)))));
+  const rowOf = (r, sub) => {
+    const tr = el("tr", { class: (sub ? "sub" : "") + (cur && cur.uid === r.uid ? " sel" : "") + (isPlaced(r) ? "" : " unplaced") + (isMine(r) ? "" : " others") },
+      cols.map(([k]) => el("td", {}, k === "no" && sub && r.label ? r.label : String(listValue(r, k)))));
     rowGestures(tr, () => (isPlaced(r) || !isMine(r) ? showRec(r.uid) : startPlacing(r)), () => { showRec(r.uid, true); S.rowMenu = r.uid; renderList(); });
     tb.append(tr);
     if (S.rowMenu === r.uid) tb.append(rowMenuRow(r, cols.length));
-  }
+  };
+  if (S.filter === "전체" && recs.length) {        // 전체: 용도별(부재검측·균열검토 …) 묶음 — 누르면 하위 목록
+    S.allOpen = S.allOpen || new Set();
+    if (cur && S.allOpenAuto !== cur.uid) { S.allOpen.add(cur.purpose); S.allOpenAuto = cur.uid; }
+    const order = [...Object.keys(S.purposes), ...new Set(recs.map((r) => r.purpose))].filter((v, i, a) => a.indexOf(v) === i);
+    for (const pu of order) {
+      const its = recs.filter((r) => r.purpose === pu); if (!its.length) continue;
+      const open = S.allOpen.has(pu), P = S.purposes[pu] || {};
+      const nUn = its.filter((r) => !isPlaced(r)).length;
+      const extra = P.crack ? `${new Set(its.map((r) => r.label || r.uid)).size}종 · ${its.filter(isPlaced).length}곳` : `${its.length}건`;
+      const hr = el("tr", { class: "kgrp" + (open ? " open" : "") }, el("td", { colspan: String(cols.length) },
+        `${open ? "▾" : "▸"} ${pu}`, el("small", {}, extra + (nUn ? ` · 미배치 ${nUn}` : ""))));
+      hr.addEventListener("click", () => { if (open) S.allOpen.delete(pu); else S.allOpen.add(pu); S.rowMenu = null; renderList(); });
+      tb.append(hr);
+      if (open) its.forEach((r) => rowOf(r, true));
+    }
+  } else for (const r of recs) rowOf(r);
   const P = S.purposes[S.filter] || S.purposes[S.purpose] || {};
   if (P.crack && (S.filter === "전체" ? S.purpose : S.filter) && S.db) tb.append(el("tr", { class: "add-row" },
     el("td", { colspan: String(cols.length) }, el("button", { class: "b ok", onclick: (ev) => { ev.stopPropagation(); crackAdd(null); } }, "＋ 균열·손상 추가 (종류 → 크기 → 사진)"))));
@@ -1335,6 +1362,7 @@ function renderCrackList() {
     const tr = el("tr", { class: (curIn && !open ? "sel" : "") + (placed ? "" : " unplaced") + (mine ? "" : " others") + (multi ? " grp" : "") + (open ? " open" : "") },
       cols.map(([k]) => el("td", {}, k === "add" ? (mine && placed ? el("button", { class: "mini-add", onclick: (ev) => { ev.stopPropagation(); startPlacing(r, true); } }, "📍＋") : "")
         : k === "count" ? (placed ? `${crackCount(r.label, r.owner)}곳` : "📍미배치")
+        : k === "ph" ? String(lst.reduce((a, x) => a + (x.photos || []).length, 0) || "")
         : (k === "label" || (k === "no" && !cols.some((c) => c[0] === "label"))) && multi ? `${open ? "▾" : "▸"} ${listValue(r, k)}` : String(listValue(r, k)))));
     rowGestures(tr, () => {
       if (!placed && mine) { startPlacing(r); return; }
@@ -1432,13 +1460,58 @@ function exportCsv() {
 // ======================================================================= sheets / menu / PC link
 $("#pgPrev").onclick = () => S.db && loadSheet(S.sheetIdx - 1);
 $("#pgNext").onclick = () => S.db && loadSheet(S.sheetIdx + 1);
-$("#btnSheets").onclick = $("#floorBtn").onclick = () => {
+// ---- 도면 LIST — 분류(미정·평면도(건축)·평면도(구조)·입면도·기타) 탭, 이름 변경·분류 지정
+const SHEET_CATS = ["미정", "평면도(건축)", "평면도(구조)", "입면도", "기타"];
+function sheetCat(id) { try { return JSON.parse(q("SELECT origin FROM sheets WHERE id=?", [id])[0].origin).cat || "미정"; } catch (e) { return "미정"; } }
+function setSheetMeta(id, { name, cat }) {
+  const row = q("SELECT name, origin FROM sheets WHERE id=?", [id])[0]; if (!row) return;
+  let o; try { o = JSON.parse(row.origin) || {}; } catch (e) { o = { ox: 0, oy: 0 }; }
+  if (cat != null) { if (cat === "미정") delete o.cat; else o.cat = cat; }
+  run("UPDATE sheets SET name=?, origin=? WHERE id=?", [name != null ? name : row.name, JSON.stringify(o), id]);
+  if (window.CO) CO.mark("sheet", id);
+  S.sheets = q("SELECT id, analysis_id, seq, name FROM sheets ORDER BY seq, id");
+  if (S.sheet && S.sheet.id === id && name != null) { S.sheet.name = name; $("#floorBtn").textContent = name; }
+  persistSoon();
+}
+function showSheets() {
   if (!S.db) return;
-  const close = sheet((b) => { b.append(el("h3", {}, "도면 LIST")); const l = el("div", { class: "sheets-list" });
-    S.sheets.forEach((s, i) => { const n = q("SELECT COUNT(*) AS n FROM surveys WHERE sheet_id=? AND deleted=0", [s.id])[0].n;
-      l.append(el("button", { class: i === S.sheetIdx ? "cur" : "", onclick: () => { close(); loadSheet(i); } }, el("span", {}, `${i + 1}. ${s.name}`), el("span", {}, `${n}건`))); });
-    b.append(l); });
-};
+  let tab = localStorage.getItem("sheetTab") || "전체", menuFor = null;
+  const close = sheet((b) => {
+    const render = () => {
+      b.innerHTML = "";
+      const cats = S.sheets.map((s) => sheetCat(s.id));
+      const tabs = el("div", { class: "sh-tabs" }, ["전체", ...SHEET_CATS].map((t) => {
+        const n = t === "전체" ? S.sheets.length : cats.filter((c) => c === t).length;
+        return el("button", { class: (tab === t ? "on" : "") + (n ? "" : " empty"), onclick: () => { tab = t; try { localStorage.setItem("sheetTab", t); } catch (e) { /* ignore */ } menuFor = null; render(); } }, t, el("small", {}, String(n)));
+      }));
+      const l = el("div", { class: "sheets-list" });
+      S.sheets.forEach((s, i) => {
+        const c = cats[i]; if (tab !== "전체" && c !== tab) return;
+        const n = q("SELECT COUNT(*) AS n FROM surveys WHERE sheet_id=? AND deleted=0", [s.id])[0].n;
+        const row = el("div", { class: "sh-row" },
+          el("button", { class: "sh-main" + (i === S.sheetIdx ? " cur" : ""), onclick: () => { close(); loadSheet(i); } },
+            el("span", {}, `${i + 1}. ${s.name}`), el("span", {}, el("em", { class: "sh-cat" + (c === "미정" ? " none" : "") }, c), ` ${n}건`)),
+          el("button", { class: "sh-more", onclick: () => { menuFor = menuFor === s.id ? null : s.id; render(); } }, "⋯"));
+        l.append(row);
+        if (menuFor === s.id) {
+          const inp = el("input", { type: "text", class: "sk-input", value: s.name });
+          l.append(el("div", { class: "sh-edit" },
+            el("div", { class: "sk-numrow" }, el("span", { class: "sk-lab" }, "이름"), inp,
+              el("button", { class: "b ok", onclick: () => { const v = inp.value.trim(); if (!v) return; setSheetMeta(s.id, { name: v }); toast(`도면 이름: ${v}`); render(); } }, "변경")),
+            el("div", { class: "sk-numrow" }, el("span", { class: "sk-lab" }, "분류"),
+              el("div", { class: "sk-chips" }, SHEET_CATS.map((t) => el("button", { class: t === c ? "on" : "", onclick: () => { setSheetMeta(s.id, { cat: t }); toast(`${s.name} → ${t}`); render(); } }, t))))));
+        }
+      });
+      if (!l.children.length) l.append(el("p", { class: "small" }, `'${tab}' 도면이 없습니다. 다른 도면의 ⋯ 에서 분류를 지정하세요.`));
+      b.append(el("h3", {}, "도면 LIST"), tabs, l,
+        el("p", { class: "small" }, "⋯ 를 눌러 도면 이름·분류(평면도(건축)/평면도(구조)/입면도 …)를 정합니다. PDF로 여러 장 올리면 처음엔 '미정'."),
+        el("div", { class: "btns" }, el("button", { class: "b edit", onclick: () => { close(); NS.dialog(false); } }, "＋ 도면 추가 (PDF 여러 장 가능)"),
+          el("span", { class: "sp" }), el("button", { class: "b ok", onclick: () => close() }, "닫기")));
+    };
+    render();
+  });
+}
+$("#btnSheets").onclick = $("#floorBtn").onclick = () => showSheets();
 $("#btnFit").onclick = fit;
 $("#modeSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return; setMode(b.dataset.mode); });
 $("#btnMenu").onclick = () => { $("#menuInfo").textContent = S.db ? `${S.fileName} · 내보낸 날짜 ${S.meta.exported || "-"}` : ""; $("#menu").classList.add("show"); };
@@ -1514,7 +1587,7 @@ async function sendOriginals() {
   bz.close(); persistSoon();
   toast(`원본 사진 ${ok}장 PC 전송` + (fail ? ` · 실패 ${fail}장 (다음에 다시 보냄)` : ""), 4000);
 }
-$("#btnInsp").onclick = askInspector;
+$("#btnInsp").onclick = () => (window.CO && CO.me() ? CO.hub() : askInspector());
 $("#btnPcGet").onclick = pcGet; $("#miPcGet").onclick = pcGet; $("#miPcPut").onclick = pcPut;
 $("#miPcAddr").onclick = () => { $("#menu").classList.remove("show"); askPcAddress(); };
 

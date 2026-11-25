@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
       img = new Uint8Array(await blob.arrayBuffer());
     }
     db.run("INSERT INTO sheets (id, analysis_id, seq, name, origin, extents, members, background, grid) VALUES (?,?,?,?,?,?,?,?,?)",
-      [id, null, seq, opts.name, JSON.stringify({ ox: 0, oy: 0 }), JSON.stringify({ w, h }), "[]", JSON.stringify(bg), "[]"]);
+      [id, null, seq, opts.name, JSON.stringify(Object.assign({ ox: 0, oy: 0 }, opts.cat ? { cat: opts.cat } : {})), JSON.stringify({ w, h }), "[]", JSON.stringify(bg), "[]"]);
     db.run("INSERT INTO sheet_ext (sheet_id, suid, kind, image, mime, iw, ih, rect) VALUES (?,?,?,?,?,?,?,?)",
       [id, suid, opts.kind, img, img ? "image/jpeg" : null, iw, ih, JSON.stringify([0, 0, w, h])]);
     return id;
@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
     const meta = { format: FORMAT, version: "1", project, exported: nowIso(), app: "StrCAD 현장조사(휴대폰에서 만듦)",
       purposes: "{}", picklists: "{}" };
     for (const [k, v] of Object.entries(meta)) db.run("INSERT INTO meta (key, value) VALUES (?,?)", [k, v]);
-    await addSheet(db, sheetOpts);
+    if (typeof sheetOpts === "function") await sheetOpts(db); else await addSheet(db, sheetOpts);
     const bytes = db.export(); db.close();
     await openBytes(bytes, `${safeName(project)}_현장조사.strsv`);
   }
@@ -183,14 +183,30 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
     const pw = inp("사진 가로 실제 길이 (m) — 모르면 그대로", "40", "number");
     const prev = el("div", { class: "ns-prev" }, "사진 없음");
     const fileIn = el("input", { type: "file", accept: "image/*", hidden: "" });
-    const pdfIn = el("input", { type: "file", accept: "application/pdf,.pdf", hidden: "" });
+    const pdfIn = el("input", { type: "file", accept: "application/pdf,.pdf", multiple: "", hidden: "" });
     let pdf = null;                    // { doc, n, wmm, hmm }
+    let pdfs = [];                     // 여러 PDF / 여러 쪽: [{ f, doc, n }]
+    const allPg = el("input", { type: "checkbox", checked: "" });
+    const pageTotal = () => pdfs.reduce((a, p) => a + p.n, 0);
+    const multiMode = () => pageTotal() > 1 && allPg.checked;
     const pgIn = inp("쪽", "1", "number"), scIn = el("select", { class: "ns-in" }, ["50", "100", "150", "200", "300", "500"].map((v) => el("option", { value: v }, "1/" + v)));
     scIn.value = "100";
     const pdfInfo = el("p", { class: "small" }, "");
-    const pdfBox = el("div", { class: "ns-box hidden" }, el("div", { class: "ns-row" }, lab("PDF 쪽"), pgIn, lab("축척"), scIn), pdfInfo);
+    const pgRow = el("div", { class: "ns-row" }, lab("PDF 쪽"), pgIn);
+    const allRow = el("label", { class: "ns-all hidden" }, allPg, el("span", {}, ""));
+    const pdfBox = el("div", { class: "ns-box hidden" }, allRow, el("div", { class: "ns-row" }, pgRow, lab("축척"), scIn), pdfInfo);
     const pdfWidth = () => { if (!pdf) return; pw.value = (pdf.wmm * (+scIn.value || 100) / 1000).toFixed(2);
+      if (multiMode()) { pdfInfo.textContent = `PDF ${pdfs.length}개 · 총 ${pageTotal()}쪽 → 도면 ${pageTotal()}장 (분류 '미정'). 가로 길이는 쪽마다 용지 × 축척 1/${scIn.value}. 이름은 '파일명-쪽' — 나중에 도면LIST에서 이름·분류를 바꾸세요.`; return; }
       pdfInfo.textContent = `${pdf.n}쪽 중 ${pgIn.value}쪽 · 용지 ${paperName(pdf.wmm, pdf.hmm)} (PDF에서 자동) → 가로 ${pw.value} m`; };
+    const syncMulti = () => {
+      const m = multiMode();
+      allRow.classList.toggle("hidden", pageTotal() <= 1);
+      allRow.lastChild.textContent = `PDF ${pdfs.length}개 · ${pageTotal()}쪽 모두 도면으로 추가`;
+      pgRow.classList.toggle("hidden", m); name.disabled = m;
+      pw.classList.toggle("hidden", m); if (pw.previousSibling) pw.previousSibling.classList.toggle("hidden", m);
+      pdfWidth();
+    };
+    allPg.onchange = syncMulti;
     const pdfShow = async () => {
       const n = Math.min(Math.max(parseInt(pgIn.value) || 1, 1), pdf.n); pgIn.value = n;
       await withBusy("PDF 올리는 중…", async () => {
@@ -201,16 +217,21 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
     pgIn.onchange = () => pdf && pdfShow().catch((e) => toast("PDF: " + (e.message || e)));
     scIn.onchange = pdfWidth;
     pdfIn.onchange = async (e) => {
-      const f = e.target.files[0]; if (!f) return;
+      const fs = [...e.target.files]; e.target.value = ""; if (!fs.length) return;
       try {
-        const doc = await withBusy("PDF 올리는 중…", () => pdfOpen(f), f.name); pdf = { doc, n: doc.numPages }; pgIn.value = 1; pdfBox.classList.remove("hidden");
-        if (name.value === "1F" || !name.value.trim()) name.value = f.name.replace(/\.pdf$/i, "").slice(0, 30);
-        await pdfShow();
-      } catch (er) { pdf = null; pdfBox.classList.add("hidden"); prev.textContent = "PDF를 열 수 없습니다"; toast("PDF: " + (er.message || er), 4000); }
+        pdfs = [];
+        await withBusy("PDF 올리는 중…", async (b) => {
+          for (const [i, f] of fs.entries()) { b.set("PDF 올리는 중…", `${f.name} (${i + 1}/${fs.length})`, i / fs.length); await paint();
+            const doc = await pdfOpen(f); pdfs.push({ f, doc, n: doc.numPages }); }
+        }, fs[0].name);
+        pdf = { doc: pdfs[0].doc, n: pdfs[0].n }; pgIn.value = 1; pdfBox.classList.remove("hidden");
+        if (name.value === "1F" || !name.value.trim() || /^\d+F$/.test(name.value)) name.value = fs[0].name.replace(/\.pdf$/i, "").slice(0, 30);
+        await pdfShow(); syncMulti();
+      } catch (er) { pdf = null; pdfs = []; pdfBox.classList.add("hidden"); prev.textContent = "PDF를 열 수 없습니다"; toast("PDF: " + (er.message || er), 4000); }
     };
     const camIn = el("input", { type: "file", accept: "image/*", capture: "environment", hidden: "" });
     const showPrev = (blob) => { prev.innerHTML = ""; prev.append(el("img", { src: URL.createObjectURL(blob) })); };
-    const onFile = async (e) => { const f = e.target.files[0]; if (!f) return; file = f; pdf = null; pdfBox.classList.add("hidden");
+    const onFile = async (e) => { const f = e.target.files[0]; if (!f) return; file = f; pdf = null; pdfs = []; pdfBox.classList.add("hidden"); name.disabled = false; pw.classList.remove("hidden"); if (pw.previousSibling) pw.previousSibling.classList.remove("hidden");
       await withBusy("사진 올리는 중…", async () => { showPrev(f); const im = prev.querySelector("img"); if (im) await new Promise((r) => { im.onload = im.onerror = r; }); }, f.name || "");
       warpBtn.classList.remove("hidden"); };
     const warpBtn = el("button", { class: "b gray hidden", onclick: async () => {
@@ -236,6 +257,12 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
         el("span", { class: "sp" }),
         el("button", { class: "b ok", onclick: async () => {
           const nm = name.value.trim(); const pj = (newProject ? proj.value : S.meta.project || "").trim();
+          if (kind === "photo" && multiMode()) {          // PDF 여러 장 → 도면 여러 장 (분류 '미정')
+            if (newProject && !pj) { toast("프로젝트 이름을 입력하세요"); return; }
+            $("#modal").classList.remove("show");
+            await addPdfPages(newProject ? pj : null, pdfs, +scIn.value || 100);
+            return;
+          }
           if (!nm) { toast("도면 이름을 입력하세요"); return; }
           if (newProject && !pj) { toast("프로젝트 이름을 입력하세요"); return; }
           const o = { name: nm, kind };
@@ -250,6 +277,35 @@ CREATE TABLE IF NOT EXISTS sheet_ext (sheet_id INTEGER PRIMARY KEY, suid TEXT, k
             toast(`'${nm}' 도면을 만들었습니다 — 검측점을 찍으세요`);
           } catch (e) { toast("만들지 못했습니다: " + (e.message || e), 4000); }
         } }, "만들기"))));
+  }
+
+  // PDF 여러 개·여러 쪽 → 쪽마다 도면 한 장 (분류 '미정' — 도면LIST에서 지정)
+  async function addPdfPages(newProj, pdfs, scale) {
+    const total = pdfs.reduce((a, p) => a + p.n, 0);
+    const run1 = async (db, b) => {
+      let k = 0, first = null;
+      for (const p of pdfs) {
+        const base = p.f.name.replace(/\.pdf$/i, "").slice(0, 30);
+        for (let n = 1; n <= p.n; n++) {
+          k++; b.set("PDF 도면 올리는 중…", `${base} ${n}쪽 (${k}/${total})`, (k - 1) / total); await paint();
+          const inf = await pdfPageInfo(p.doc, n);
+          const blob = await pdfRender(p.doc, n);
+          const id = await addSheet(db, { name: p.n > 1 ? `${base}-${n}` : base, kind: "photo", file: blob, widthM: inf.wmm * scale / 1000, pdf: true, cat: "미정" });
+          if (first == null) first = id;
+          if (!newProj && window.CO) CO.mark("sheet", id);
+        }
+      }
+      return first;
+    };
+    try {
+      await withBusy("PDF 도면 올리는 중…", async (b) => {
+        if (newProj) { await createProject(newProj, (db) => run1(db, b)); return; }
+        const before = S.sheets.length;
+        await run1(S.db, b);
+        S.sheets = q("SELECT id, analysis_id, seq, name FROM sheets ORDER BY seq, id"); loadSheet(before); persistSoon();
+      });
+      toast(`PDF ${total}쪽 → 도면 ${total}장 추가 (분류 '미정') — 도면LIST에서 이름·분류를 정하세요`, 4000);
+    } catch (e) { toast("PDF 도면을 만들지 못했습니다: " + (e.message || e), 4000); }
   }
 
   // ---------------------------------------------------------------- 축척 맞추기 (두 점 + 실제 길이)

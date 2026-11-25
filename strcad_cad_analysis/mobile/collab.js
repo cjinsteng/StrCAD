@@ -274,46 +274,90 @@ const CO = (() => {
 
   // ------------------------------------------------------------------ UI
   function closeModal() { $("#modal").classList.remove("show"); }
-  function loginSheet(after) {
+  // 로그인·가입 폼 — 시작 화면(전체 화면)과 협업 창이 같이 씀
+  function loginForm(box, opts) {
     let mode = "login";
+    const url = el("input", { type: "url", class: "sk-input", placeholder: "서버 주소 (예: https://strcad.회사.com 또는 http://192.168.0.10:8780)", value: base() || localStorage.getItem("collabUrlHint") || "" });
+    const id = el("input", { type: "text", class: "sk-input", placeholder: "아이디", autocapitalize: "off", autocomplete: "username", value: (st.auth && st.auth.lastLogin) || "" });
+    const pw = el("input", { type: "password", class: "sk-input", placeholder: "비밀번호", autocomplete: "current-password" });
+    const nm = el("input", { type: "text", class: "sk-input", placeholder: "이름 (검토자로 표시)" });
+    const code = el("input", { type: "text", class: "sk-input", placeholder: "팀 코드 (관리자에게 받기)", autocapitalize: "characters" });
+    const auto = el("input", { type: "checkbox" }); auto.checked = localStorage.getItem("autoLogin") !== "0";
+    const msg = el("p", { class: "small lg-msg" }, "");
+    const tabs = el("div", { class: "seg sk-seg" });
+    const form = el("div", { class: "co-form" });
+    const render = () => {
+      tabs.innerHTML = "";
+      for (const [m, t] of [["login", "로그인"], ["signup", "가입"]]) tabs.append(el("button", { class: mode === m ? "on" : "", onclick: () => { mode = m; render(); } }, t));
+      form.innerHTML = "";
+      form.append(url, id, pw);
+      if (mode === "signup") form.append(nm, code, el("p", { class: "small" }, "처음 가입하는 사람은 관리자가 되고 팀 코드 없이 가입됩니다."));
+      if (opts.full) form.append(el("label", { class: "lg-auto" }, auto, el("span", {}, "자동 로그인 (다음부터 이 화면 건너뛰기)")));
+    };
+    const go = async () => {
+      const u = normUrl(url.value); if (!u) { msg.textContent = "서버 주소를 넣으세요"; return; }
+      if (!id.value.trim() || !pw.value) { msg.textContent = "아이디와 비밀번호를 넣으세요"; return; }
+      msg.textContent = "연결 중…";
+      try {
+        const ping = await api("api/ping", { url: u, timeout: 8000 });
+        if (!ping.collab) throw new Error("StrCAD 협업 서버가 아닙니다 (PC Wi-Fi 연결 주소와 다름)");
+        const r = mode === "login" ? await api("api/login", { url: u, body: { login: id.value.trim(), password: pw.value } })
+          : await api("api/signup", { url: u, body: { login: id.value.trim(), password: pw.value, name: nm.value.trim(), team_code: code.value.trim() } });
+        st.auth = { url: u, token: r.token, user: r.user, lastLogin: r.user.login }; saveAuth();
+        try { localStorage.setItem("inspector", r.user.name); localStorage.setItem("collabUrlHint", u); localStorage.setItem("offlineStart", "0");
+          if (opts.full) localStorage.setItem("autoLogin", auto.checked ? "1" : "0"); } catch (e) { /* ignore */ }
+        if (window.showInspector) showInspector();
+        toast(`${r.user.name} 님 로그인${r.user.role === "admin" ? " (관리자)" : ""}`);
+        opts.done(r.user);
+      } catch (e) { msg.textContent = (e.name === "AbortError" || e instanceof TypeError ? "서버에 연결할 수 없습니다 — 주소·Wi-Fi를 확인하거나 오프라인으로 시작하세요" : e.message) + ""; }
+    };
+    pw.addEventListener("keydown", (e) => { if (e.key === "Enter" && mode === "login") go(); });
+    box.append(tabs, form, msg);
+    render();
+    return go;
+  }
+  function loginSheet(after) {
     sheet((b) => {
-      const url = el("input", { type: "url", class: "sk-input", placeholder: "서버 주소 (예: https://strcad.회사.com 또는 http://192.168.0.10:8780)", value: base() || localStorage.getItem("collabUrlHint") || "" });
-      const id = el("input", { type: "text", class: "sk-input", placeholder: "아이디", autocapitalize: "off" });
-      const pw = el("input", { type: "password", class: "sk-input", placeholder: "비밀번호" });
-      const nm = el("input", { type: "text", class: "sk-input", placeholder: "이름 (검토자로 표시)" });
-      const code = el("input", { type: "text", class: "sk-input", placeholder: "팀 코드 (관리자에게 받기)", autocapitalize: "characters" });
-      const msg = el("p", { class: "small" }, "");
-      const tabs = el("div", { class: "seg sk-seg" });
-      const render = () => {
-        tabs.innerHTML = "";
-        for (const [m, t] of [["login", "로그인"], ["signup", "가입"]]) tabs.append(el("button", { class: mode === m ? "on" : "", onclick: () => { mode = m; render(); } }, t));
-        form.innerHTML = "";
-        form.append(url, id, pw);
-        if (mode === "signup") form.append(nm, code, el("p", { class: "small" }, "처음 가입하는 사람은 관리자가 되고 팀 코드 없이 가입됩니다."));
-      };
-      const form = el("div", { class: "co-form" });
-      const go = async () => {
-        const u = normUrl(url.value); if (!u) { msg.textContent = "서버 주소를 넣으세요"; return; }
-        msg.textContent = "연결 중…";
-        try {
-          const ping = await api("api/ping", { url: u, timeout: 8000 });
-          if (!ping.collab) throw new Error("StrCAD 협업 서버가 아닙니다 (PC Wi-Fi 연결 주소와 다름)");
-          const r = mode === "login" ? await api("api/login", { url: u, body: { login: id.value.trim(), password: pw.value } })
-            : await api("api/signup", { url: u, body: { login: id.value.trim(), password: pw.value, name: nm.value.trim(), team_code: code.value.trim() } });
-          st.auth = { url: u, token: r.token, user: r.user }; saveAuth();
-          try { localStorage.setItem("inspector", r.user.name); localStorage.setItem("collabUrlHint", u); } catch (e) { /* ignore */ }
-          if (window.showInspector) showInspector();
-          closeModal(); toast(`${r.user.name} 님 로그인${r.user.role === "admin" ? " (관리자)" : ""}`);
-          if (after) after(); else hub();
-        } catch (e) { msg.textContent = (e.name === "AbortError" ? "서버에 연결할 수 없습니다" : e.message) + ""; }
-      };
-      pw.addEventListener("keydown", (e) => { if (e.key === "Enter" && mode === "login") go(); });
-      b.append(el("h3", {}, "👥 협업 — 로그인"), tabs, form, msg,
-        el("div", { class: "btns" }, el("span", { class: "sp" }), el("button", { class: "b gray", onclick: closeModal }, "취소"),
-          el("button", { class: "b ok", onclick: go }, "확인")));
-      render();
+      b.append(el("h3", {}, "👥 협업 — 로그인"));
+      const go = loginForm(b, { done: () => { closeModal(); if (after) after(); else hub(); } });
+      b.append(el("div", { class: "btns" }, el("span", { class: "sp" }), el("button", { class: "b gray", onclick: closeModal }, "취소"),
+        el("button", { class: "b ok", onclick: go }, "확인")));
     });
   }
+  // ---- 시작 화면 (앱을 열면 로그인 — 자동 로그인 · 오프라인으로 시작)
+  function verifyToken() {             // 서버에 닿으면 확인, 안 닿으면 그대로 (현장 오프라인)
+    api("api/me", { timeout: 6000 }).then((r) => { if (r.user) { st.auth.user = r.user; saveAuth(); } })
+      .catch((e) => { if (e.status === 401) { st.auth.token = null; st.auth.user = null; saveAuth(); toast("로그인이 만료되었습니다 — 다시 로그인하세요", 3000); startScreen(true); } });
+  }
+  function hideStart() { const s0 = $("#login"); if (s0) s0.classList.add("hidden"); }
+  function startScreen(force) {
+    const autoOk = localStorage.getItem("autoLogin") !== "0";
+    if (!force && autoOk && st.auth && st.auth.token && me()) { verifyToken(); return; }
+    if (!force && autoOk && localStorage.getItem("offlineStart") === "1" && inspector()) return;
+    const box = $("#login"); box.innerHTML = ""; box.classList.remove("hidden");
+    const card = el("div", { class: "lg-card" });
+    card.append(el("div", { class: "lg-head" }, el("img", { src: "logo.png", alt: "" }), el("div", {}, el("b", {}, "StrCAD 현장조사"), el("small", {}, "검토자 로그인"))));
+    if (st.auth && st.auth.token && me()) card.append(el("button", { class: "bigbtn", onclick: () => { hideStart(); verifyToken(); toast(`${me().name} 님`); } }, `▶ ${me().name} 님으로 계속`),
+      el("div", { class: "lg-or" }, el("span", {}, "다른 계정")));
+    const go = loginForm(card, { full: true, done: () => { hideStart(); } });
+    card.append(el("button", { class: "bigbtn navy", onclick: go }, "로그인"));
+    const nm = el("input", { type: "text", class: "sk-input", placeholder: "검토자 이름", value: inspector() });
+    const off = () => { const v = nm.value.trim(); if (!v) { toast("검토자 이름을 넣으세요"); nm.focus(); return; }
+      try { localStorage.setItem("inspector", v); localStorage.setItem("offlineStart", "1"); } catch (e) { /* ignore */ }
+      if (window.showInspector) showInspector(); hideStart(); toast(`${v} — 오프라인으로 시작 (협업 공유 없이 휴대폰에만 저장)`, 3000); };
+    nm.addEventListener("keydown", (e) => { if (e.key === "Enter") off(); });
+    card.append(el("div", { class: "lg-or" }, el("span", {}, "또는")),
+      el("div", { class: "lg-off" }, nm, el("button", { class: "b gray", onclick: off }, "오프라인으로 시작")),
+      el("p", { class: "small" }, "서버 없이 현장에서만 쓸 때는 이름만 넣고 시작하세요. 나중에 메뉴 › 👥 협업에서 로그인할 수 있습니다."));
+    box.append(card);
+  }
+  function logout(toStart) {
+    api("api/logout", { body: {} }).catch(() => {});
+    st.auth = { url: base(), lastLogin: st.auth && st.auth.lastLogin }; saveAuth(); stopAuto(); st.project = null; updatePill(); closeModal();
+    try { localStorage.setItem("offlineStart", "0"); } catch (e) { /* ignore */ }
+    toast("로그아웃"); if (toStart) startScreen(true);
+  }
+  const inspector = () => { try { return localStorage.getItem("inspector") || ""; } catch (e) { return ""; } };
 
   async function hub() {
     if (!me()) { loginSheet(); return; }
@@ -344,7 +388,7 @@ const CO = (() => {
       const row = el("div", { class: "btns co-btns" });
       if (u.role === "admin") row.append(el("button", { class: "b edit", onclick: () => people() }, "👥 인원 관리"));
       row.append(el("button", { class: "b gray", onclick: () => changePw() }, "비밀번호 변경"),
-        el("button", { class: "b gray", onclick: () => { api("api/logout", { body: {} }).catch(() => {}); st.auth = { url: base() }; saveAuth(); stopAuto(); st.project = null; updatePill(); closeModal(); toast("로그아웃"); } }, "로그아웃"));
+        el("button", { class: "b gray", onclick: () => logout(true) }, "로그아웃"));
       if (active()) row.append(el("button", { class: "b gray", onclick: () => { if (!confirm("이 파일의 협업 연결을 끊을까요? (내 휴대폰의 파일은 그대로, 더 이상 공유하지 않음)")) return;
         run("DELETE FROM collab"); run("DELETE FROM collab_dirty"); onOpen(); closeModal(); toast("협업 연결 끊음"); } }, "연결 끊기"));
       b.append(row, el("div", { class: "btns" }, el("span", { class: "sp" }), el("button", { class: "b ok", onclick: closeModal }, "닫기")));
@@ -432,8 +476,10 @@ const CO = (() => {
   (async () => { if (base() || NATIVE) return; try { const r = await fetch("api/ping", { cache: "no-store" }); const j = await r.json(); if (j.collab) localStorage.setItem("collabUrlHint", location.origin + location.pathname.replace(/[^/]*$/, "")); } catch (e) { /* no server */ } })();
 
   $("#miCollab").onclick = () => { $("#menu").classList.remove("show"); hub(); };
+  $("#miLogin").onclick = () => { $("#menu").classList.remove("show"); if (me()) { if (confirm(`${me().name} 님 로그아웃하고 로그인 화면으로 갈까요?`)) logout(true); } else startScreen(true); };
+  startScreen(false);
   $("#btnCollab").onclick = () => hub();
   $("#btnShare").onclick = () => sync(false);
-  return { onOpen, mark, mine, ownerName, stamp, sync, hub, active, me, suidOf, renumber, get people() { return st.people; } };
+  return { startScreen, logout, onOpen, mark, mine, ownerName, stamp, sync, hub, active, me, suidOf, renumber, get people() { return st.people; } };
 })();
 window.CO = CO;

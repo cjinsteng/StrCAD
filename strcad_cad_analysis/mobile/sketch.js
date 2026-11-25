@@ -104,7 +104,7 @@ const SK = (() => {
     const tryP = (px, py, type) => { const d = Math.hypot(px - x, py - y); if (d < bd) { bd = d; best = { p: [px, py], type }; } };
     const axes = [];
     for (const sk of st.list) {
-      if (sk.uid === exclude) continue;
+      if (sk.uid === exclude || !shown(sk)) continue;
       const p = sk.pts;
       if (sk.kind === "axis") axes.push(p);
       if (isLine(sk)) { tryP(p[0], p[1], "end"); tryP(p[2], p[3], "end"); }
@@ -119,7 +119,7 @@ const SK = (() => {
     // 선 위 (수선의 발)
     bd = tolW(12);
     for (const sk of st.list) {
-      if (sk.uid === exclude || !(sk.kind === "axis" || sk.kind === "beam" || sk.kind === "wall")) continue;
+      if (sk.uid === exclude || !shown(sk) || !(sk.kind === "axis" || sk.kind === "beam" || sk.kind === "wall")) continue;
       const p = sk.pts, [fx, fy, t] = footLine(x, y, ...p);
       if (sk.kind !== "axis" && (t < 0 || t > 1)) continue;
       const d = Math.hypot(fx - x, fy - y); if (d < bd) { bd = d; best = { p: [fx, fy], type: "on" }; }
@@ -157,7 +157,7 @@ const SK = (() => {
     const lim = tolW(16);
     for (let i = st.list.length - 1; i >= 0; i--) {
       const sk = st.list[i], p = sk.pts;
-      if (kinds && !kinds.includes(sk.kind)) continue;
+      if ((kinds && !kinds.includes(sk.kind)) || !shown(sk)) continue;
       if (sk.kind === "column") {
         const [x0, x1] = [Math.min(p[0], p[2]), Math.max(p[0], p[2])], [y0, y1] = [Math.min(p[1], p[3]), Math.max(p[1], p[3])];
         if (x >= x0 - lim && x <= x1 + lim && y >= y0 - lim && y <= y1 + lim) return sk;
@@ -661,7 +661,7 @@ const SK = (() => {
     drawGrid();
     if (hidden() && S.mode !== "sketch") return;
     drawAxisGaps();
-    for (const sk of st.list) { drawOne(sk, false, sk.uid === st.sel); if (sk.kind !== "axis" && sk.kind !== "dim") signature(sk); }
+    for (const sk of st.list) { if (!shown(sk)) continue; drawOne(sk, false, sk.uid === st.sel); if (sk.kind !== "axis" && sk.kind !== "dim") signature(sk); }
     if (st.ghost) { ctx.save(); ctx.globalAlpha = 0.6; drawOne(st.ghost, true); ctx.restore(); }
     if (st.cur) drawOne(st.cur, true);
     drawSnap();
@@ -696,7 +696,7 @@ const SK = (() => {
       its.forEach((sk, i) => {
         const L = lenOf(sk) ? (lenOf(sk) / 1000).toFixed(2) : "";
         const nm = sk.name || sk.text || (kind === "free" ? `${sk.pts.length === 4 ? "╱" : "〰"} ${i + 1}` : kind === "dim" ? `D${i + 1}` : "-");
-        const tr = el("tr", { class: "sub" + (sk.uid === st.sel ? " sel" : "") },
+        const tr = el("tr", { class: "sub" + (sk.uid === st.sel ? " sel" : "") + (shown(sk) ? "" : " hid") },
           el("td", {}, el("b", { style: `color:${sk.color || COLORS[0]}` }, nm)), el("td", {}, KIND_NM[sk.kind]), el("td", {}, sizeText(sk)), el("td", {}, L),
           el("td", { class: "sk-who" }, sk.inspector || ""));
         let lp = null, longed = false;
@@ -821,6 +821,26 @@ const SK = (() => {
   for (const x of $("#skTools").children) x.classList.toggle("on", x.dataset.tool === st.tool);
   buildSub(); buildOps();
 
+  // 종류별·색깔별 숨기기 (보기 › 도면에 표시할 조사)
+  const lsSet = (k) => { try { return new Set(JSON.parse(localStorage.getItem(k) || "[]")); } catch (e) { return new Set(); } };
+  const hideK = lsSet("skHideKinds"), hideC = lsSet("skHideColors");
+  const colKey = (sk) => String(sk.color || COLORS[0]).toLowerCase();
+  function shown(sk) { return !hideK.has(sk.kind) && !hideC.has(colKey(sk)); }
+  function setLayer(type, key, show) {
+    const set = type === "kind" ? hideK : hideC, k = type === "kind" ? key : String(key).toLowerCase();
+    if (show) set.delete(k); else set.add(k);
+    try { localStorage.setItem(type === "kind" ? "skHideKinds" : "skHideColors", JSON.stringify([...set])); } catch (e) { /* ignore */ }
+    if (st.sel && !shown(st.list.find((x) => x.uid === st.sel) || {})) st.sel = null;
+    draw(); renderList();
+  }
+  function layerStats() {
+    const kinds = [], colors = new Map();
+    for (const k of Object.keys(KIND_NM)) { const n = st.list.filter((x) => x.kind === k).length; if (n) kinds.push({ key: k, name: KIND_NM[k], n, on: !hideK.has(k) }); }
+    for (const sk of st.list) { const c = colKey(sk); colors.set(c, (colors.get(c) || 0) + 1); }
+    for (const c of hideC) if (!colors.has(c)) colors.set(c, 0);
+    return { kinds, colors: [...colors].map(([c, n]) => ({ key: c, n, on: !hideC.has(c) })) };
+  }
+  function showAllLayers() { hideK.clear(); hideC.clear(); try { localStorage.setItem("skHideKinds", "[]"); localStorage.setItem("skHideColors", "[]"); } catch (e) { /* ignore */ } draw(); renderList(); }
   function hidden() { try { return localStorage.getItem("skHide") === "1"; } catch (e) { return false; } }
   function setHidden(h) { try { localStorage.setItem("skHide", h ? "1" : "0"); } catch (e) { /* ignore */ } draw(); }
   function toggleHidden() { const h = !hidden(); setHidden(h); toast(h ? "스케치 숨김" : "스케치 표시"); return h; }
@@ -830,7 +850,7 @@ const SK = (() => {
     st.cur = null; st.pend = null; if (!on) st.sel = null;
   }
 
-  return { settings, load, draw: drawAll, axisGaps, toggleHidden, setHidden, hidden, down, move, up, cancel, mode, undo, renderList, dimAt, calibrateWith, snapPoint,
+  return { settings, shown, setLayer, layerStats, showAllLayers, load, draw: drawAll, axisGaps, toggleHidden, setHidden, hidden, down, move, up, cancel, mode, undo, renderList, dimAt, calibrateWith, snapPoint,
     get list() { return st.list; }, get busy() { return !!(st.pend || st.cur); }, COLORS };
 })();
 window.SK = SK;
