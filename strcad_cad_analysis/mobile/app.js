@@ -1045,7 +1045,7 @@ function renderForm() {
   if (P.crack && rec.label) f.append(el("div", { class: "load-box" }, el("b", {}, `${rec.label} — 지금 ${crackCount(rec.label, rec.owner)}곳`),
     el("small", {}, "같은 번호를 여러 곳에 표시하면 개수가 집계됩니다 (크기·사진은 모든 위치 공통)")));
   if (P.crack && !ro) {
-    if (isPlaced(rec)) f.append(el("div", { class: "row two" }, el("button", { class: "val", onclick: () => startPlacing(rec, true) }, `📍＋ 같은 번호 위치 추가`), el("div"),
+    if (isPlaced(rec)) f.append(el("div", { class: "btn-pair" }, el("button", { class: "val", onclick: () => startPlacing(rec, true) }, "📍＋ 같은 번호 위치 추가"),
       el("button", { class: "val", onclick: () => startPlacing(rec) }, "↻ 이 위치 다시 지정")));
     else f.append(el("button", { class: "val wide", onclick: () => startPlacing(rec) }, "📍 도면에 배치"));
   }
@@ -1327,22 +1327,40 @@ function renderCrackList() {
   const tb = $("#lt-b"); tb.innerHTML = "";
   const cur = S.edit || S.sel;
   const sorted = [...groups.values()].sort((a, b) => String(a[0].label).localeCompare(String(b[0].label), "ko", { numeric: true }));
+  S.crackOpen = S.crackOpen || new Set();
   for (const lst of sorted) {
     const r = lst.find(isPlaced) || lst[0], placed = lst.some(isPlaced), mine = isMine(r);
-    const tr = el("tr", { class: (cur && lst.some((x) => x.uid === cur.uid) ? "sel" : "") + (placed ? "" : " unplaced") + (mine ? "" : " others") },
-      cols.map(([k]) => el("td", {}, k === "add" ? (mine && placed ? el("button", { class: "mini-add", onclick: (ev) => { ev.stopPropagation(); startPlacing(r, true); } }, "📍＋") : "")
-        : k === "count" ? (placed ? `${crackCount(r.label, r.owner)}곳` : "📍미배치") : String(listValue(r, k)))));
+    const pl = lst.filter(isPlaced), key = `${r.owner || ""}|${r.label || r.uid}`, multi = pl.length > 1, open = multi && S.crackOpen.has(key);
     const curIn = cur && lst.find((x) => x.uid === cur.uid);
+    const tr = el("tr", { class: (curIn && !open ? "sel" : "") + (placed ? "" : " unplaced") + (mine ? "" : " others") + (multi ? " grp" : "") + (open ? " open" : "") },
+      cols.map(([k]) => el("td", {}, k === "add" ? (mine && placed ? el("button", { class: "mini-add", onclick: (ev) => { ev.stopPropagation(); startPlacing(r, true); } }, "📍＋") : "")
+        : k === "count" ? (placed ? `${crackCount(r.label, r.owner)}곳` : "📍미배치")
+        : (k === "label" || (k === "no" && !cols.some((c) => c[0] === "label"))) && multi ? `${open ? "▾" : "▸"} ${listValue(r, k)}` : String(listValue(r, k)))));
     rowGestures(tr, () => {
       if (!placed && mine) { startPlacing(r); return; }
-      // 같은 번호가 여러 곳이면 누를 때마다 다음 위치로, 마지막 다음엔 해제
-      const pl = lst.filter(isPlaced), i = curIn ? pl.findIndex((x) => x.uid === curIn.uid) : -1;
-      if (i >= 0 && i === pl.length - 1 && $("#panel").classList.contains("hidden")) { S.sel = null; renderList(); draw(); return; }
-      showRec((pl[i + 1] || pl[0] || r).uid);
+      if (multi) {                                 // 같은 번호 여러 곳 — 누르면 펼치기, 다시 누르면 합치기
+        if (open) S.crackOpen.delete(key); else S.crackOpen.add(key);
+        S.rowMenu = null; renderList(); return;
+      }
+      showRec(r.uid);
     }, () => { showRec((curIn || r).uid, true); S.rowMenu = (curIn || r).uid; renderList(); });
     tb.append(tr);
-    if (S.rowMenu && lst.some((x) => x.uid === S.rowMenu)) tb.append(rowMenuRow(lst.find((x) => x.uid === S.rowMenu), cols.length,
-      mine && placed ? el("button", { class: "b ok", onclick: () => { S.rowMenu = null; startPlacing(r, true); } }, "📍＋ 위치 추가") : ""));
+    const menuFor = (x) => rowMenuRow(x, cols.length,
+      mine && placed ? el("button", { class: "b ok", onclick: () => { S.rowMenu = null; startPlacing(r, true); } }, "📍＋ 위치 추가") : "");
+    if (!open) {
+      if (S.rowMenu && lst.some((x) => x.uid === S.rowMenu)) tb.append(menuFor(lst.find((x) => x.uid === S.rowMenu)));
+      continue;
+    }
+    if (S.rowMenu && S.rowMenu === (curIn || r).uid && !pl.some((x) => x.uid === S.rowMenu)) tb.append(menuFor(curIn || r));
+    pl.forEach((x, i) => {                         // 펼친 하위 줄 — 위치마다 (누르면 위치 보기, 길게 누르면 수정·삭제)
+      const ctr = el("tr", { class: "sub" + (cur && cur.uid === x.uid ? " sel" : "") + (isMine(x) ? "" : " others") },
+        cols.map(([k]) => el("td", {}, k === "label" || (k === "no" && !cols.some((c) => c[0] === "label")) ? `└ ${x.label || x.no}-${i + 1}`
+          : k === "count" || k === "add" ? "" : k === "ph" ? String(listValue(x, k)) : k === "inspector" ? String(listValue(x, k))
+          : k === "summary" || k === "name" ? String(listValue(x, k)) : "")));
+      rowGestures(ctr, () => showRec(x.uid), () => { showRec(x.uid, true); S.rowMenu = x.uid; renderList(); });
+      tb.append(ctr);
+      if (S.rowMenu === x.uid) tb.append(menuFor(x));
+    });
   }
   // 종류별 합계 (추후 균열 면적·개수 집계용)
   const tot = {};

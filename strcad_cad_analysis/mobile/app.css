@@ -359,3 +359,15 @@ body.sketching #cv { cursor: crosshair; }
 .set-row .sk-presets { flex: 1; margin: 6px 0; }
 .set-row .sk-input { font-size: 16px; padding: 7px 10px; max-width: 200px; }
 .set-note { font-size: 12px; color: #6b7280; margin: 4px 0 0; line-height: 1.45; }
+
+/* 수정 창: 버튼 두 개 나란히 */
+.btn-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 6px 0; }
+.btn-pair .val { min-height: 44px; padding: 8px 6px; font-size: 15px; white-space: normal; line-height: 1.25; }
+/* 목록 묶음: 머리줄 ▸/▾ · 하위 줄 */
+#lt-b tr.grp td:first-child { font-weight: 700; }
+#lt-b tr.grp.open td { background: #eef2ff; }
+#lt-b tr.sub td { background: #fafafa; font-size: 0.94em; color: #374151; }
+#lt-b tr.sub td:first-child { padding-left: 16px; color: var(--muted); white-space: nowrap; }
+#lt-b tr.sub.sel td { background: var(--orange-l, #fdebd8); }
+#lt-b tr.kgrp td { background: #f1f5f9; font-weight: 700; color: var(--navy); padding: 7px 8px; }
+#lt-b tr.kgrp td small { font-weight: 400; color: var(--muted); margin-left: 8px; }

@@ -15,7 +15,7 @@ const SK = (() => {
   const DEF = { tool: "member", mem: "beam", dbl: false, beamW: 400, colB: 500, colH: 500, colStep: 10, wallT: 200,
     autoName: true, ortho: true, snap: true, color: COLORS[0], memColor: "#2563eb",
     freeMode: "free", grid: false, gridStep: 1000, gridSnap: true };
-  const st = Object.assign({ list: [], op: null, cur: null, pend: null, undo: [], sel: null, snapMark: null, ghost: null }, DEF);
+  const st = Object.assign({ open: new Set(), openAuto: null, list: [], op: null, cur: null, pend: null, undo: [], sel: null, snapMark: null, ghost: null }, DEF);
   try { Object.assign(st, JSON.parse(localStorage.getItem("skOpts") || "{}")); } catch (e) { /* ignore */ }
   st.op = null;
   const saveOpts = () => { try { localStorage.setItem("skOpts", JSON.stringify(Object.fromEntries(Object.keys(DEF).map((k) => [k, st[k]])))); } catch (e) { /* ignore */ } };
@@ -189,6 +189,7 @@ const SK = (() => {
     if (sk.kind === "beam") return `${sk.dbl ? "복선" : "단선"} B${Math.round(sk.w)}`;
     if (sk.kind === "dim") return `${Math.round(sk.val)} mm`;
     if (sk.kind === "axis") return "";
+    if (sk.kind === "free") return sk.pts.length === 4 ? "직선" : `곡선 ${sk.pts.length / 2}점`;
     return "";
   }
   function autoNameFor(sk) {
@@ -668,7 +669,7 @@ const SK = (() => {
 
   // ------------------------------------------------------------------ 부재 목록 (조사 목록 자리에 표시)
   function members() {
-    const ord = { beam: 0, column: 1, wall: 2, axis: 3, dim: 4 };
+    const ord = { beam: 0, column: 1, wall: 2, axis: 3, dim: 4, text: 5, free: 6 };
     return st.list.filter((s) => ord[s.kind] != null).sort((a, b) => ord[a.kind] - ord[b.kind] ||
       String(a.name || a.text || "").localeCompare(String(b.name || b.text || ""), "ko", { numeric: true }));
   }
@@ -678,33 +679,49 @@ const SK = (() => {
     $("#listCount").textContent = `스케치 ${ms.length}개`;
     $("#lt-h").innerHTML = ""; $("#lt-h").append(el("tr", {}, ["이름", "종류", "크기", "길이(m)", "작성자"].map((t) => el("th", {}, t))));
     const tb = $("#lt-b"); tb.innerHTML = "";
-    if (!ms.length) { tb.append(el("tr", {}, el("td", { colspan: "4", class: "empty" }, "부재·축·치수를 그리면 여기에 목록이 나옵니다 (자동네임: 보 G1~ · 기둥 C1~ · 벽 W1~)"))); return; }
-    for (const sk of ms) {
-      const L = isLine(sk) ? (Math.hypot(sk.pts[2] - sk.pts[0], sk.pts[3] - sk.pts[1]) / 1000).toFixed(2) : "";
-      const tr = el("tr", { class: sk.uid === st.sel ? "sel" : "" },
-        el("td", {}, el("b", { style: `color:${sk.color || COLORS[0]}` }, sk.name || sk.text || "-")), el("td", {}, KIND_NM[sk.kind]), el("td", {}, sizeText(sk)), el("td", {}, L),
-        el("td", { class: "sk-who" }, sk.inspector || ""));
-      let lp = null, longed = false;
-      tr.addEventListener("pointerdown", () => { longed = false; clearTimeout(lp); lp = setTimeout(() => { longed = true; rowMenu(tr, sk); }, 500); });
-      for (const ev of ["pointerup", "pointerleave", "pointercancel"]) tr.addEventListener(ev, () => clearTimeout(lp));
-      tr.addEventListener("contextmenu", (e) => e.preventDefault());
-      tr.addEventListener("click", () => { if (longed) return;
-        if (st.sel === sk.uid) { st.sel = null; draw(); renderList(); } else { focus(sk); renderList(); } });      // 한 번 더 누르면 선택 해제
-      tb.append(tr);
-      if (st.rowMenu === sk.uid) tb.append(el("tr", { class: "sk-rowmenu" }, el("td", { colspan: "5" },
-        el("button", { class: "b edit", onclick: () => { st.rowMenu = null; renderList(); editItem(sk); } }, "✎ 수정"),
-        mineSk(sk) ? el("button", { class: "b danger", onclick: () => { st.rowMenu = null; remove(sk); toast(`${KIND_NM[sk.kind]} 삭제 — ↶ 되돌리기 가능`); } }, "삭제") : "",
-        el("button", { class: "b gray", onclick: () => { st.rowMenu = null; renderList(); } }, "닫기"),
-        el("small", {}, sk.inspector ? `✍ ${sk.inspector}${sk.date ? " · " + sk.date : ""}` : ""))));
+    if (!ms.length) { tb.append(el("tr", {}, el("td", { colspan: "5", class: "empty" }, "부재·축·치수·자유선을 그리면 여기에 종류별 목록이 나옵니다 (자동네임: 보 G1~ · 기둥 C1~ · 벽 W1~)"))); return; }
+    const lenOf = (sk) => { let L = 0; const p = sk.pts; if (sk.kind === "free") { for (let i = 2; i + 1 < p.length; i += 2) L += Math.hypot(p[i] - p[i - 2], p[i + 1] - p[i - 1]); return L; }
+      return isLine(sk) ? Math.hypot(p[2] - p[0], p[3] - p[1]) : 0; };
+    const selSk = st.list.find((x) => x.uid === st.sel);
+    if (selSk && st.openAuto !== st.sel) { st.open.add(selSk.kind); st.openAuto = st.sel; }   // 도면에서 고른 것은 그 종류를 펼침
+    const kinds = [...new Set(ms.map((x) => x.kind))];
+    for (const kind of kinds) {
+      const its = ms.filter((x) => x.kind === kind), open = st.open.has(kind);
+      const tot = its.reduce((a, x) => a + lenOf(x), 0);
+      const hr = el("tr", { class: "kgrp" + (open ? " open" : "") }, el("td", { colspan: "5" },
+        `${open ? "▾" : "▸"} ${KIND_NM[kind]} ${its.length}개`, tot > 0 && kind !== "dim" ? el("small", {}, `합계 길이 ${(tot / 1000).toFixed(2)} m`) : ""));
+      hr.addEventListener("click", () => { if (open) st.open.delete(kind); else st.open.add(kind); st.rowMenu = null; renderList(); });
+      tb.append(hr);
+      if (!open) continue;
+      its.forEach((sk, i) => {
+        const L = lenOf(sk) ? (lenOf(sk) / 1000).toFixed(2) : "";
+        const nm = sk.name || sk.text || (kind === "free" ? `${sk.pts.length === 4 ? "╱" : "〰"} ${i + 1}` : kind === "dim" ? `D${i + 1}` : "-");
+        const tr = el("tr", { class: "sub" + (sk.uid === st.sel ? " sel" : "") },
+          el("td", {}, el("b", { style: `color:${sk.color || COLORS[0]}` }, nm)), el("td", {}, KIND_NM[sk.kind]), el("td", {}, sizeText(sk)), el("td", {}, L),
+          el("td", { class: "sk-who" }, sk.inspector || ""));
+        let lp = null, longed = false;
+        tr.addEventListener("pointerdown", () => { longed = false; clearTimeout(lp); lp = setTimeout(() => { longed = true; rowMenu(tr, sk); }, 500); });
+        for (const ev of ["pointerup", "pointerleave", "pointercancel"]) tr.addEventListener(ev, () => clearTimeout(lp));
+        tr.addEventListener("contextmenu", (e) => e.preventDefault());
+        tr.addEventListener("click", () => { if (longed) return;
+          if (st.sel === sk.uid) { st.sel = null; draw(); renderList(); } else { focus(sk); st.openAuto = sk.uid; renderList(); } });      // 한 번 더 누르면 선택 해제
+        tb.append(tr);
+        if (st.rowMenu === sk.uid) tb.append(el("tr", { class: "sk-rowmenu" }, el("td", { colspan: "5" },
+          el("button", { class: "b edit", onclick: () => { st.rowMenu = null; renderList(); editItem(sk); } }, "✎ 수정"),
+          mineSk(sk) ? el("button", { class: "b danger", onclick: () => { st.rowMenu = null; remove(sk); toast(`${KIND_NM[sk.kind]} 삭제 — ↶ 되돌리기 가능`); } }, "삭제") : "",
+          el("button", { class: "b gray", onclick: () => { st.rowMenu = null; renderList(); } }, "닫기"),
+          el("small", {}, sk.inspector ? `✍ ${sk.inspector}${sk.date ? " · " + sk.date : ""}` : ""))));
+      });
     }
   }
   function rowMenu(tr, sk) {                     // 목록을 길게 누르면 수정·삭제 버튼
     try { navigator.vibrate && navigator.vibrate(25); } catch (e) { /* ignore */ }
-    st.rowMenu = sk.uid; focus(sk); renderList();
+    st.rowMenu = sk.uid; st.openAuto = sk.uid; focus(sk); renderList();
   }
   function focus(sk) {
     st.sel = sk.uid;
-    const c = sk.kind === "column" ? colCenter(sk) : [(sk.pts[0] + sk.pts[2]) / 2, (sk.pts[1] + sk.pts[3]) / 2];
+    const p = sk.pts, c = sk.kind === "column" ? colCenter(sk) : p.length < 4 ? [p[0], p[1]]
+      : sk.kind === "free" ? [p[p.length >> 2 << 1], p[(p.length >> 2 << 1) + 1]] : [(p[0] + p[2]) / 2, (p[1] + p[3]) / 2];
     const [sx, sy] = w2s(...c), r = $("#cv").getBoundingClientRect();
     if (sx < 40 || sy < 40 || sx > r.width - 40 || sy > r.height - 40) { S.view.ox = c[0] - r.width / 2 / S.view.s; S.view.oy = c[1] + r.height / 2 / S.view.s; }
     draw();
