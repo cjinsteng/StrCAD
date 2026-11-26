@@ -463,6 +463,10 @@ body.viewonly #stage::after { content: "👁 뷰어 — 입력 안 됨"; positio
 /* ===== 부재검측 목록 글씨 크기 — 여기 숫자(px)를 바꾸면 됩니다 ===== */
 #listBody.memtbl td { font-size: 16px; padding-top: 9px; padding-bottom: 9px; }
 #listBody.memtbl th { font-size: 14px; }
+#listBody.memtbl #lt-b tr.sub td { font-size: 15px; }      /* 묶음을 펼친 아래 줄 */
+/* 칸 폭: 번호·부재명은 줄바꿈 없이 (min-width 를 바꾸면 폭 조정) */
+#listBody.memtbl .c-no { white-space: nowrap; min-width: 52px; }
+#listBody.memtbl .c-nm { white-space: nowrap; min-width: 104px; }
 /* ================================================================== */
 .chk-ok { color: #15803d; font-weight: 700; }
 .chk-no { color: #b91c1c; font-weight: 700; }
@@ -484,3 +488,17 @@ body.viewonly #stage::after { content: "👁 뷰어 — 입력 안 됨"; positio
 .modal.ov2 { z-index: 35; }
 .note-pad { width: 100%; height: auto; border: 1.5px solid var(--line); border-radius: 8px; touch-action: none; background: #fff; }
 .note-tools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+
+#listBody.memtbl th.c-no, #listBody.memtbl th.c-nm, #listBody.memtbl th.c-ct { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+#listBody.memtbl td.c-ct { cursor: pointer; color: var(--navy); }
+#listBody.memtbl td.c-ct.open { color: #1d4ed8; font-weight: 600; }
+#listBody.memtbl .c-chk { white-space: nowrap; }
+#listBody.hide-chk .c-chk { display: none; }
+/* 흔적 있음/없음 */
+.row.trace .val.on { background: var(--orange); color: #fff; }
+/* 추가사항 스케치: 작은 그림 → 누르면 크게 */
+.note-thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; margin-top: 6px; }
+.note-th { position: relative; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fff; aspect-ratio: 1.6; }
+.note-th img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.note-th .del { position: absolute; top: 3px; right: 3px; width: 22px; height: 22px; border: 0; border-radius: 11px; background: #e2e8f0cc; color: #334155; font-size: 12px; }
+.note-big { width: 100%; border: 1px solid var(--line); border-radius: 8px; background: #fff; }

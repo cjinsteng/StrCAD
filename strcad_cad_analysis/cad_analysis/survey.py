@@ -39,7 +39,8 @@ DEFAULT_PURPOSES = {
         ["gap_w", "이격폭", "mm", None], ["gap_l", "이격길이", "m", None],
         ["rebar_l", "노출길이", "mm", None],
         ["shape", "균열형태", "", ["수직", "수평", "경사", "망상", "기타"]],
-        ["progress", "진행성", "", ["없음", "있음", "관찰필요"]]]},
+        ["progress", "진행성", "", ["없음", "있음", "관찰필요"]],
+        ["trace", "흔적", "", ["있음", "없음"]]]},
     # 영역(사각형) 조사 — 실 용도 · 마감 · 천장 → 하중 참고값
     "하중조사": {"color": "#0f766e", "area": True, "size": False, "length": False, "rebar": False, "exist": False,
              "fields": [
@@ -179,7 +180,7 @@ def add_purpose(cfg, name, field_labels, size=False, length=False, rebar=False, 
 # --------------------------------------------------------------------------- rebar grid
 def rebar_layout(kind):
     if kind == "column":
-        return ["주근", "띠철근"], ["단부", "중앙"]
+        return ["주근", "띠철근", "주근배치"], ["단부", "중앙"]
     if kind == "wall":
         return ["배근"], ["수직근", "수평근"]
     return ["상부근", "상부근2", "하부근", "하부근2", "스터럽"], ["I단", "중앙", "J단"]
@@ -316,7 +317,8 @@ def summary(rec, P):
     parts = []
     fl = rec.get("fields") or {}
     if p.get("crack") and fl.get("ctype"):
-        parts += [f"{fl.get('cmem', '') + ' ' if fl.get('cmem') else ''}{fl['ctype']} {crack_size(fl)}", fl.get("shape", ""), f"진행성 {fl['progress']}" if fl.get("progress") else "",
+        parts += [f"{fl.get('cmem', '') + ' ' if fl.get('cmem') else ''}{fl['ctype']} {crack_size(fl)}", fl.get("shape", ""),
+                  f"흔적 {fl['trace']}" if fl.get("trace") else "", f"진행성 {fl['progress']}" if fl.get("progress") else "",
                   "" if is_placed(rec) else "미배치"]
         return " · ".join(x for x in parts if x)
     if rec.get("area"):

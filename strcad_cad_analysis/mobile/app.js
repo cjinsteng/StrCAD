@@ -18,7 +18,7 @@ const DEFAULT_PURPOSES = {
     ["dmg_b", "범위 B", "mm", null], ["dmg_d", "범위 D", "mm", null], ["gap_w", "이격폭", "mm", null], ["gap_l", "이격길이", "m", null],
     ["rebar_l", "노출길이", "mm", null],
     ["shape", "균열형태", "", ["수직", "수평", "경사", "망상", "기타"]],
-    ["progress", "진행성", "", ["없음", "있음", "관찰필요"]]] },
+    ["progress", "진행성", "", ["없음", "있음", "관찰필요"]], ["trace", "흔적", "", ["있음", "없음"]]] },
   "하중조사": { color: "#0f766e", area: true, size: false, length: false, rebar: false, exist: false, fields: [
     ["use", "실 용도", "", null], ["fin", "바닥 마감", "", null], ["fin_t", "마감 두께", "mm", null],
     ["ceil", "천장", "", null], ["ceil_h", "천장고", "m", null], ["part", "칸막이", "", ["없음", "가동 경량칸막이", "조적·고정벽"]],
@@ -1064,6 +1064,7 @@ function crackAdd(at) {
       const gal = el("input", { type: "file", accept: "image/*", multiple: "", hidden: "" });
       const onFiles = async (ev) => { const ids = await addPhotoFiles([...ev.target.files], rec); rec.photos.push(...ids); ev.target.value = ""; render(); };
       cam.onchange = onFiles; gal.onchange = onFiles;
+      if (TRACE_TYPES.includes(type.k)) b.append(traceRow(rec.fields.trace, true, (v) => { rec.fields.trace = rec.fields.trace === v ? "" : v; render(); }));
       b.append(el("div", { class: "row two" }, el("div", { class: "lab" }, `사진 ${rec.photos.length}장`),
         el("button", { class: "val", onclick: () => cam.click() }, "📷 촬영"), el("div"), el("button", { class: "val", onclick: () => gal.click() }, "🖼 앨범")),
         el("p", { class: "small" }, `사진 이름: crack_${rec.label}_01, _02 …`), cam, gal, ph, notesBox(rec, true, () => rec, render));
@@ -1394,7 +1395,7 @@ function renderForm() {
   if (P.exist) row("부재\n유무", vbtn("exist"));
   const ctT = P.crack ? CRACK_BY[(rec.fields || {}).ctype] : null;
   for (const [k, lab, unit, ch] of P.fields || []) {
-    if (P.crack && (k === "ctype" || k === "cmem")) continue;
+    if (P.crack && (k === "ctype" || k === "cmem" || k === "trace")) continue;
     if (P.crack && (!ctT || (!ctT.f.includes(k) && !(ctT.f[0] === "crack_w" && (k === "shape" || k === "progress"))))) continue;
     row(lab, vbtn(k, { field: true, unit, choices: ch || FIELD_CHOICES[k] || (CRACK_CHIPS[k] && CRACK_CHIPS[k].map(String)) }));
   }
@@ -1422,6 +1423,8 @@ function renderForm() {
   const onFiles = async (ev) => { if (!beginEdit()) return; const ids = await addPhotoFiles([...ev.target.files], S.edit);
     S.edit.photos.push(...ids); ev.target.value = ""; renderForm(); toast(`사진 ${ids.length}장 — 저장을 누르세요`); };
   cam.onchange = onFiles; gal.onchange = onFiles;
+  if (P.crack && TRACE_TYPES.includes((rec.fields || {}).ctype)) f.append(traceRow((rec.fields || {}).trace, editing && !ro,
+    (v) => { if (!beginEdit()) return; S.edit.fields = S.edit.fields || {}; S.edit.fields.trace = S.edit.fields.trace === v ? "" : v; renderForm(); }));
   if (!ro) f.append(el("div", { class: "row two" }, el("div", { class: "lab" }, "사진"),
     el("button", { class: "val", onclick: () => cam.click() }, "📷 촬영"), el("div"), el("button", { class: "val", onclick: () => gal.click() }, "🖼 앨범")), cam, gal);
   f.append(ph);
@@ -1435,6 +1438,11 @@ function renderForm() {
   else if (editing) btns.append(el("button", { class: "b gray", onclick: cancelEdit }, "취소"), el("button", { class: "b ok", onclick: saveEdit }, "💾 저장"));
   else btns.append(el("button", { class: "b edit", onclick: () => { beginEdit(); renderForm(); } }, "✎ 편집"));
   f.append(btns);
+}
+const TRACE_TYPES = ["균열", "누수"];     // 사진 위 '흔적 있음/없음'
+function traceRow(v, can, set) {
+  return el("div", { class: "row two trace" }, el("div", { class: "lab" }, "흔적"),
+    ...["있음", "없음"].flatMap((t, i) => [i ? el("div") : null, el("button", { class: "val" + (v === t ? " on" : "") + (can ? "" : " dim"), onclick: () => set(t) }, t)]).filter(Boolean));
 }
 const MEMBER_KINDS = ["기둥", "거더", "보", "작은보", "벽체", "슬래브", "기초", "계단", "기타"];
 function nameParts(r) {             // 부재명 → [종류, 이름]  (보 G1 → 보 / G1)
@@ -1453,11 +1461,15 @@ function notesBox(rec, canEdit, getTarget, after) {
   box.append(el("div", { class: "notes-head" }, el("b", {}, `추가사항${list.length ? ` ${list.length}` : ""}`),
     canEdit ? el("button", { class: "b gray", onclick: () => { const t = getTarget(); if (!t) return; typeNote(t, null, after); } }, "＋ 타이핑") : "",
     canEdit ? el("button", { class: "b gray", onclick: () => { const t = getTarget(); if (!t) return; sketchNote(t, after); } }, "＋ 스케치") : ""));
+  const thumbs = el("div", { class: "note-thumbs" });
   list.forEach((n, i) => {
-    const del = canEdit ? el("button", { class: "del", onclick: () => { const t = getTarget(); if (!t) return; t.notes = notesOf(t).slice(); t.notes.splice(i, 1); syncMemo(t); after(); } }, "✕") : "";
-    if (n.t === "sketch") box.append(el("div", { class: "note sk" }, el("img", { src: n.img, onclick: () => showPhoto(n.img) }), del));
+    const delFn = () => { const t = getTarget(); if (!t) return; t.notes = notesOf(t).slice(); t.notes.splice(i, 1); syncMemo(t); after(); };
+    const del = canEdit ? el("button", { class: "del", onclick: (e) => { e.stopPropagation(); delFn(); } }, "✕") : "";
+    if (n.t === "sketch") thumbs.append(el("div", { class: "note-th", onclick: () => viewSketchNote(n, canEdit, () => { const t = getTarget(); if (t) sketchNote(t, after, i); }, delFn) },
+      el("img", { src: n.img }), del));                 // 작게 보이고, 누르면 크게 · 수정
     else box.append(el("div", { class: "note", onclick: () => { if (!canEdit) return; const t = getTarget(); if (t) typeNote(t, i, after); } }, el("span", {}, n.text), del));
   });
+  if (thumbs.children.length) box.append(thumbs);
   return box;
 }
 function overlay(build) {           // #modal 위에 겹치는 창 (균열 입력 창 안에서도 쓰려고)
@@ -1478,12 +1490,23 @@ function typeNote(t, idx, after) {
     setTimeout(() => ta.focus(), 50);
   });
 }
-function sketchNote(t, after) {
+function viewSketchNote(n, canEdit, onEdit, onDel) {
+  overlay((b, close) => {
+    b.append(el("h3", {}, "추가사항 — 스케치" + (n.d ? ` (${n.d})` : "")), el("img", { src: n.img, class: "note-big" }),
+      el("div", { class: "btns" }, canEdit ? el("button", { class: "b danger", onclick: () => { close(); onDel(); } }, "삭제") : "", el("span", { class: "sp" }),
+        el("button", { class: "b gray", onclick: close }, "닫기"), canEdit ? el("button", { class: "b ok", onclick: () => { close(); onEdit(); } }, "✎ 수정") : ""));
+  });
+}
+function sketchNote(t, after, idx) {
+  const old = idx != null ? notesOf(t)[idx] : null;
   overlay((b, close) => {
     const W = Math.min(620, window.innerWidth - 48), H = Math.round(W * 0.62);
     const c = el("canvas", { width: W, height: H, class: "note-pad" }), g = c.getContext("2d");
-    const strokes = []; let col = "#111827", cur = null;
-    const paint = () => { g.fillStyle = "#fff"; g.fillRect(0, 0, W, H); g.lineCap = "round"; g.lineJoin = "round";
+    // 수정: 저장해 둔 획(0~1 좌표)을 다시 불러옴 — 획이 없는 예전 그림은 배경으로
+    const strokes = old && old.strokes ? old.strokes.map((s0) => ({ c: s0.c, w: s0.w, p: s0.p.map(([x, y]) => [x * W, y * H]) })) : [];
+    let bg = null; if (old && !old.strokes) { bg = new Image(); bg.onload = () => paint(); bg.src = old.img; }
+    let col = "#111827", cur = null;
+    const paint = () => { g.fillStyle = "#fff"; g.fillRect(0, 0, W, H); if (bg && bg.complete) g.drawImage(bg, 0, 0, W, H); g.lineCap = "round"; g.lineJoin = "round";
       for (const s0 of strokes) { g.strokeStyle = s0.c; g.lineWidth = s0.w; g.beginPath(); s0.p.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y))); g.stroke(); } };
     const pos = (e) => { const r = c.getBoundingClientRect(); return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height]; };
     c.addEventListener("pointerdown", (e) => { c.setPointerCapture(e.pointerId); cur = { c: col, w: e.pointerType === "pen" ? 2.5 : 3, p: [pos(e)] }; strokes.push(cur); paint(); });
@@ -1492,10 +1515,13 @@ function sketchNote(t, after) {
     const cols = el("div", { class: "sk-chips" });
     const drawCols = () => { cols.innerHTML = ""; for (const [cc, nm] of [["#111827", "검정"], ["#e11d48", "빨강"], ["#2563eb", "파랑"]]) cols.append(el("button", { class: col === cc ? "on" : "", onclick: () => { col = cc; drawCols(); } }, el("i", { class: "sk-dot", style: `background:${cc}` }), nm)); };
     drawCols(); paint();
-    b.append(el("h3", {}, "추가사항 — 스케치"), c, el("div", { class: "note-tools" }, cols,
+    b.append(el("h3", {}, old ? "추가사항 — 스케치 수정" : "추가사항 — 스케치"), c, el("div", { class: "note-tools" }, cols,
       el("button", { class: "b gray", onclick: () => { strokes.pop(); paint(); } }, "↶"), el("button", { class: "b gray", onclick: () => { strokes.length = 0; paint(); } }, "지우기")),
       el("div", { class: "btns" }, el("span", { class: "sp" }), el("button", { class: "b gray", onclick: close }, "취소"),
-        el("button", { class: "b ok", onclick: () => { if (!strokes.length) { close(); return; } t.notes = notesOf(t).slice(); t.notes.push({ t: "sketch", img: c.toDataURL("image/png"), d: today() }); syncMemo(t); close(); after(); } }, "확인")));
+        el("button", { class: "b ok", onclick: () => {
+          if (!strokes.length && !bg) { close(); return; }
+          const note = { t: "sketch", img: c.toDataURL("image/png"), d: today(), strokes: strokes.map((s0) => ({ c: s0.c, w: s0.w, p: s0.p.map(([x, y]) => [+(x / W).toFixed(4), +(y / H).toFixed(4)]) })) };
+          t.notes = notesOf(t).slice(); if (old) t.notes[idx] = note; else t.notes.push(note); syncMemo(t); close(); after(); } }, "확인")));
   });
 }
 function delCurrent() {
@@ -1591,7 +1617,7 @@ function pick(key, opts = {}) {
 }
 
 function rebarLayout(k) {
-  if (k === "c") return [["주근", "띠철근"], ["단부", "중앙"]];
+  if (k === "c") return [["주근", "띠철근", "주근배치"], ["단부", "중앙"]];
   if (k === "w") return [["배근"], ["수직근", "수평근"]];
   return [["상부근", "상부근2", "하부근", "하부근2", "스터럽"], ["I단", "중앙", "J단"]];
 }
@@ -1603,17 +1629,18 @@ function parseBar(s) {
 const fmtBar = (n, pre, d, sp) => (d ? `${n ? n + "-" : ""}${pre}${d}${sp ? "@" + sp : ""}` : "");
 function rebarGrid() {
   if (!beginEdit()) return;
-  const e = S.edit, m = S.sheet.byId.get(e.member), [rows, cols] = rebarLayout(m ? m.k : "b");
+  const e = S.edit, m = S.sheet.byId.get(e.member), [rows, cols] = rebarLayout(memberKind(e, m));
   const val = Object.assign({}, e.rebar || {});
   const close = sheet((b) => {
     const render = () => {
       b.innerHTML = ""; b.append(el("h3", {}, `철근 — #${e.no} ${e.name || ""}`));
       const g = el("div", { class: "rb-grid", style: `grid-template-columns: 56px repeat(${cols.length}, 1fr)` });
       g.append(el("div"));
-      for (const c of cols) g.append(el("div", { class: "h" }, c));
+      const CN = { 중앙: rows.includes("주근") ? "중앙부" : "중앙" };
+      for (const c of cols) g.append(el("div", { class: "h" }, CN[c] || c));
       for (const r of rows) {
-        g.append(el("div", { class: "r" }, ({ 상부근: "상부 1단", 상부근2: "상부 2단", 하부근: "하부 1단", 하부근2: "하부 2단" })[r] || r));
-        for (const c of cols) g.append(el("button", { onclick: () => barPick(`${r} · ${c}`, val[`${r}|${c}`], /스터럽|띠철근|배근/.test(r) ? "spacing" : "count",
+        g.append(el("div", { class: "r" }, ({ 상부근: "상부 1단", 상부근2: "상부 2단", 하부근: "하부 1단", 하부근2: "하부 2단", 주근배치: "배치" })[r] || r));
+        for (const c of cols) g.append(el("button", { onclick: () => (r === "주근배치" ? layoutPick : barPick)(`${r === "주근배치" ? "배치" : r} · ${CN[c] || c}`, val[`${r}|${c}`], /스터럽|띠철근|배근/.test(r) ? "spacing" : "count",
           (v) => { val[`${r}|${c}`] = v; render(); }) }, val[`${r}|${c}`] || "선택"));
       }
       b.append(g);
@@ -1624,6 +1651,21 @@ function rebarGrid() {
         el("button", { class: "b ok", onclick: () => { e.rebar = Object.fromEntries(Object.entries(val).filter(([, v]) => v)); close(); renderForm(); } }, "확인")));
     };
     render();
+  });
+}
+function memberKind(e, m) {        // 철근 입력 모양: 기둥 c · 벽 w · 그 밖 보
+  if (m) return m.k;
+  const sk = e.skm && window.SK ? SK.get(e.skm) : null;
+  if (sk) return sk.kind === "column" ? "c" : sk.kind === "wall" ? "w" : "b";
+  const k = nameParts(e)[0];
+  return k === "기둥" ? "c" : k === "벽체" ? "w" : "b";
+}
+function layoutPick(title, cur, _mode, cb) {     // 기둥 주근 배치 (예: 4×4, 3×5)
+  overlay((b, close) => {
+    const inp = el("input", { type: "text", class: "sk-input", value: cur || "", placeholder: "예: 4×4" });
+    b.append(el("h3", {}, title), inp, el("div", { class: "sk-chips" }, ["2×2", "2×3", "3×3", "3×4", "4×4", "4×5", "5×5", "6×6"].map((c) => el("button", { onclick: () => { close(); cb(c); } }, c))),
+      el("div", { class: "btns" }, el("button", { class: "b gray", onclick: () => { close(); cb(""); } }, "지우기"), el("span", { class: "sp" }), el("button", { class: "b gray", onclick: close }, "취소"),
+        el("button", { class: "b ok", onclick: () => { close(); cb(inp.value.trim().replace(/[xX*]/g, "×")); } }, "확인")));
   });
 }
 function barPick(title, cur, mode, cb) {
@@ -1734,6 +1776,8 @@ function listValue(r, k) {
 function renderList() {
   if (S.mode === "sketch" && window.SK) { SK.renderList(); return; }
   if ((S.purposes[S.filter] || {}).crack) { renderCrackList(); return; }
+  $("#listBody").classList.remove("memtbl", "hide-chk");
+  if ((S.purposes[S.filter] || {}).size) { renderMemList(); return; }
   const recs = S.recs.filter((r) => (S.filter === "전체" || r.purpose === S.filter) && ownerVisible(r)).sort((a, b) => (isPlaced(a) - isPlaced(b)) || a.no - b.no);
   $("#listCount").textContent = `${recs.length}건`;
   const cols = listColumns();
@@ -1780,6 +1824,72 @@ function renderList() {
   const P = S.purposes[S.filter] || S.purposes[S.purpose] || {};
   if (P.crack && (S.filter === "전체" ? S.purpose : S.filter) && S.db) tb.append(el("tr", { class: "add-row" },
     el("td", { colspan: String(cols.length) }, el("button", { class: "b ok", onclick: (ev) => { ev.stopPropagation(); crackAdd(null); } }, "＋ 균열·손상 추가 (종류 → 크기 → 사진)"))));
+}
+// ---- 부재검측 목록: 번호 · 부재명 · 내용(치수/철근) · 검측 — 같은 부재명은 한 줄로 묶음
+function renderMemList() {
+  S.memSort = S.memSort || { key: "no", dir: 1 }; S.memShow = S.memShow || new Set(); S.memOpen = S.memOpen || new Set();
+  const lb = $("#listBody"); lb.classList.add("memtbl");
+  const recs = S.recs.filter((r) => r.purpose === S.filter && ownerVisible(r));
+  const done = new Set(S.recs.filter((r) => r.skm).map((r) => r.skm));
+  const sks = window.SK && SK.memberInfo ? SK.list.filter((k) => ["column", "beam", "wall"].includes(k.kind) && !done.has(k.uid) && SK.shown(k)) : [];
+  const items = [...recs.map((r) => ({ id: r.uid, r, name: r.name || "", no: +r.no || 0 })),
+    ...sks.map((sk) => { const info = SK.memberInfo(sk); return { id: sk.uid, sk, info, name: info.label, no: null }; })];
+  const rbOn = (r) => Object.values(r.rebar || {}).some(Boolean);
+  const szTxt = (it) => it.r ? (it.r.size_b || it.r.size_h ? `${it.r.size_b || "?"}×${it.r.size_h || "?"}` : "-") : `${it.info.b || "?"}${it.info.h ? "×" + it.info.h : ""}`;
+  const rbTxt = (it) => it.r && rbOn(it.r) ? Object.values(it.r.rebar).filter(Boolean).slice(0, 2).join(", ") : "-";
+  const yn = (it) => it.r ? `${it.r.size_b || it.r.size_h ? "유" : "무"} / ${rbOn(it.r) ? "유" : "무"}` : "무 / 무";
+  // 묶음
+  const groups = new Map();
+  for (const it of items) { const k = it.name ? "n:" + it.name : "u:" + it.id; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(it); }
+  const gl = [...groups.entries()].map(([k, its]) => ({ k, its, name: its[0].name, no: Math.min(...its.map((x) => (x.no == null ? Infinity : x.no))) }));
+  const { key, dir } = S.memSort;
+  gl.sort((a, b) => key === "name" ? dir * (a.name || "\uffff").localeCompare(b.name || "\uffff", "ko", { numeric: true }) || (a.no - b.no)
+    : dir * ((a.no === Infinity) - (b.no === Infinity) || a.no - b.no) || a.name.localeCompare(b.name, "ko", { numeric: true }));
+  for (const g of gl) g.its.sort((a, b) => ((a.no == null) - (b.no == null)) || dir * ((a.no || 0) - (b.no || 0)));
+  const anyShow = S.memShow.size > 0;
+  lb.classList.toggle("hide-chk", anyShow && lb.clientWidth < 470);       // 치수를 펼치면 좁은 화면에서 '검측' 칸 숨김
+  const arrow = (k) => (key === k ? (dir > 0 ? " ▲" : " ▼") : "");
+  const th = (t, cls, fn) => el("th", { class: cls, onclick: fn }, t);
+  const sortBy = (k) => () => { S.memSort = { key: k, dir: S.memSort.key === k ? -S.memSort.dir : 1 }; renderList(); };
+  $("#lt-h").innerHTML = "";
+  $("#lt-h").append(el("tr", {}, th("번호" + arrow("no"), "c-no", sortBy("no")), th("부재명" + arrow("name"), "c-nm", sortBy("name")),
+    th("치수 / 철근", "c-ct", () => { if (S.memShow.size) S.memShow.clear(); else items.forEach((it) => S.memShow.add(it.id)); renderList(); }), th("검측", "c-chk")));
+  const tb = $("#lt-b"); tb.innerHTML = "";
+  const cur = S.edit || S.sel;
+  const ctCell = (it) => { const showing = S.memShow.has(it.id);
+    const td = el("td", { class: "c-ct" + (showing ? " open" : "") }, showing ? `${szTxt(it)} / ${rbTxt(it)}` : yn(it));
+    td.addEventListener("click", (e) => { e.stopPropagation(); if (showing) S.memShow.delete(it.id); else S.memShow.add(it.id); renderList(); });
+    td.addEventListener("pointerdown", (e) => e.stopPropagation());
+    return td; };
+  const itemRow = (it, sub) => {
+    const tr = el("tr", { class: (sub ? "sub " : "") + (it.sk ? "skonly" : "") + ((it.r && cur && cur.uid === it.r.uid) || (it.sk && SK.selected() === it.sk.uid) ? " sel" : "") },
+      el("td", { class: "c-no" }, it.r ? listNo(it.r) : "-"), el("td", { class: "c-nm" }, it.name || "-"), ctCell(it),
+      el("td", { class: "c-chk" }, it.r ? el("span", { class: "chk-ok" }, "검측") : el("span", { class: "chk-no" }, "검측 안됨")));
+    if (it.r) rowGestures(tr, () => (isPlaced(it.r) || !isMine(it.r) ? showRec(it.r.uid) : startPlacing(it.r)), () => { showRec(it.r.uid, true); S.rowMenu = it.r.uid; renderList(); });
+    else rowGestures(tr, () => SK.focusUid(it.sk.uid), () => skSurvey(it.sk, it.info));
+    tb.append(tr);
+    if (it.r && S.rowMenu === it.r.uid) tb.append(rowMenuRow(it.r, 4));
+  };
+  for (const g of gl) {
+    if (g.its.length < 2) { itemRow(g.its[0]); continue; }
+    const open = S.memOpen.has(g.k) || g.its.some((it) => it.r && cur && cur.uid === it.r.uid);
+    const nr = g.its.filter((it) => it.r), nos = nr.map((it) => listNo(it.r));
+    const allSz = g.its.every((it) => it.r ? (it.r.size_b || it.r.size_h) : false), anySz = g.its.some((it) => it.r && (it.r.size_b || it.r.size_h));
+    const allRb = g.its.every((it) => it.r && rbOn(it.r)), anyRb = g.its.some((it) => it.r && rbOn(it.r));
+    const tri = (all, any) => (all ? "유" : any ? "일부" : "무");
+    const gid = "g:" + g.k, showing = S.memShow.has(gid);
+    const ct = el("td", { class: "c-ct" + (showing ? " open" : "") }, showing ? [...new Set(g.its.map(szTxt))].join(", ") : `${tri(allSz, anySz)} / ${tri(allRb, anyRb)}`);
+    ct.addEventListener("click", (e) => { e.stopPropagation(); if (showing) S.memShow.delete(gid); else S.memShow.add(gid); renderList(); });
+    ct.addEventListener("pointerdown", (e) => e.stopPropagation());
+    const gr = el("tr", { class: "grp2" + (open ? " open" : "") },
+      el("td", { class: "c-no" }, nos.length > 3 ? `${nos.slice(0, 2).join(",")}…` : nos.join(",") || "-"),
+      el("td", { class: "c-nm" }, `${open ? "▾" : "▸"} ${g.name}`, el("small", { class: "gcnt" }, ` ×${g.its.length}`)), ct,
+      el("td", { class: "c-chk" }, el("span", { class: nr.length === g.its.length ? "chk-ok" : "chk-no" }, `${nr.length}/${g.its.length}`)));
+    gr.addEventListener("click", () => { if (S.memOpen.has(g.k)) S.memOpen.delete(g.k); else S.memOpen.add(g.k); renderList(); });
+    tb.append(gr);
+    if (open) g.its.forEach((it) => itemRow(it, true));
+  }
+  $("#listCount").textContent = `${recs.length}건` + (sks.length ? ` · 검측 안됨 ${sks.length}` : "");
 }
 // 균열 목록: 번호(PW1 …)마다 한 줄 + 개수, 맨 아래 종류별 합계
 function renderCrackList() {
@@ -2104,4 +2214,27 @@ window.addEventListener("beforeunload", (e) => { if (S.edit) { e.preventDefault(
   }
   loadSQL().catch((e) => toast("SQLite 엔진을 불러오지 못했습니다: " + e.message, 5000));
   showInspector();
+})();
+
+// ======================================================================= 휴대폰 뒤로가기: 열린 창을 하나씩 닫고, 마지막엔 두 번 눌러 종료
+function backStep() {
+  const top = [...document.querySelectorAll(".modal.show, .ce-ov")].filter((x) => x.id !== "welcome" && x.id !== "modal").pop();
+  if (top) { const c = top.querySelector("[data-close], .b.gray"); if (top.classList.contains("ce-ov") && c) c.click(); else top.remove(); return true; }   // 겹친 창 (철근·추가사항 등)
+  if ($("#modal").classList.contains("show")) { $("#modal").classList.remove("show"); if (S.leadPick) { S.leadPick = null; draw(); } return true; }
+  if ($("#menu").classList.contains("show")) { $("#menu").classList.remove("show"); return true; }
+  if (S.leadAct || S.areaPending || S.placing || S.spanStart || S.polyDraft) { S.leadAct = null; S.areaPending = null; S.placing = null; S.spanStart = null; S.polyDraft = null; hint(""); buildPointOpts(); draw(); return true; }
+  if (!$("#panel").classList.contains("hidden")) { $("#panelClose").click(); return true; }
+  if (S.sel) { S.sel = null; renderList(); draw(); return true; }
+  if (S.db && !$("#welcome").classList.contains("show") && $("#login").classList.contains("hidden")) { if (!guardEdit()) return true; $("#welcome").classList.add("show"); return true; }   // 작업 화면 → 시작 화면
+  return false;
+}
+(() => {
+  const App = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
+  if (!App || !App.addListener) return;
+  let lastBack = 0;
+  App.addListener("backButton", () => {
+    try { if (backStep()) return; } catch (e) { console.error(e); }
+    if (Date.now() - lastBack < 2000) { App.exitApp(); return; }
+    lastBack = Date.now(); toast("한 번 더 누르면 앱을 닫습니다");
+  });
 })();
