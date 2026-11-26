@@ -850,6 +850,11 @@ const SK = (() => {
           el("div", { class: "set-sec" }, "스케치 그리기"),
           row("직교", ...tog("ortho", "⊾ 켬", "끔")),
           row("스냅", ...tog("snap", "🧲 켬", "끔")),
+          el("div", { class: "set-sec" }, "기타"),
+          el("div", { class: "set-more" }, [["＋ 용도 추가", "#miPurpose"], ["📊 조사표 CSV", "#miCsv"], ["✎ 스케치 보이기 / 숨기기", "#miSketch"],
+            ["🖥 PC에서 받기", "#miPcGet"], ["🖥 PC로 보내기", "#miPcPut"], ["⚙ PC 주소 (Wi-Fi)", "#miPcAddr"]]
+            .filter(([, id]) => $(id) && !$(id).classList.contains("hidden"))
+            .map(([t, id]) => el("button", { class: "b gray", onclick: () => { $("#modal").classList.remove("show"); setTimeout(() => $(id).click(), 0); } }, t))),
           el("div", { class: "btns" }, el("span", { class: "sp" }), el("button", { class: "b ok", onclick: () => $("#modal").classList.remove("show") }, "닫기")));
       };
       render();

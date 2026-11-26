@@ -1597,13 +1597,15 @@ class CadAnalysisApp:
             px, py = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
         else:
             px, py = self.w2s(*g[1])
-            cv.create_oval(px - 3, py - 3, px + 3, py + 3, fill=col, outline=col, tags=tag)
+            if rec.get("mark") != "arrow":
+                cv.create_oval(px - 3, py - 3, px + 3, py + 3, fill=col, outline=col, tags=tag)
         bx, by = self.w2s(*SV.bubble(rec, byid))
         r = 11 if not hl else 13
-        # leader from the bubble edge to the point
+        # leader from the bubble edge to the point (휴대폰에서 '화살표'를 고르면 끝이 화살표)
         d = math.hypot(px - bx, py - by)
         if d > r:
-            cv.create_line(bx + (px - bx) * r / d, by + (py - by) * r / d, px, py, fill=col, width=2, tags=tag)
+            arr = {"arrow": "last", "arrowshape": (11, 13, 5)} if rec.get("mark") == "arrow" else {}
+            cv.create_line(bx + (px - bx) * r / d, by + (py - by) * r / d, px, py, fill=col, width=2, tags=tag, **arr)
         txt = str(rec.get("label") or rec.get("no", ""))
         hw = max(r, len(txt) * 4 + 6)                  # 균열 번호(CR1 …)는 알약 모양
         if hw > r:

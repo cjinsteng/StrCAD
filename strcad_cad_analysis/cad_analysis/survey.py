@@ -536,7 +536,7 @@ def export_csv(path, surveys, byid, P, floor=""):
     for s in sorted(surveys, key=lambda s: s["no"]):
         m = byid.get(s.get("member"))
         x, y = anchor(s, byid)
-        row = {"층/도면": floor, "번호": s["no"], "용도": s["purpose"], "부재명": s.get("name", ""),
+        row = {"층/도면": floor, "번호": no_text(s), "용도": s["purpose"], "부재명": s.get("name", ""),
                "부재ID": m.id if m else "", "도면크기": m.size_text() if m else "",
                "도면길이(m)": round(m.length_cc / 1000, 2) if m and m.kind != "column" else "",
                "위치": position_text(s, byid), "X": round(x, 1), "Y": round(y, 1),
@@ -744,9 +744,18 @@ def list_columns(purpose, P):
     return cols
 
 
+def no_text(r):
+    """목록 번호: 휴대폰에서 복사한 검측점은 번호-01, -02 … (도면에는 같은 번호)."""
+    if r.get("copyOf"):
+        return f"{r.get('no', '')}-{int(r.get('sub') or 1):02d}"
+    return r.get("no", "")
+
+
 def list_value(r, key):
+    if key == "no":
+        return no_text(r)
     if key == "label":
-        return r.get("label") or r.get("no", "")
+        return r.get("label") or no_text(r)
     if key == "csize":
         return crack_size(r.get("fields"))
     if key == "placed":

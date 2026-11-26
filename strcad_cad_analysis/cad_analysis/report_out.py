@@ -90,7 +90,7 @@ def items(res, P, purposes=("균열검토", "기타"), sheet="", with_unplaced=F
         fl = r.get("fields") or {}
         p = P.get(r.get("purpose"), {})
         ct = fl.get("ctype") if p.get("crack") else None
-        it = {"no": r.get("label") or r.get("no"), "seq": 0, "member": "", "desc": "", "E": None, "F": None, "H": None, "I": None,
+        it = {"no": r.get("label") or SV.no_text(r), "seq": 0, "member": "", "desc": "", "E": None, "F": None, "H": None, "I": None,
               "J": "m", "count": len([x for x in lst if SV.is_placed(x)]) or 1, "kind": "", "photos": [], "memo": r.get("memo", ""),
               "sheet": sheet, "inspector": r.get("inspector", ""), "purpose": r.get("purpose"),
               "uids": [x["uid"] for x in lst], "key": f"{sheet}|" + "|".join(str(v) for v in (key if isinstance(key, tuple) else (key,)))}

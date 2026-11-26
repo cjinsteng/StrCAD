@@ -282,7 +282,6 @@ const CO = (() => {
     const pw = el("input", { type: "password", class: "sk-input", placeholder: "비밀번호", autocomplete: "current-password" });
     const nm = el("input", { type: "text", class: "sk-input", placeholder: "이름 (검토자로 표시)" });
     const code = el("input", { type: "text", class: "sk-input", placeholder: "팀 코드 (관리자에게 받기)", autocapitalize: "characters" });
-    const auto = el("input", { type: "checkbox" }); auto.checked = localStorage.getItem("autoLogin") !== "0";
     const msg = el("p", { class: "small lg-msg" }, "");
     const tabs = el("div", { class: "seg sk-seg" });
     const form = el("div", { class: "co-form" });
@@ -292,7 +291,7 @@ const CO = (() => {
       form.innerHTML = "";
       form.append(url, id, pw);
       if (mode === "signup") form.append(nm, code, el("p", { class: "small" }, "처음 가입하는 사람은 관리자가 되고 팀 코드 없이 가입됩니다."));
-      if (opts.full) form.append(el("label", { class: "lg-auto" }, auto, el("span", {}, "자동 로그인 (다음부터 이 화면 건너뛰기)")));
+      if (opts.full) form.append(el("p", { class: "small" }, "앱을 닫고 1시간 안에 다시 열면 로그인 없이 이어서 씁니다."));
     };
     const go = async () => {
       const u = normUrl(url.value); if (!u) { msg.textContent = "서버 주소를 넣으세요"; return; }
@@ -304,8 +303,8 @@ const CO = (() => {
         const r = mode === "login" ? await api("api/login", { url: u, body: { login: id.value.trim(), password: pw.value } })
           : await api("api/signup", { url: u, body: { login: id.value.trim(), password: pw.value, name: nm.value.trim(), team_code: code.value.trim() } });
         st.auth = { url: u, token: r.token, user: r.user, lastLogin: r.user.login }; saveAuth();
-        try { localStorage.setItem("inspector", r.user.name); localStorage.setItem("collabUrlHint", u); localStorage.setItem("offlineStart", "0");
-          if (opts.full) localStorage.setItem("autoLogin", auto.checked ? "1" : "0"); } catch (e) { /* ignore */ }
+        try { localStorage.setItem("inspector", r.user.name); localStorage.setItem("collabUrlHint", u); localStorage.setItem("offlineStart", "0"); } catch (e) { /* ignore */ }
+        touchActive();
         if (window.showInspector) showInspector();
         toast(`${r.user.name} 님 로그인${r.user.role === "admin" ? " (관리자)" : ""}`);
         opts.done(r.user);
@@ -330,21 +329,29 @@ const CO = (() => {
       .catch((e) => { if (e.status === 401) { st.auth.token = null; st.auth.user = null; saveAuth(); toast("로그인이 만료되었습니다 — 다시 로그인하세요", 3000); startScreen(true); } });
   }
   function hideStart() { const s0 = $("#login"); if (s0) s0.classList.add("hidden"); }
+  // 1시간 규칙: 앱을 닫거나 백그라운드로 간 지 1시간이 넘으면 로그인 화면
+  const AWAY_MS = 60 * 60 * 1000;
+  const lastActive = () => { try { return +(localStorage.getItem("lastActive") || 0); } catch (e) { return 0; } };
+  function touchActive() { try { localStorage.setItem("lastActive", String(Date.now())); } catch (e) { /* ignore */ } }
+  setInterval(() => { if (document.visibilityState === "visible" && $("#login").classList.contains("hidden")) touchActive(); }, 60000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") { if ($("#login").classList.contains("hidden")) touchActive(); return; }
+    if (Date.now() - lastActive() > AWAY_MS && $("#login").classList.contains("hidden")) startScreen(true); else if ($("#login").classList.contains("hidden")) touchActive();
+  });
+  window.addEventListener("pagehide", () => { if ($("#login").classList.contains("hidden")) touchActive(); });
   function startScreen(force) {
-    const autoOk = localStorage.getItem("autoLogin") !== "0";
-    if (!force && autoOk && st.auth && st.auth.token && me()) { verifyToken(); return; }
-    if (!force && autoOk && localStorage.getItem("offlineStart") === "1" && inspector()) return;
+    const fresh = Date.now() - lastActive() <= AWAY_MS;
+    if (!force && fresh && st.auth && st.auth.token && me()) { verifyToken(); touchActive(); return; }
+    if (!force && fresh && localStorage.getItem("offlineStart") === "1" && inspector()) { touchActive(); return; }
     const box = $("#login"); box.innerHTML = ""; box.classList.remove("hidden");
     const card = el("div", { class: "lg-card" });
     card.append(el("div", { class: "lg-head" }, el("img", { src: "logo.png", alt: "" }), el("div", {}, el("b", {}, "StrCAD 현장조사"), el("small", {}, "검토자 로그인"))));
-    if (st.auth && st.auth.token && me()) card.append(el("button", { class: "bigbtn", onclick: () => { hideStart(); verifyToken(); toast(`${me().name} 님`); } }, `▶ ${me().name} 님으로 계속`),
-      el("div", { class: "lg-or" }, el("span", {}, "다른 계정")));
     const go = loginForm(card, { full: true, done: () => { hideStart(); } });
     card.append(el("button", { class: "bigbtn navy", onclick: go }, "로그인"));
     const nm = el("input", { type: "text", class: "sk-input", placeholder: "검토자 이름", value: inspector() });
     const off = () => { const v = nm.value.trim(); if (!v) { toast("검토자 이름을 넣으세요"); nm.focus(); return; }
       try { localStorage.setItem("inspector", v); localStorage.setItem("offlineStart", "1"); } catch (e) { /* ignore */ }
-      if (window.showInspector) showInspector(); hideStart(); toast(`${v} — 오프라인으로 시작 (협업 공유 없이 휴대폰에만 저장)`, 3000); };
+      if (window.showInspector) showInspector(); touchActive(); hideStart(); toast(`${v} — 오프라인으로 시작 (협업 공유 없이 휴대폰에만 저장)`, 3000); };
     nm.addEventListener("keydown", (e) => { if (e.key === "Enter") off(); });
     card.append(el("div", { class: "lg-or" }, el("span", {}, "또는")),
       el("div", { class: "lg-off" }, nm, el("button", { class: "b gray", onclick: off }, "오프라인으로 시작")),
@@ -476,7 +483,7 @@ const CO = (() => {
   (async () => { if (base() || NATIVE) return; try { const r = await fetch("api/ping", { cache: "no-store" }); const j = await r.json(); if (j.collab) localStorage.setItem("collabUrlHint", location.origin + location.pathname.replace(/[^/]*$/, "")); } catch (e) { /* no server */ } })();
 
   $("#miCollab").onclick = () => { $("#menu").classList.remove("show"); hub(); };
-  $("#miLogin").onclick = () => { $("#menu").classList.remove("show"); if (me()) { if (confirm(`${me().name} 님 로그아웃하고 로그인 화면으로 갈까요?`)) logout(true); } else startScreen(true); };
+  $("#miLogin").onclick = () => { $("#menu").classList.remove("show"); if (!confirm(`${me() ? me().name : inspector() || ""} 님 로그아웃하고 로그인 화면으로 갈까요?`)) return; if (me()) logout(true); else { try { localStorage.setItem("offlineStart", "0"); } catch (e) { /* ignore */ } startScreen(true); } };
   startScreen(false);
   $("#btnCollab").onclick = () => hub();
   $("#btnShare").onclick = () => sync(false);

@@ -86,12 +86,14 @@
     <img class="welcome-logo" src="logo.png" alt="StrCAD">
     <h2 class="welcome-title">StrCAD <span>현장조사</span></h2>
     <p class="welcome-sub">구조 부재 검측 · 배근 입력 · 간이 N.G 확인</p>
-    <p>PC의 CAD Analysis에서 <b>현장조사 › 모바일로 내보내기</b>로 만든<br><b>.strsv</b> 파일을 열거나, 도면 없이 바로 시작하세요.</p>
-    <label class="bigbtn">📂 조사 파일 열기<input type="file" id="fileOpen" hidden></label>
-    <button class="bigbtn navy" id="btnNew">＋ 새 조사 (DXF 없이 · 빈 도면/사진)</button>
-    <button class="bigbtn ghost hidden" id="btnResume">↺ 이어서 하기</button>
-    <button class="bigbtn ghost hidden" id="btnPcGet">🖥 PC에서 받기</button>
-    <button class="bigbtn ghost" id="btnCollab">👥 협업 프로젝트 (검토자 함께)</button>
+    <button class="bigbtn navy" id="btnNewSurvey">＋ 새 조사</button>
+    <div id="newOpts" class="new-opts hidden">
+      <label class="bigbtn">📂 조사 파일 열기 (.strsv)<input type="file" id="fileOpen" hidden></label>
+      <button class="bigbtn" id="btnNew">📄 PDF · 빈 도면으로 시작</button>
+      <button class="bigbtn ghost hidden" id="btnPcGet">🖥 PC에서 받기</button>
+      <button class="bigbtn ghost hidden" id="btnCollab">👥 협업 프로젝트 받기</button>
+    </div>
+    <button class="bigbtn resume" id="btnResume">↺ 이어서 하기</button>
     <p class="small" id="welcomeNote"></p>
     <p class="welcome-foot">© 2026 StrCAD</p>
   </div>
@@ -100,19 +102,21 @@
 <div id="menu" class="modal">
   <div class="sheet">
     <h3>메뉴</h3>
-    <label class="mi">📂 조사 파일 열기<input type="file" id="fileOpen2" hidden></label>
-    <button class="mi" id="miSave">💾 저장 / 공유 (.strsv)</button>
-    <button class="mi" id="miNew">＋ 도면 추가 (빈 도면 · 사진)</button>
-    <button class="mi" id="miCalib">📏 축척 맞추기 (빈 도면 · 사진)</button>
-    <button class="mi pc hidden" id="miPcGet">🖥 PC에서 받기</button>
-    <button class="mi pc hidden" id="miPcPut">🖥 PC로 보내기</button>
-    <button class="mi hidden" id="miPcAddr">⚙ PC 주소 설정 (Wi-Fi)</button>
-    <button class="mi" id="miCollab">👥 협업 — 검토자 함께 · 공유 · 인원 관리</button>
-    <button class="mi" id="miLogin">🔑 로그인 화면 / 로그아웃</button>
-    <button class="mi" id="miPurpose">＋ 용도 추가</button>
-    <button class="mi" id="miCsv">📊 조사표 CSV</button>
-    <button class="mi" id="miSketch">✎ 스케치 보이기 / 숨기기</button>
-    <button class="mi" id="miSettings">⚙ 설정 — 스케치 격자 · 간격 · 격자 스냅</button>
+    <label class="mi">📂 새 조사파일 열기 (.strsv)<input type="file" id="fileOpen2" hidden></label>
+    <button class="mi" id="miSave">💾 저장하기 — 전체 / 작업자 선택</button>
+    <button class="mi" id="miNew">＋ 도면 추가</button>
+    <button class="mi" id="miCalib">📏 축척 맞추기</button>
+    <button class="mi" id="miCollab">👥 협업</button>
+    <button class="mi" id="miSettings">⚙ 설정 — 스케치 격자 · 기타</button>
+    <button class="mi" id="miLogin">🔑 로그아웃</button>
+    <div hidden>
+      <button class="mi pc hidden" id="miPcGet">🖥 PC에서 받기</button>
+      <button class="mi pc hidden" id="miPcPut">🖥 PC로 보내기</button>
+      <button class="mi hidden" id="miPcAddr">⚙ PC 주소 설정 (Wi-Fi)</button>
+      <button class="mi" id="miPurpose">＋ 용도 추가</button>
+      <button class="mi" id="miCsv">📊 조사표 CSV</button>
+      <button class="mi" id="miSketch">✎ 스케치 보이기 / 숨기기</button>
+    </div>
     <p class="small" id="menuInfo"></p>
     <button class="mi ghost" data-close>닫기</button>
   </div>

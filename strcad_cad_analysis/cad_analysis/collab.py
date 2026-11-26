@@ -468,9 +468,13 @@ class Store:
             for (suid, owner), lst in groups.items():
                 base = order.index(owner) * step
                 lst.sort(key=lambda r: (int(json.loads(r["rec"]).get("no") or 0), r["rowid"]))
-                for k, r in enumerate(lst, 1):
+                seqmap = {}                                  # 복사본(같은 번호 -01, -02 …)은 같은 새 번호
+                for r in lst:
                     rec = json.loads(r["rec"])
-                    old, new = int(rec.get("no") or 0), base + k
+                    old = int(rec.get("no") or 0)
+                    if old not in seqmap:
+                        seqmap[old] = base + len(seqmap) + 1
+                    new = seqmap[old]
                     if old == new:
                         continue
                     rec["no"] = new

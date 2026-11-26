@@ -160,6 +160,11 @@ def export(path, res, P, include_base=True):
         d = math.hypot(bb[0] - an[0], bb[1] - an[1])
         if d > Rb:
             msp.add_line(an, (bb[0] - (bb[0] - an[0]) / d * Rb, bb[1] - (bb[1] - an[1]) / d * Rb), dxfattribs=L)
+            if rec.get("mark") == "arrow":            # 화살표 끝 (휴대폰에서 고른 지시선 모양)
+                ux, uy = (bb[0] - an[0]) / d, (bb[1] - an[1]) / d
+                al, aw = H * 0.9, H * 0.35
+                b0 = (an[0] + ux * al, an[1] + uy * al)
+                msp.add_solid([an, (b0[0] - uy * aw, b0[1] + ux * aw), (b0[0] + uy * aw, b0[1] - ux * aw)], dxfattribs=L)
         msp.add_circle(bb, Rb, dxfattribs=L)
         lab = str(rec.get("label") or rec.get("no", ""))
         text(L, bb, H * (0.65 if len(lab) > 2 else 0.85), lab)

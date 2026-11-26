@@ -428,3 +428,25 @@ body.viewonly #stage::after { content: "👁 뷰어 — 입력 안 됨"; positio
 @media (max-width: 560px) { #brand { display: none; } #top { gap: 4px; } #top .pill { padding: 7px 8px; font-size: 13px; } #pgLbl { min-width: 30px; }
   #top .pill .tx { display: none; } #floorBtn { max-width: 104px; overflow: hidden; text-overflow: ellipsis; }
   .pill.insp { max-width: 84px; flex: none; } #proj { display: none; } }
+
+/* 검측점 놓기: 끝 모양 · 용도 · 길게 누르기 동작 */
+.lead-marks { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 8px 0; }
+.lead-mk { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 16px 8px; border: 2px solid var(--line); border-radius: 12px; background: #fff; font-size: 16px; color: var(--navy); }
+.lead-mk b { font-size: 30px; line-height: 1; }
+.lead-mk.on { border-color: var(--orange); background: #fff7ed; }
+.lead-purp { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 8px 0; }
+.lead-purp button { padding: 18px 8px; border-radius: 12px; border: 0; background: var(--c); color: #fff; font-size: 17px; font-weight: 700; }
+.act-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0; }
+.act-btn { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 14px 6px; border-radius: 12px; border: 2px solid var(--line); background: #fff; color: var(--navy); }
+.act-btn b { font-size: 26px; line-height: 1.1; }
+.act-btn span { font-size: 16px; font-weight: 700; }
+.act-btn small { font-size: 11px; color: var(--muted); text-align: center; }
+#pointOpts .po-lab { align-self: center; padding: 0 8px; font-size: 13px; font-weight: 700; color: var(--navy); white-space: nowrap; }
+
+.set-more { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+/* 시작 화면: 새 조사 / 이어서 하기 */
+.new-opts { display: flex; flex-direction: column; gap: 8px; padding: 8px; margin: -2px 0 8px; background: #f1f5f9; border-radius: 12px; }
+.new-opts .bigbtn { margin: 0; }
+#btnNewSurvey.open { border-bottom-left-radius: 4px; border-bottom-right-radius: 4px; }
+.bigbtn.resume.dim { opacity: .55; }
+.bigbtn small { font-weight: 400; opacity: .8; }
