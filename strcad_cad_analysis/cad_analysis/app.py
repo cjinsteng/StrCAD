@@ -541,6 +541,8 @@ class CadAnalysisApp:
         self._big(g, "📏\n축척\n맞추기", self.calibrate_scale, 7)
         g = self._grp(p, "기록")
         self._big(g, "📤\n조사표 CSV", self.survey_export, 10)
+        self._big(g, "📐\n검측·스케치\nDXF", self.survey_dxf, 10)
+        self._big(g, "📑\n손상물량표\n·사진첩", self.damage_report, 10)
         self._big(g, "📑\n도면 LIST", self._sv_sheet_list, 9)
         ttk.Checkbutton(g, text="검측위치\n표시", variable=self.show_survey, command=self.redraw).pack(side="left", padx=4)
         self.sv_vis_mb = ttk.Menubutton(g, text="👁 표시할\n조사 ▾", direction="below")
@@ -554,6 +556,7 @@ class CadAnalysisApp:
         self._big(g, "📱\n모바일로\n내보내기", self.mobile_export, 9)
         self._big(g, "📥\n모바일 DB\n가져오기", self.mobile_import, 9)
         self.wifi_btn = self._big(g, "📶\nWi-Fi\n연결", self.mobile_wifi, 7)
+        self._big(g, "👥\n검토자\n협업", self.collab_dialog, 7)
         g = self._grp(p, "안내")
         self.sv_help = ttk.Label(g, font=(TH.FAM, 8), foreground="#555", justify="left", wraplength=360,
                                  text=SV_HELP["point"])
@@ -760,7 +763,7 @@ class CadAnalysisApp:
             return
         path = filedialog.askopenfilename(
             parent=self.root, title="구조평면도 열기", initialdir=self.cfg.get("last_dir") or None,
-            filetypes=[("DXF / DWG / PDF / 도면 사진", "*.dxf *.dwg *.pdf *.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp"),
+            filetypes=[("DXF / DWG / PDF / 도면 사진 / 현장조사(.strsv)", "*.dxf *.dwg *.pdf *.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp *.strsv"),
                        ("DXF", "*.dxf"), ("PDF 도면", "*.pdf"), ("도면 사진·이미지", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp"),
                        ("모든 파일", "*.*")])
         if not path:
@@ -769,6 +772,9 @@ class CadAnalysisApp:
         self._save_cfg()
         if os.path.splitext(path)[1].lower() in IMG_EXT:
             self.new_field_sheet(path=path, mode="recognize", confirmed=True)
+            return
+        if path.lower().endswith(".strsv"):                 # 휴대폰 현장조사 파일 → 가져와서 바로 열기
+            self.mobile_import(path=path, confirmed=True)
             return
         self.load_path(path)
 
@@ -1484,20 +1490,52 @@ class CadAnalysisApp:
             try:
                 if kind in ("beam", "wall") and len(p) >= 4:
                     a, b = self.w2s(p[0], p[1]), self.w2s(p[2], p[3])
-                    cv.create_line(*a, *b, fill=col, width=9 if kind == "wall" else 4, capstyle="round",
-                                   stipple="gray75" if kind == "wall" else "", tags=tag)
-                    if kind == "beam":
-                        for q in (a, b):
-                            cv.create_oval(q[0] - 3, q[1] - 3, q[0] + 3, q[1] + 3, fill=col, outline="", tags=tag)
+                    thick = float(sk.get("t") or 200) if kind == "wall" else float(sk.get("w") or 400)
+                    L = math.hypot(p[2] - p[0], p[3] - p[1]) or 1
+                    nx, ny = -(p[3] - p[1]) / L * thick / 2, (p[2] - p[0]) / L * thick / 2
+                    band = [self.w2s(p[0] + nx, p[1] + ny), self.w2s(p[2] + nx, p[3] + ny),
+                            self.w2s(p[2] - nx, p[3] - ny), self.w2s(p[0] - nx, p[1] - ny)]
+                    wpx = thick * self.s
+                    if kind == "wall" and wpx >= 5:
+                        cv.create_polygon(*[c for q in band for c in q], fill=col, stipple="gray50", outline=col, tags=tag)
+                    elif kind == "beam" and sk.get("dbl") and wpx >= 3:          # 복선 보
+                        cv.create_line(*band[0], *band[1], fill=col, width=2, tags=tag)
+                        cv.create_line(*band[3], *band[2], fill=col, width=2, tags=tag)
+                        cv.create_line(*a, *b, fill=col, width=1, dash=(6, 3), tags=tag)
+                    else:
+                        cv.create_line(*a, *b, fill=col, width=9 if kind == "wall" else 4, capstyle="round",
+                                       stipple="gray75" if kind == "wall" else "", tags=tag)
+                        if kind == "beam":
+                            for q in (a, b):
+                                cv.create_oval(q[0] - 3, q[1] - 3, q[0] + 3, q[1] + 3, fill=col, outline="", tags=tag)
+                    if sk.get("name") and math.hypot(b[0] - a[0], b[1] - a[1]) > 30:
+                        cv.create_text((a[0] + b[0]) / 2, (a[1] + b[1]) / 2 - max(9, wpx / 2 + 7), text=sk["name"],
+                                       fill=col, font=(TH.FAM, 9, "bold"), tags=tag)
                 elif kind == "column" and len(p) >= 4:
                     a, b = self.w2s(p[0], p[1]), self.w2s(p[2], p[3])
                     cv.create_rectangle(*a, *b, outline=col, width=2, fill=col, stipple="gray25", tags=tag)
                     cv.create_line(*a, *b, fill=col, tags=tag)
                     cv.create_line(a[0], b[1], b[0], a[1], fill=col, tags=tag)
-                    w, h = abs(p[2] - p[0]), abs(p[3] - p[1])
-                    if abs(b[0] - a[0]) > 30:
-                        cv.create_text((a[0] + b[0]) / 2, min(a[1], b[1]) - 3, anchor="s", text=f"{w:.0f}×{h:.0f}",
+                    w, h = sk.get("b") or abs(p[2] - p[0]), sk.get("h") or abs(p[3] - p[1])
+                    if abs(b[0] - a[0]) > 22:
+                        cv.create_text((a[0] + b[0]) / 2, min(a[1], b[1]) - 3, anchor="s",
+                                       text=(f"{sk['name']} " if sk.get("name") else "") + f"{w:.0f}×{h:.0f}",
                                        fill=col, font=(TH.FAM, 8, "bold"), tags=tag)
+                elif kind == "dim" and len(p) >= 4:             # 치수 (값은 그릴 때 저장한 mm)
+                    a, b = self.w2s(p[0], p[1]), self.w2s(p[2], p[3])
+                    L = math.hypot(b[0] - a[0], b[1] - a[1]) or 1
+                    ux, uy = (b[0] - a[0]) / L, (b[1] - a[1]) / L
+                    cv.create_line(*a, *b, fill=col, width=1.5, tags=tag)
+                    for q in (a, b):
+                        cv.create_line(q[0] - (ux + uy) * 5, q[1] - (uy - ux) * 5, q[0] + (ux + uy) * 5, q[1] + (uy - ux) * 5,
+                                       fill=col, width=2, tags=tag)
+                        cv.create_line(q[0] + uy * 8, q[1] - ux * 8, q[0] - uy * 8, q[1] + ux * 8, fill=col, tags=tag)
+                    ang = -math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))
+                    if ang > 90 or ang < -90:
+                        ang += 180
+                    val = sk.get("val") or math.hypot(p[2] - p[0], p[3] - p[1])
+                    cv.create_text((a[0] + b[0]) / 2, (a[1] + b[1]) / 2 - 9,
+                                   text=f"{float(val):,.0f}", angle=ang, fill=col, font=(TH.FAM, 9, "bold"), tags=tag)
                 elif kind == "free" and len(p) >= 4:
                     cv.create_line(*[c for i in range(0, len(p) - 1, 2) for c in self.w2s(p[i], p[i + 1])],
                                    fill=col, width=2.5, capstyle="round", joinstyle="round", smooth=True, tags=tag)
@@ -1513,19 +1551,32 @@ class CadAnalysisApp:
                 elif kind == "text" and len(p) >= 2:
                     x, y = self.w2s(p[0], p[1])
                     cv.create_text(x, y, text=sk.get("text", ""), fill=col, font=(TH.FAM, 10, "bold"), tags=tag)
+                if sk.get("inspector") and kind not in ("axis", "dim") and len(p) >= 2:        # 작성자 서명
+                    ex, ey = self.w2s(p[-2], p[-1]) if kind != "column" else self.w2s((p[0] + p[2]) / 2, min(p[1], p[3]))
+                    sx0, sy0 = self.w2s(p[0], p[1])
+                    if kind in ("column", "text") or math.hypot(ex - sx0, ey - sy0) > 40:
+                        cv.create_text(ex, ey + 11, text="✍ " + sk["inspector"], fill="#64748b", font=(TH.FAM, 7, "italic"), tags=tag)
             except tk.TclError:
                 pass
 
     def _draw_survey(self, rec, byid, hl=False):
         cv = self.cv
         col = self.P.get(rec.get("purpose"), {}).get("color", "#d62828")
+        if not SV.is_placed(rec):
+            return
         g = SV.geometry(rec, byid)
         tag = ("survey", f"sv{rec['id']}") + (("sel",) if hl else ())
         if g[0] == "area":
             x0, y0, x1, y1 = g[1]
             a, b = self.w2s(x0, y1), self.w2s(x1, y0)
-            cv.create_rectangle(*a, *b, fill=col, stipple="gray25" if hl else "gray12", outline="", tags=tag)
-            cv.create_rectangle(*a, *b, outline=col, width=3 if hl else 2, dash=(10, 5), tags=tag)
+            pl = SV.poly_pts(rec)
+            if pl:                                  # 다각형 영역
+                flat = [c for q in pl for c in self.w2s(*q)]
+                cv.create_polygon(*flat, fill=col, stipple="gray25" if hl else "gray12", outline="", tags=tag)
+                cv.create_polygon(*flat, fill="", outline=col, width=3 if hl else 2, dash=(10, 5), tags=tag)
+            else:
+                cv.create_rectangle(*a, *b, fill=col, stipple="gray25" if hl else "gray12", outline="", tags=tag)
+                cv.create_rectangle(*a, *b, outline=col, width=3 if hl else 2, dash=(10, 5), tags=tag)
             fl = rec.get("fields") or {}
             w, h = b[0] - a[0], b[1] - a[1]
             if w > 80 and h > 24:
@@ -1537,7 +1588,7 @@ class CadAnalysisApp:
                 for i, t in enumerate(lines):
                     cv.create_text((a[0] + b[0]) / 2, cy + i * 16, text=t, fill=col, width=w - 8,
                                    font=(TH.FAM, 9, "bold"), tags=tag)
-            px, py = a
+            px, py = self.w2s(*SV.anchor(rec, byid))
         elif g[0] == "span":
             a, b = self.w2s(*g[1]), self.w2s(*g[2])
             cv.create_line(*a, *b, fill=col, width=7 if not hl else 11, capstyle="butt", tags=tag)
@@ -1553,10 +1604,22 @@ class CadAnalysisApp:
         d = math.hypot(px - bx, py - by)
         if d > r:
             cv.create_line(bx + (px - bx) * r / d, by + (py - by) * r / d, px, py, fill=col, width=2, tags=tag)
-        cv.create_oval(bx - r, by - r, bx + r, by + r, fill="white", outline=col, width=3 if not hl else 4, tags=tag)
+        txt = str(rec.get("label") or rec.get("no", ""))
+        hw = max(r, len(txt) * 4 + 6)                  # 균열 번호(CR1 …)는 알약 모양
+        if hw > r:
+            wd = 3 if not hl else 4
+            cv.create_rectangle(bx - hw + r, by - r, bx + hw - r, by + r, fill="white", outline="", tags=tag)
+            for cx0 in (bx - hw, bx + hw - 2 * r):
+                cv.create_oval(cx0, by - r, cx0 + 2 * r, by + r, fill="white", outline="", tags=tag)
+            cv.create_arc(bx - hw, by - r, bx - hw + 2 * r, by + r, start=90, extent=180, outline=col, width=wd, style="arc", tags=tag)
+            cv.create_arc(bx + hw - 2 * r, by - r, bx + hw, by + r, start=-90, extent=180, outline=col, width=wd, style="arc", tags=tag)
+            for yy in (by - r, by + r):
+                cv.create_line(bx - hw + r, yy, bx + hw - r, yy, fill=col, width=wd, tags=tag)
+        else:
+            cv.create_oval(bx - r, by - r, bx + r, by + r, fill="white", outline=col, width=3 if not hl else 4, tags=tag)
         if hl:
-            cv.create_oval(bx - r - 4, by - r - 4, bx + r + 4, by + r + 4, outline=SEL, width=3, tags=tag)
-        cv.create_text(bx, by, text=str(rec.get("no", "")), fill=col, font=(TH.FAM, 9, "bold"), tags=tag)
+            cv.create_oval(bx - hw - 4, by - r - 4, bx + hw + 4, by + r + 4, outline=SEL, width=3, tags=tag)
+        cv.create_text(bx, by, text=txt, fill=col, font=(TH.FAM, 9, "bold"), tags=tag)
 
     def _draw_selection(self):
         self.cv.delete("sel")
@@ -2516,7 +2579,7 @@ class CadAnalysisApp:
         byid = self.res.by_id()
         best = None
         for rec in self.res.surveys:
-            if rec.get("purpose") in self.sv_hidden:
+            if rec.get("purpose") in self.sv_hidden or not SV.is_placed(rec):
                 continue
             bx, by = SV.bubble(rec, byid)
             d = math.hypot(x - bx, y - by) * self.s - 12          # px outside the bubble
@@ -2539,7 +2602,7 @@ class CadAnalysisApp:
             return None
         byid = self.res.by_id()
         for rec in reversed(self.res.surveys):
-            if rec.get("purpose") in self.sv_hidden:
+            if rec.get("purpose") in self.sv_hidden or not SV.is_placed(rec):
                 continue
             bx, by = SV.bubble(rec, byid)
             if math.hypot(x - bx, y - by) * self.s <= 13:
@@ -2710,7 +2773,7 @@ class CadAnalysisApp:
         m = self.res.by_id().get(rec.get("member"))
         self.sel = m
         self._show_info(m)
-        if center:
+        if center and SV.is_placed(rec):
             x, y = SV.anchor(rec, self.res.by_id())
             W, H = self.cv.winfo_width(), self.cv.winfo_height()
             sx, sy = self.w2s(x, y)
@@ -3081,6 +3144,8 @@ class CadAnalysisApp:
         if not e:
             return SU.copy_photos(files, folder)
         code = SV.purpose_code(e.get("purpose"), self.P)
+        if e.get("label") and self.P.get(e.get("purpose"), {}).get("crack"):       # crack_CR1_01
+            return SU.copy_photos(files, folder, namer=lambda f: "crack_" + SV.safe_part(e["label"]))
         return SU.copy_photos(files, folder, namer=lambda f: SV.photo_base(
             self.project or "프로젝트", self.db_name or "도면", SV.photo_date(f), e.get("no"), code))
 
@@ -3309,12 +3374,12 @@ class CadAnalysisApp:
                             "이 파일을 휴대폰/패드로 옮겨(카카오톡·메일·드라이브·USB) 현장조사 앱에서 여세요.",
                             parent=self.root)
 
-    def mobile_import(self):
-        if not self._confirm_discard():
+    def mobile_import(self, path=None, confirmed=False):
+        if not confirmed and not self._confirm_discard():
             return
         from . import sync
-        path = filedialog.askopenfilename(parent=self.root, title="모바일 DB 가져오기",
-                                          filetypes=[("현장조사 파일", "*.strsv"), ("모든 파일", "*.*")])
+        path = path or filedialog.askopenfilename(parent=self.root, title="모바일 DB 가져오기",
+                                                  filetypes=[("현장조사 파일", "*.strsv"), ("모든 파일", "*.*")])
         if not path:
             return
         try:
@@ -3323,11 +3388,18 @@ class CadAnalysisApp:
             messagebox.showerror("모바일 DB 가져오기", str(e), parent=self.root)
             return
         self._after_mobile_import(rep)
+        aids = rep.get("aids") or []
+        if aids and self.db_id not in aids:                  # 가져온 도면을 바로 열기
+            try:
+                self._open_db_id(aids[0])
+                self.fit()
+            except Exception as e:  # noqa: BLE001
+                self.log(f"가져온 도면 열기 실패: {e}")
         messagebox.showinfo("모바일 DB 가져오기",
                             f"추가 {rep['added']} · 수정 {rep['updated']} · 삭제 {rep['deleted']} · 그대로 {rep['kept']}\n"
                             f"사진 {rep['photos']}장" + (f"\n번호 겹침으로 바뀐 번호 {rep['renumbered']}건 (추가사항에 기록)"
                                                        if rep["renumbered"] else "")
-                            + (f"\n휴대폰에서 새로 만든 도면 {rep['new_sheets']}장 추가 (DB에서 불러오기로 여세요)"
+                            + (f"\n휴대폰에서 새로 만든 도면 {rep['new_sheets']}장 추가" + (" (나머지는 DB에서 불러오기)" if len(aids) > 1 else "")
                                if rep.get("new_sheets") else "")
                             + (f"\n스케치 {rep['sketches']}건" if rep.get("sketches") else "")
                             + (f"\n\nPC DB에 없는 도면: {', '.join(rep['missing'])}" if rep["missing"] else ""),
@@ -3377,6 +3449,197 @@ class CadAnalysisApp:
                    "  파일(.strsv)로 주고받으세요. (README 참고)\n\n"
                    "Windows 방화벽이 묻으면 '개인 네트워크' 허용을 눌러 주세요.", "620x330")
 
+    # ---------------------------------------------------------------- 검토자 협업 (StrCAD 협업 서버)
+    def collab_dialog(self):
+        """이 PC에서 협업 서버 열기 · 서버 프로젝트를 PC DB로 가져오기 · PC 프로젝트를 서버에 올리기."""
+        import json as _json
+        import tempfile
+        import urllib.request
+        import urllib.parse
+        from . import collab as CB, sync
+        w = tk.Toplevel(self.root)
+        w.title("검토자 협업 — StrCAD 협업 서버")
+        w.geometry("720x640")
+        w.transient(self.root)
+        st = {"token": self.cfg.get("collab_token", ""), "projects": []}
+        # --- 서버 열기
+        f1 = ttk.LabelFrame(w, text=" ① 이 PC를 협업 서버로 (회사 PC·서버에서 켜 두기) ", padding=8)
+        f1.pack(fill="x", padx=10, pady=(10, 6))
+        r = ttk.Frame(f1)
+        r.pack(fill="x")
+        ttk.Label(r, text="포트").pack(side="left")
+        port = tk.StringVar(value=str(self.cfg.get("collab_port", 8780)))
+        ttk.Entry(r, textvariable=port, width=7).pack(side="left", padx=4)
+        ttk.Label(r, text="데이터 폴더").pack(side="left", padx=(10, 0))
+        ddir = tk.StringVar(value=self.cfg.get("collab_dir") or os.path.join(os.path.expanduser("~"), ".strcad", "collab"))
+        ttk.Entry(r, textvariable=ddir, width=34).pack(side="left", padx=4, fill="x", expand=True)
+        ttk.Button(r, text="…", width=3, command=lambda: ddir.set(filedialog.askdirectory(parent=w) or ddir.get())).pack(side="left")
+        info = tk.Text(f1, height=8, wrap="word", font=(TH.FAM, 9), relief="flat", background="#f8fafc")
+        btn = ttk.Button(f1, text="")
+
+        def show():
+            info.config(state="normal")
+            info.delete("1.0", "end")
+            srv = getattr(self, "_collab", None)
+            if srv:
+                info.insert("end", "● 서버 켜짐\n")
+                for u in srv.urls():
+                    info.insert("end", f"   주소: {u}\n")
+                info.insert("end", f"   팀 코드: {srv.team_code}   (가입할 때 필요 · 처음 가입한 사람이 관리자)\n"
+                            "   휴대폰: 앱 › 메뉴 › 👥 협업 › 위 주소 입력 → 가입/로그인\n"
+                            "   현장(모바일 데이터)에서: 이 PC에서  cloudflared tunnel --url http://localhost:" + str(srv.port) +
+                            "  → 나오는 https://….trycloudflare.com 주소를 앱에 입력 (README 참고)\n"
+                            "   ※ 이 창·프로그램을 닫으면 서버도 꺼집니다. 계속 켜 두려면 collab_server.py 로 실행")
+                btn.config(text="서버 끄기")
+            else:
+                info.insert("end", "○ 꺼져 있음 — [서버 켜기]를 누르면 같은 Wi-Fi·사내망 휴대폰이 접속할 수 있습니다.\n"
+                            "   데이터(계정·기록·사진)는 위 데이터 폴더에 저장됩니다.")
+                btn.config(text="서버 켜기")
+            info.config(state="disabled")
+
+        def toggle():
+            srv = getattr(self, "_collab", None)
+            if srv:
+                srv.stop()
+                self._collab = None
+                self.log("협업 서버 끔")
+            else:
+                try:
+                    self._collab = CB.CollabServer(ddir.get(), int(port.get()), log=lambda m: self.q.put(("call", lambda: self.log(m)))).start()
+                except OSError as e:
+                    messagebox.showerror("협업 서버", f"포트를 열 수 없습니다: {e}", parent=w)
+                    return
+                self.cfg["collab_port"], self.cfg["collab_dir"] = int(port.get()), ddir.get()
+                S.save(self.cfg)
+                self.log(f"협업 서버 켬: {self._collab.urls()[0]} · 팀 코드 {self._collab.team_code}")
+            show()
+        btn.config(command=toggle)
+        btn.pack(anchor="w", pady=4)
+        info.pack(fill="x")
+        show()
+        # --- 서버 ↔ PC
+        f2 = ttk.LabelFrame(w, text=" ② 협업 서버 ↔ 이 PC DB ", padding=8)
+        f2.pack(fill="both", expand=True, padx=10, pady=6)
+        g = ttk.Frame(f2)
+        g.pack(fill="x")
+        url = tk.StringVar(value=self.cfg.get("collab_url") or f"http://localhost:{port.get()}/")
+        uid_ = tk.StringVar(value=self.cfg.get("collab_login", ""))
+        pw = tk.StringVar()
+        for i, (lab, var, show_) in enumerate((("서버 주소", url, ""), ("아이디", uid_, ""), ("비밀번호", pw, "*"))):
+            ttk.Label(g, text=lab).grid(row=i, column=0, sticky="w", pady=2)
+            ttk.Entry(g, textvariable=var, show=show_, width=48).grid(row=i, column=1, sticky="ew", pady=2)
+        g.columnconfigure(1, weight=1)
+        lb = tk.Listbox(f2, height=8, font=(TH.FAM, 10))
+        msg = ttk.Label(f2, text="", foreground=TH.NAVY_L)
+
+        def api(path, body=None, raw=None, binary=False):
+            base = url.get().strip()
+            if not base.startswith("http"):
+                base = "http://" + base
+            base = base.rstrip("/") + "/"
+            data = raw if raw is not None else (_json.dumps(body).encode() if body is not None else None)
+            rq = urllib.request.Request(base + path, data=data, method="POST" if data is not None else "GET")
+            if st["token"]:
+                rq.add_header("Authorization", "Bearer " + st["token"])
+            if body is not None:
+                rq.add_header("Content-Type", "application/json")
+            try:
+                with urllib.request.urlopen(rq, timeout=120) as resp:
+                    b = resp.read()
+                    return b if binary else _json.loads(b.decode("utf-8") or "{}")
+            except urllib.error.HTTPError as e:
+                try:
+                    raise RuntimeError(_json.loads(e.read().decode("utf-8")).get("error") or str(e))
+                except ValueError:
+                    raise RuntimeError(str(e))
+
+        def login():
+            try:
+                r = api("api/login", {"login": uid_.get().strip(), "password": pw.get()})
+            except Exception as e:      # noqa: BLE001
+                msg.config(text=f"로그인 실패: {e}")
+                return False
+            st["token"] = r["token"]
+            self.cfg.update(collab_token=r["token"], collab_url=url.get().strip(), collab_login=uid_.get().strip())
+            S.save(self.cfg)
+            msg.config(text=f"{r['user']['name']} 님 로그인")
+            return True
+
+        def load():
+            try:
+                if not st["token"] and not login():
+                    return
+                try:
+                    ps = api("api/projects")["projects"]
+                except RuntimeError:
+                    if not login():
+                        return
+                    ps = api("api/projects")["projects"]
+            except Exception as e:      # noqa: BLE001
+                msg.config(text=f"서버 연결 실패: {e}")
+                return
+            st["projects"] = ps
+            lb.delete(0, "end")
+            for p in ps:
+                lb.insert("end", f"{p['name']}   —  기록 {p['records']}건 · 검토자 {p['people']}명 · 도면 {p['sheets']}장 · 최근 {str(p['updated'])[:16].replace('T', ' ')}")
+            msg.config(text=f"프로젝트 {len(ps)}개")
+
+        def pull():
+            sel = lb.curselection()
+            if not sel:
+                msg.config(text="가져올 프로젝트를 고르세요")
+                return
+            p = st["projects"][sel[0]]
+            if not self._confirm_discard():
+                return
+            try:
+                data = api(f"api/package?project={p['id']}", binary=True)
+                fd, tmp = tempfile.mkstemp(suffix=".strsv")
+                with os.fdopen(fd, "wb") as f:
+                    f.write(data)
+                rep = sync.import_package(tmp, self.cfg, log=self.log)
+                os.remove(tmp)
+            except Exception as e:      # noqa: BLE001
+                messagebox.showerror("협업 서버에서 가져오기", str(e), parent=w)
+                return
+            self._after_mobile_import(rep)
+            messagebox.showinfo("협업 서버에서 가져오기",
+                                f"'{p['name']}' — 추가 {rep['added']} · 수정 {rep['updated']} · 삭제 {rep['deleted']} · 사진 {rep['photos']}장"
+                                + (f"\n새 도면 {rep['new_sheets']}장 (DB에서 불러오기로 여세요)" if rep.get("new_sheets") else ""), parent=w)
+
+        def push():
+            if not self.project or self.db_id is None:
+                messagebox.showinfo("협업 서버에 올리기", "먼저 DB에 저장된 프로젝트를 여세요.", parent=w)
+                return
+            try:
+                if not st["token"] and not login():
+                    return
+                fd, tmp = tempfile.mkstemp(suffix=".strsv")
+                os.close(fd)
+                sync.export_package(tmp, self.project, self.cfg, log=self.log)
+                with open(tmp, "rb") as f:
+                    data = f.read()
+                os.remove(tmp)
+                r = api("api/projects?name=" + urllib.parse.quote(self.project), raw=data)
+            except Exception as e:      # noqa: BLE001
+                messagebox.showerror("협업 서버에 올리기", str(e), parent=w)
+                return
+            messagebox.showinfo("협업 서버에 올리기", f"협업 프로젝트 '{r['name']}' 를 만들었습니다.\n"
+                                "검토자들은 휴대폰 앱 › 👥 협업 에서 이 프로젝트를 열면 됩니다.", parent=w)
+            load()
+
+        b = ttk.Frame(f2)
+        b.pack(fill="x", pady=6)
+        ttk.Button(b, text="로그인 · 프로젝트 목록", command=lambda: (login() and load())).pack(side="left")
+        ttk.Button(b, text="⬇ 골라서 PC DB로 가져오기", command=pull).pack(side="left", padx=6)
+        ttk.Button(b, text="⬆ 지금 PC 프로젝트를 협업 프로젝트로 올리기", command=push).pack(side="left")
+        lb.pack(fill="both", expand=True)
+        msg.pack(anchor="w", pady=(4, 0))
+        ttk.Label(f2, text="가져오기는 여러 검토자의 기록을 PC DB에 합칩니다 (휴대폰 DB 가져오기와 같음). "
+                           "계정·인원 관리는 휴대폰 앱 › 👥 협업 › 인원 관리(관리자)에서 합니다.",
+                  foreground="#555", wraplength=680, font=(TH.FAM, 8)).pack(anchor="w", pady=(4, 0))
+        ttk.Button(w, text="닫기", command=w.destroy).pack(pady=8)
+
     # ---------------------------------------------------------------- compat / misc
     def survey_edit(self, sid):
         self._sv_select(sid, center=True)
@@ -3408,6 +3671,359 @@ class CadAnalysisApp:
         if path:
             n = SV.export_csv(path, self.res.surveys, self.res.by_id(), self.P, floor=self.db_name)
             self.log(f"조사표 저장: 검측위치 {n}개 → {path}")
+
+    def damage_report(self):
+        """조사 내용 → 손상물량표(엑셀, 회사 양식) · 현황조사 사진첩(한글, 한 쪽 6칸)."""
+        from . import report_out as RO
+        if not self.res:
+            messagebox.showinfo("손상물량표·사진첩", "도면을 먼저 여세요.", parent=self.root)
+            return
+        w = tk.Toplevel(self.root)
+        w.title("손상물량표 · 현황조사 사진첩")
+        w.geometry("1280x720")
+        w.minsize(1000, 560)
+        w.transient(self.root)
+        pw = ttk.PanedWindow(w, orient="horizontal")
+        pw.pack(fill="both", expand=True)
+        f = ttk.Frame(pw, padding=12)
+        right = ttk.Frame(pw, padding=(6, 12, 12, 12))
+        pw.add(f, weight=0)
+        pw.add(right, weight=1)
+        ttk.Label(f, text="넣을 조사 용도", font=(TH.FAM, 10, "bold")).pack(anchor="w")
+        pf = ttk.Frame(f)
+        pf.pack(fill="x", pady=(2, 8))
+        pvars = {}
+        for k, name in enumerate(self.P):
+            v = tk.BooleanVar(value=name in ("균열검토", "기타") or self.P[name].get("crack", False))
+            pvars[name] = v
+            ttk.Checkbutton(pf, text=name, variable=v, command=lambda: reload()).grid(row=k // 3, column=k % 3, sticky="w", padx=(0, 12))
+        scope = tk.StringVar(value="all" if self.project else "cur")
+        sf = ttk.Frame(f)
+        sf.pack(fill="x")
+        ttk.Label(sf, text="범위").grid(row=0, column=0, sticky="w")
+        ttk.Radiobutton(sf, text=f"지금 도면 ({self.db_name or '열린 도면'})", variable=scope, value="cur",
+                        command=lambda: reload()).grid(row=0, column=1, sticky="w", padx=6)
+        if self.project:
+            ttk.Radiobutton(sf, text=f"프로젝트 전체 도면 ({self.project})", variable=scope, value="all",
+                            command=lambda: reload()).grid(row=1, column=1, sticky="w", padx=6)
+        ttk.Separator(f).pack(fill="x", pady=8)
+        do_x, do_h = tk.BooleanVar(value=True), tk.BooleanVar(value=True)
+        ttk.Checkbutton(f, text="📊 손상물량표 (엑셀)", variable=do_x).pack(anchor="w")
+        ttk.Label(f, text="   D~K 조사 내용 · O열부터 사진 이름 · L 손상물량·G 단위는 식", foreground="#666",
+                  font=(TH.FAM, 8)).pack(anchor="w")
+        tf = ttk.Frame(f)
+        tf.pack(fill="x", padx=(22, 0), pady=(2, 2))
+        tpl = tk.StringVar(value=self.cfg.get("damage_xlsx_template") or "")
+        ttk.Label(tf, text="양식").pack(side="left")
+        ttk.Entry(tf, textvariable=tpl, width=30).pack(side="left", padx=4, fill="x", expand=True)
+        ttk.Button(tf, text="…", width=3, command=lambda: tpl.set(filedialog.askopenfilename(
+            parent=w, filetypes=[("엑셀", "*.xlsx")]) or tpl.get())).pack(side="left")
+        ttk.Label(f, text="   (비우면 기본 양식)", foreground="#666", font=(TH.FAM, 8)).pack(anchor="w")
+        ttk.Checkbutton(f, text="🖼 현황조사 사진첩 (한글)", variable=do_h).pack(anchor="w", pady=(8, 0))
+        ttk.Label(f, text="   한 쪽 6칸 · 칸마다 사진·위치·내용 · 넘치면 쪽 추가", foreground="#666",
+                  font=(TH.FAM, 8)).pack(anchor="w")
+        hf = ttk.Frame(f)
+        hf.pack(fill="x", padx=(22, 0), pady=2)
+        title = tk.StringVar(value=self.cfg.get("album_title") or f"{self.project or ''} 정밀안전진단 용역".strip())
+        header = tk.StringVar(value=self.cfg.get("album_header") or f"현황조사 사진첩({self.project or ''})")
+        sect = tk.StringVar(value=self.cfg.get("album_section") or "손상현황")
+        nophoto = tk.BooleanVar(value=False)
+        for i, (lab, var) in enumerate((("제목(●)", title), ("머리말", header), ("구분 <>", sect))):
+            ttk.Label(hf, text=lab).grid(row=i, column=0, sticky="w", pady=1)
+            ttk.Entry(hf, textvariable=var, width=30).grid(row=i, column=1, sticky="ew", pady=1)
+        ttk.Checkbutton(hf, text="사진 없는 항목도 칸 넣기", variable=nophoto).grid(row=3, column=1, sticky="w")
+        msg = ttk.Label(f, text="", foreground=TH.NAVY_L, wraplength=330)
+
+        # ---------------------------------------------------------------- 오른쪽: 조사 목록 (고르기)
+        st = {"rows": [], "off": set(), "ph_off": set(), "cache": {}, "imgs": []}
+        group = tk.BooleanVar(value=self.cfg.get("damage_group", True))
+        hd = ttk.Frame(right)
+        hd.pack(fill="x")
+        ttk.Label(hd, text="조사 목록 — 가져올 것 고르기", font=(TH.FAM, 10, "bold")).pack(side="left")
+        cnt = ttk.Label(hd, text="", foreground=TH.NAVY)
+        cnt.pack(side="left", padx=10)
+        ttk.Checkbutton(hd, text="같은 균열 묶기", variable=group, command=lambda: reload()).pack(side="right")
+        bar = ttk.Frame(right)
+        bar.pack(fill="x", pady=(4, 4))
+        cols = ("chk", "sheet", "no", "member", "desc", "size", "count", "ph", "axis")
+        heads = {"chk": "✓", "sheet": "도면", "no": "번호", "member": "부재", "desc": "손상내용", "size": "크기",
+                 "count": "개소", "ph": "사진", "axis": "위치(축)"}
+        widths = {"chk": 34, "sheet": 90, "no": 70, "member": 70, "desc": 170, "size": 140, "count": 44, "ph": 60, "axis": 110}
+        lf = ttk.Frame(right)
+        lf.pack(fill="both", expand=True)
+        tv = ttk.Treeview(lf, columns=cols, show="headings", selectmode="browse", height=12)
+        for c in cols:
+            tv.heading(c, text=heads[c])
+            tv.column(c, width=widths[c], anchor="center" if c in ("chk", "count", "ph", "no") else "w",
+                      stretch=c in ("desc", "axis"))
+        vs = ttk.Scrollbar(lf, orient="vertical", command=tv.yview)
+        tv.configure(yscrollcommand=vs.set)
+        tv.pack(side="left", fill="both", expand=True)
+        vs.pack(side="right", fill="y")
+        tv.tag_configure("off", foreground="#A0A7B4")
+        # 사진 고르기 (고른 줄의 사진 — 체크한 사진만 엑셀 O열·사진첩에)
+        phf = ttk.LabelFrame(right, text=" 사진 — 줄을 고르면 그 항목 사진이 보입니다. 넣을 사진만 체크 ", padding=6)
+        phf.pack(fill="x", pady=(8, 0))
+        phbar = ttk.Frame(phf)
+        phbar.pack(fill="x")
+        phinfo = ttk.Label(phbar, text="", foreground=TH.NAVY)
+        phinfo.pack(side="left")
+        phc = tk.Canvas(phf, height=172, bg="white", highlightthickness=0)
+        phs = ttk.Scrollbar(phf, orient="horizontal", command=phc.xview)
+        phc.configure(xscrollcommand=phs.set)
+        phc.pack(fill="x")
+        phs.pack(fill="x")
+        phin = tk.Frame(phc, bg="white")
+        phc.create_window(0, 0, window=phin, anchor="nw")
+        phin.bind("<Configure>", lambda e: phc.configure(scrollregion=phc.bbox("all")))
+
+        def is_on(it):
+            return any(u not in st["off"] for u in it["uids"]) if it["uids"] else True
+
+        def ph_on(it):
+            return [p for p in it["photos"] if p not in st["ph_off"]]
+
+        def row_vals(nm, it):
+            n_all, n_on = len(it["photos"]), len(ph_on(it))
+            on_u = [u for u in it["uids"] if u not in st["off"]]
+            c = it["count"] if len(on_u) == len(it["uids"]) else f"{len(on_u)}/{it['count']}"
+            return ("☑" if is_on(it) else "☐", nm, it["no"], it["member"], it["desc"], RO.size_text(it), c,
+                    f"{n_on}/{n_all}" if n_all else "-", it.get("axis") or "")
+
+        def refresh_counts():
+            on = [it for _nm, it in st["rows"] if is_on(it)]
+            nph = sum(len(ph_on(it)) for it in on)
+            cnt.config(text=f"고른 항목 {len(on)} / {len(st['rows'])}  ·  사진 {nph}장")
+
+        def load_groups():
+            purposes = [k for k, v in pvars.items() if v.get()]
+            out = []
+            if not purposes:
+                return out
+            g = group.get()
+            if scope.get() == "all" and self.project:
+                for aid, nm in db.project_sheets(self.project):
+                    if aid == self.db_id:
+                        res = self.res
+                    else:
+                        if aid not in st["cache"]:
+                            try:
+                                st["cache"][aid] = db.load(aid)[:2]
+                            except Exception:  # noqa: BLE001
+                                st["cache"][aid] = None
+                        if not st["cache"][aid]:
+                            continue
+                        nm, res = st["cache"][aid]
+                    its = RO.items(res, self.P, purposes, sheet=nm, group=g)
+                    if its:
+                        out.append((nm, its))
+            else:
+                its = RO.items(self.res, self.P, purposes, sheet=self.db_name, group=g)
+                if its:
+                    out.append((self.db_name or "도면", its))
+            return out
+
+        def reload():
+            sel = tv.selection()
+            keep = tv.item(sel[0], "values")[1:3] if sel else None
+            st["rows"] = [(nm, it) for nm, its in load_groups() for it in its]
+            tv.delete(*tv.get_children())
+            for i, (nm, it) in enumerate(st["rows"]):
+                tv.insert("", "end", iid=str(i), values=row_vals(nm, it), tags=() if is_on(it) else ("off",))
+            refresh_counts()
+            again = next((str(i) for i, (nm, it) in enumerate(st["rows"]) if keep and (nm, str(it["no"])) == tuple(map(str, keep))), None)
+            if again:
+                tv.selection_set(again)
+                tv.see(again)
+            show_photos()
+
+        def update_row(i):
+            nm, it = st["rows"][int(i)]
+            tv.item(i, values=row_vals(nm, it), tags=() if is_on(it) else ("off",))
+            refresh_counts()
+
+        def toggle(i):
+            _nm, it = st["rows"][int(i)]
+            if is_on(it):
+                st["off"].update(it["uids"])
+            else:
+                st["off"].difference_update(it["uids"])
+            update_row(i)
+
+        def set_all(on):
+            for _nm, it in st["rows"]:
+                (st["off"].difference_update if on else st["off"].update)(it["uids"])
+            for i in tv.get_children():
+                update_row(i)
+
+        def on_click(e):
+            if tv.identify_region(e.x, e.y) == "cell" and tv.identify_column(e.x) == "#1":
+                i = tv.identify_row(e.y)
+                if i:
+                    toggle(i)
+                    return "break"
+            return None
+
+        def on_key(_e):
+            for i in tv.selection():
+                toggle(i)
+            return "break"
+
+        tv.bind("<Button-1>", on_click)
+        tv.bind("<space>", on_key)
+        tv.bind("<Double-1>", lambda e: (tv.identify_column(e.x) != "#1" and tv.identify_row(e.y)
+                                          and toggle(tv.identify_row(e.y))) or "break")
+        tv.bind("<<TreeviewSelect>>", lambda e: show_photos())
+
+        def set_photos(on):
+            sel = tv.selection()
+            if not sel:
+                return
+            _nm, it = st["rows"][int(sel[0])]
+            (st["ph_off"].difference_update if on else st["ph_off"].update)(it["photos"])
+            update_row(sel[0])
+            show_photos()
+
+        def show_photos():
+            for c in phin.winfo_children():
+                c.destroy()
+            st["imgs"] = []
+            sel = tv.selection()
+            if not sel:
+                phinfo.config(text="(줄을 고르세요)")
+                return
+            i = sel[0]
+            _nm, it = st["rows"][int(i)]
+            phinfo.config(text=f"[{it['no']}] {it['member']} {it['desc']} — 사진 {len(it['photos'])}장"
+                               + (" · 묶음: 사진첩에 넣을 사진을 고르세요" if len(it["uids"]) > 1 else ""))
+            if not it["photos"]:
+                tk.Label(phin, text="(사진 없음)", bg="white", fg="#888").pack(padx=20, pady=40)
+                return
+            try:
+                from PIL import Image, ImageTk
+            except ImportError:
+                Image = None
+            for k, ph in enumerate(it["photos"]):
+                cell = tk.Frame(phin, bg="white", bd=1, relief="solid")
+                cell.grid(row=0, column=k, padx=4, pady=4, sticky="n")
+                img = None
+                if Image is not None and os.path.isfile(str(ph)):
+                    try:
+                        im = Image.open(ph)
+                        im.thumbnail((170, 120))
+                        img = ImageTk.PhotoImage(im)
+                        st["imgs"].append(img)
+                    except Exception:  # noqa: BLE001
+                        img = None
+                lab = tk.Label(cell, image=img, bg="white", cursor="hand2") if img else \
+                    tk.Label(cell, text="(파일 없음)" if not os.path.isfile(str(ph)) else "(미리보기 없음)",
+                             width=20, height=6, bg="#f3f4f6", fg="#888")
+                lab.pack()
+                v = tk.BooleanVar(value=ph not in st["ph_off"])
+
+                def flip(p=ph, var=v):
+                    (st["ph_off"].discard if var.get() else st["ph_off"].add)(p)
+                    update_row(i)
+
+                cb = tk.Checkbutton(cell, text=RO.photo_stem(ph)[:24], variable=v, command=flip, bg="white",
+                                    font=(TH.FAM, 8), anchor="w")
+                cb.pack(fill="x")
+                lab.bind("<Button-1>", lambda e, var=v, fn=flip: (var.set(not var.get()), fn()))
+
+        ttk.Button(bar, text="모두 선택", command=lambda: set_all(True)).pack(side="left")
+        ttk.Button(bar, text="모두 해제", command=lambda: set_all(False)).pack(side="left", padx=4)
+        ttk.Label(bar, text="✓칸 클릭 / 더블클릭 / Space = 넣기·빼기", foreground="#666", font=(TH.FAM, 8)).pack(side="left", padx=8)
+        ttk.Button(phbar, text="사진 모두 해제", command=lambda: set_photos(False)).pack(side="right")
+        ttk.Button(phbar, text="사진 모두 선택", command=lambda: set_photos(True)).pack(side="right", padx=4)
+
+        def go():
+            purposes = [k for k, v in pvars.items() if v.get()]
+            if not purposes:
+                msg.config(text="용도를 하나 이상 고르세요")
+                return
+            if not (do_x.get() or do_h.get()):
+                return
+            order, grouped = [], {}
+            for nm, it in st["rows"]:
+                if nm not in grouped:
+                    order.append(nm)
+                    grouped[nm] = []
+                grouped[nm].append(it)
+            groups = RO.apply_pick([(nm, grouped[nm]) for nm in order], st["off"], st["ph_off"])
+            if not groups:
+                msg.config(text="고른 항목이 없습니다. 오른쪽 목록에서 ✓ 하세요.")
+                return
+            folder = filedialog.askdirectory(parent=w, title="저장할 폴더", initialdir=self.cfg.get("last_dir") or None)
+            if not folder:
+                return
+            self.cfg.update(damage_xlsx_template=tpl.get().strip(), album_title=title.get(), album_header=header.get(),
+                            album_section=sect.get(), damage_group=bool(group.get()))
+            S.save(self.cfg)
+            base = os.path.join(folder, f"{self.project or self.db_name or '현장조사'}")
+            done, n = [], sum(len(g[1]) for g in groups)
+            try:
+                if do_x.get():
+                    path = base + "_손상물량표.xlsx"
+                    RO.write_excel(path, groups, template=tpl.get().strip() or None, log=self.log)
+                    done.append(path)
+                if do_h.get():
+                    blocks = RO.album_blocks(groups, with_nophoto=nophoto.get())
+                    dx = base + "_현황조사사진첩.docx"
+                    pages = RO.write_album_docx(dx, blocks, title=title.get().strip(), header=header.get().strip(),
+                                                section=sect.get().strip(), log=self.log)
+                    hw = base + "_현황조사사진첩.hwp"
+                    msg.config(text="한글로 변환 중…")
+                    w.update()
+                    if RO.docx_to_hwp(dx, hw, log=self.log):
+                        done.append(hw)
+                        try:
+                            os.remove(dx)
+                        except OSError:
+                            pass
+                    else:
+                        done.append(dx + "  (한글 자동화를 쓸 수 없어 Word 파일로 저장 — 한글에서 열어 '다른 이름으로 저장 → 한글 문서')")
+                    self.log(f"사진첩: 사진 {len(blocks)}칸 · {pages}쪽")
+            except Exception as e:  # noqa: BLE001
+                messagebox.showerror("손상물량표·사진첩", str(e), parent=w)
+                return
+            msg.config(text="")
+            self.log(f"손상물량표·사진첩: 항목 {n}개 → " + " / ".join(done))
+            messagebox.showinfo("손상물량표·사진첩", f"항목 {n}개 (도면 {len(groups)}장)\n\n" + "\n".join(done), parent=w)
+            try:
+                os.startfile(folder)  # noqa: S606 — Windows 탐색기로 폴더 열기
+            except Exception:  # noqa: BLE001
+                pass
+
+        ttk.Button(f, text="만들기", command=go).pack(anchor="e", pady=(12, 4))
+        msg.pack(anchor="w")
+        ttk.Label(f, text="· 오른쪽 목록에서 ✓한 항목·체크한 사진만 들어갑니다\n"
+                          "· '같은 균열 묶기'를 켜면 같은 균열번호(PW1 등)는 한 줄,\n  개소 = 표시한 위치 수 (끄면 위치마다 한 줄)\n"
+                          "· M(보수방안)·N(발생요인)은 비워 둡니다\n"
+                          "· 위치는 '도면명 축(X1~X2, Y1) 부재' — 스케치 축이 있으면 들어갑니다",
+                  foreground="#666", font=(TH.FAM, 8), justify="left").pack(anchor="w", pady=(6, 0))
+        reload()
+        if tv.get_children():
+            tv.selection_set(tv.get_children()[0])
+
+    def survey_dxf(self):
+        """검측점(용도별 레이어) · 스케치(종류·색별 레이어) → DXF (원래 도면 좌표)."""
+        if not self.res or not (self.res.surveys or getattr(self.res, "sketches", None)):
+            messagebox.showinfo("DXF", "검측위치·스케치가 없습니다.", parent=self.root)
+            return
+        base = (self.db_name or os.path.splitext(os.path.basename(self.res.source_file or "현장조사"))[0]) + "_검측스케치.dxf"
+        path = filedialog.asksaveasfilename(parent=self.root, defaultextension=".dxf", initialfile=base, filetypes=[("DXF", "*.dxf")])
+        if not path:
+            return
+        base_too = messagebox.askyesno("DXF", "바탕 도면(분석한 부재·격자선)도 함께 넣을까요?\n"
+                                       "(아니요 = 검측점·스케치만 — 원본 DXF에 겹쳐 쓸 때)", parent=self.root)
+        try:
+            from . import survey_dxf
+            n = survey_dxf.export(path, self.res, self.P, include_base=base_too)
+        except Exception as e:      # noqa: BLE001
+            messagebox.showerror("DXF", str(e), parent=self.root)
+            return
+        self.log(f"검측·스케치 DXF 저장 (레이어 {n}개) → {path}")
+        messagebox.showinfo("DXF", f"저장했습니다 — 레이어 {n}개\n검측: SV-SEC · SV-CRACK-종류 · SV-LOAD · SV-ETC\n스케치: SK-종류-색", parent=self.root)
 
     # ======================================================================= 도움말
     def help_usage(self):

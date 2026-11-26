@@ -25,6 +25,9 @@
     </div>
     <button class="pill" id="floorBtn">-</button>
     <button class="pill" id="btnSheets">도면LIST</button>
+    <button class="pill mode" id="btnEditMode">✎ 편집</button>
+    <button class="pill pen" id="btnPen">🖊 펜</button>
+    <button class="pill share hidden" id="btnShare">🔄 공유</button>
     <button class="pill insp" id="btnInsp">👤 검토자</button>
   </header>
 
@@ -33,24 +36,21 @@
       <canvas id="cv"></canvas>
       <div id="tools">
         <div class="seg" id="modeSeg">
-          <button data-mode="view">보기</button>
-          <button data-mode="point" class="on">검측점</button>
-          <button data-mode="span">구간</button>
+          <button data-mode="point" class="on">📍 검측점</button>
           <button data-mode="sketch">✎ 스케치</button>
         </div>
         <div class="seg" id="purposeSeg"></div>
+        <div class="seg hidden" id="pointOpts"></div>
         <div id="sketchBar" class="hidden">
           <div class="seg" id="skTools">
-            <button data-tool="beam" class="on">━ 보</button>
-            <button data-tool="column">■ 기둥</button>
-            <button data-tool="wall">▬ 벽</button>
+            <button data-tool="member" class="on">🏗 부재</button>
             <button data-tool="axis">⊕ 축</button>
             <button data-tool="free">〰 자유선</button>
+            <button data-tool="dim">↔ 치수</button>
             <button data-tool="text">A 글자</button>
-            <button data-tool="erase">⌫ 지우기</button>
           </div>
-          <div class="seg sk-colors" id="skColors"></div>
-          <div class="seg"><button id="skUndo">↶ 되돌리기</button></div>
+          <div class="seg" id="skSub"></div>
+          <div class="seg" id="skOps"></div>
         </div>
         <button class="icon round" id="btnLayers" title="표시할 조사">👁</button>
         <button class="icon round" id="btnFit" title="전체보기">⛶</button>
@@ -71,7 +71,7 @@
 
   <section id="list">
     <div class="list-head" id="listHead">
-      <b>조사 목록</b> <span id="listCount"></span>
+      <b id="listTitle">조사 목록</b> <span id="listCount"></span>
       <div id="filters"></div>
       <button class="icon" id="listDock" title="목록 위치">⇆</button>
       <button class="icon" id="listToggle">▾</button>
@@ -91,6 +91,7 @@
     <button class="bigbtn navy" id="btnNew">＋ 새 조사 (DXF 없이 · 빈 도면/사진)</button>
     <button class="bigbtn ghost hidden" id="btnResume">↺ 이어서 하기</button>
     <button class="bigbtn ghost hidden" id="btnPcGet">🖥 PC에서 받기</button>
+    <button class="bigbtn ghost" id="btnCollab">👥 협업 프로젝트 (검토자 함께)</button>
     <p class="small" id="welcomeNote"></p>
     <p class="welcome-foot">© 2026 StrCAD</p>
   </div>
@@ -106,9 +107,12 @@
     <button class="mi pc hidden" id="miPcGet">🖥 PC에서 받기</button>
     <button class="mi pc hidden" id="miPcPut">🖥 PC로 보내기</button>
     <button class="mi hidden" id="miPcAddr">⚙ PC 주소 설정 (Wi-Fi)</button>
+    <button class="mi" id="miCollab">👥 협업 — 검토자 함께 · 공유 · 인원 관리</button>
+    <button class="mi" id="miLogin">🔑 로그인 화면 / 로그아웃</button>
     <button class="mi" id="miPurpose">＋ 용도 추가</button>
     <button class="mi" id="miCsv">📊 조사표 CSV</button>
     <button class="mi" id="miSketch">✎ 스케치 보이기 / 숨기기</button>
+    <button class="mi" id="miSettings">⚙ 설정 — 스케치 격자 · 간격 · 격자 스냅</button>
     <p class="small" id="menuInfo"></p>
     <button class="mi ghost" data-close>닫기</button>
   </div>
@@ -116,6 +120,7 @@
 
 <div id="modal" class="modal"><div class="sheet" id="modalBody"></div></div>
 <div id="toast"></div>
+<div id="login" class="hidden"></div>
 
 <script src="vendor/sql-wasm.js"></script>
 <script src="check.js"></script>
@@ -123,5 +128,6 @@
 <script src="detail.js"></script>
 <script src="sketch.js"></script>
 <script src="newsheet.js"></script>
+<script src="collab.js"></script>
 </body>
 </html>

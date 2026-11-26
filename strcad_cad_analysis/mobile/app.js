@@ -12,16 +12,38 @@ const KIND_COL = { c: "#d62828", g: "#1d4ed8", b: "#15803d", w: "#374151" };
 const EXIST = ["존재", "없음", "상이(도면과 다름)"];
 const DEFAULT_PURPOSES = {
   "부재검측": { color: "#d62828", size: true, length: true, rebar: true, exist: true, fields: [] },
-  "균열검토": { color: "#ea580c", size: false, length: false, rebar: false, exist: false, fields: [
-    ["crack_w", "균열폭", "mm", null], ["crack_l", "균열길이", "m", null],
+  "균열검토": { color: "#ea580c", crack: true, size: false, length: false, rebar: false, exist: false, fields: [
+    ["ctype", "종류", "", null], ["crack_w", "균열폭", "mm", null], ["crack_l", "균열길이", "m", null],
+    ["leak_w", "누수폭", "m", null], ["leak_l", "누수길이", "m", null], ["dmg_b", "파손범위 B", "mm", null], ["dmg_d", "파손범위 D", "mm", null],
+    ["rebar_l", "노출길이", "mm", null],
     ["shape", "균열형태", "", ["수직", "수평", "경사", "망상", "기타"]],
-    ["face", "위치(면)", "", ["상면", "하면", "측면", "단부", "중앙"]],
     ["progress", "진행성", "", ["없음", "있음", "관찰필요"]]] },
   "하중조사": { color: "#0f766e", area: true, size: false, length: false, rebar: false, exist: false, fields: [
     ["use", "실 용도", "", null], ["fin", "바닥 마감", "", null], ["fin_t", "마감 두께", "mm", null],
     ["ceil", "천장", "", null], ["ceil_h", "천장고", "m", null], ["part", "칸막이", "", ["없음", "가동 경량칸막이", "조적·고정벽"]],
     ["equip", "설비·장비", "", ["없음", "있음(경량)", "있음(중량)"]]] },
+  "기타": { color: "#64748b", size: false, length: false, rebar: false, exist: false, fields: [
+    ["item", "구분", "", ["외관", "마감", "설비", "누수흔적", "변형", "기타"]], ["desc", "내용", "", null]] },
 };
+// ---- 균열검토: 종류별 번호 (CR1, LK1 …) · 입력 항목
+const CRACK_TYPES = [
+  { k: "보 미장균열", code: "PB", f: ["crack_w", "crack_l"] }, { k: "기둥 미장균열", code: "PC", f: ["crack_w", "crack_l"] },
+  { k: "벽 미장균열", code: "PW", f: ["crack_w", "crack_l"] }, { k: "균열", code: "CR", f: ["crack_w", "crack_l"] },
+  { k: "누수", code: "LK", f: ["leak_w", "leak_l"] }, { k: "파손", code: "DM", f: ["dmg_b", "dmg_d"] },
+  { k: "철근노출", code: "RB", f: ["rebar_l"] }, { k: "기타", code: "ET", f: [] }];
+const CRACK_BY = Object.fromEntries(CRACK_TYPES.map((t) => [t.k, t]));
+const CRACK_CHIPS = { crack_w: [0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 1.0, 2.0], crack_l: [0.2, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0],
+  leak_w: [0.1, 0.2, 0.3, 0.5, 1.0], leak_l: [0.3, 0.5, 1.0, 2.0, 3.0], dmg_b: [50, 100, 150, 200, 300, 500], dmg_d: [20, 30, 50, 100, 150],
+  rebar_l: [100, 200, 300, 500, 1000] };
+function crackSize(fl) {
+  const t = CRACK_BY[(fl || {}).ctype]; if (!t) return "";
+  const v = (k) => (fl[k] !== "" && fl[k] != null ? fl[k] : "?");
+  if (t.f[0] === "crack_w") return `${v("crack_w")}mm × ${v("crack_l")}m`;
+  if (t.f[0] === "leak_w") return `${v("leak_w")}m × ${v("leak_l")}m`;
+  if (t.f[0] === "dmg_b") return `${v("dmg_b")} × ${v("dmg_d")}mm`;
+  if (t.f[0] === "rebar_l") return `L=${v("rebar_l")}mm`;
+  return "";
+}
 // ---- 하중조사 참고값: 활하중 = KDS 41 12 00 표 3.2-1 기본등분포활하중 (kN/m²)
 const LL_KDS = {
   "주거(거실)": 2.0, "공동주택 공용실": 5.0, "병실": 2.0, "병원 수술실·실험실": 3.0, "호텔 객실": 2.0, "숙박 공용실": 5.0,
@@ -132,7 +154,8 @@ async function openBytes(bytes, name) {
   if (S.db) S.db.close();
   S.db = db; S.meta = meta; S.fileName = name || meta.project + ".strsv";
   S.purposes = Object.assign({}, DEFAULT_PURPOSES, JSON.parse(meta.purposes || "{}"));
-  for (const k of Object.keys(DEFAULT_PURPOSES)) if (DEFAULT_PURPOSES[k].area) S.purposes[k] = Object.assign({}, S.purposes[k], { area: true });
+  for (const k of Object.keys(DEFAULT_PURPOSES)) S.purposes[k] = Object.assign({}, S.purposes[k], { fields: DEFAULT_PURPOSES[k].fields,
+    area: !!DEFAULT_PURPOSES[k].area, crack: !!DEFAULT_PURPOSES[k].crack });
   S.picklists = JSON.parse(meta.picklists || "{}");
   S.sheets = q("SELECT id, analysis_id, seq, name FROM sheets ORDER BY seq, id");
   run("CREATE TABLE IF NOT EXISTS orig (uid TEXT PRIMARY KEY, path TEXT, dir TEXT, size INTEGER, sent INTEGER DEFAULT 0)");
@@ -143,9 +166,10 @@ async function openBytes(bytes, name) {
   $("#welcome").classList.remove("show");
   if (!S.purposes[S.purpose]) S.purpose = Object.keys(S.purposes)[0];
   buildPurposeSeg(); buildFilters();
-  loadSheet(0);
+  loadSheet(0); setMode(S.mode === "sketch" ? "sketch" : "point");
   persistSoon();
   toast(`${meta.project || ""} — 도면 ${S.sheets.length}장`);
+  if (window.CO) CO.onOpen();
 }
 
 // ---- DXF 없이 만든 도면(빈 도면·사진): 배경 이미지
@@ -200,6 +224,7 @@ function saveRec(rec) {
   rec.updated = nowIso();
   run("INSERT OR REPLACE INTO surveys (uid, sheet_id, updated, deleted, rec) VALUES (?,?,?,0,?)",
     [rec.uid, S.sheet.id, rec.updated, JSON.stringify(rec)]);
+  if (window.CO) CO.mark("rec", rec.uid);
   const i = S.recs.findIndex((r) => r.uid === rec.uid);
   if (i >= 0) S.recs[i] = rec; else S.recs.push(rec);
   persistSoon();
@@ -207,6 +232,7 @@ function saveRec(rec) {
 
 function deleteRec(rec) {
   run("UPDATE surveys SET deleted=1, updated=? WHERE uid=?", [nowIso(), rec.uid]);
+  if (window.CO) CO.mark("rec", rec.uid);
   S.recs = S.recs.filter((r) => r.uid !== rec.uid);
   persistSoon();
 }
@@ -227,6 +253,7 @@ function purposeCode(p) { const P = S.purposes[p] || {}; return P.code || PURPOS
 function namePart(t) { return String(t || "").replace(/[\\/:*?"<>|\r\n\t]/g, "_").trim().split(/\s+/).join("-") || "미지정"; }
 function ymd(d) { return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`; }
 function photoBase(rec, f) {
+  if (rec.label && (S.purposes[rec.purpose] || {}).crack) return `crack_${namePart(rec.label)}`;      // crack_CR1_01
   const taken = new Date(f && f.lastModified ? f.lastModified : Date.now());
   return [namePart(S.meta.project || "프로젝트"), namePart(S.sheet ? S.sheet.name : "도면"), ymd(taken),
     String(rec.no).padStart(3, "0"), purposeCode(rec.purpose)].join("_");
@@ -271,13 +298,14 @@ async function addPhotoFiles(files, rec) {
       try {
         const rel = `StrCAD/사진/${safeName(S.meta.project)}/${nm}.${ext}`;
         const r = await saveToDevice(rel, new Uint8Array(await f.arrayBuffer()));
-        run("INSERT OR REPLACE INTO orig (uid, path, dir, size, sent) VALUES (?,?,?,?,0)", [id, rel, r.dir, f.size]);
+        run("INSERT OR REPLACE INTO orig (uid, path, dir, size, sent) VALUES (?,?,?,?,0)", [id, r.rel || rel, r.dir, f.size]);
         origOk = true;
       } catch (e) { toast("원본 저장 실패 — 축소본만 저장: " + (e.message || e), 4000); }
     }
     const blob = await shrinkImage(f, 1600, 0.82);
     const data = new Uint8Array(await blob.arrayBuffer());
     run("INSERT INTO photos (uid, survey_uid, name, mime, data, created) VALUES (?,?,?,?,?,?)", [id, rec.uid, `${nm}.jpg`, "image/jpeg", data, nowIso()]);
+    if (window.CO) CO.mark("ph", id);
     if (origOk) S.origSaved = (S.origSaved || 0) + 1;
     ids.push(id);
   }
@@ -320,14 +348,21 @@ async function writeBytesNative(path, bytes, directory) {
   }
   return (await FSP().getUri({ path, directory })).uri;
 }
+// 저장은 항상 내 파일 › Documents › StrCAD.
+// 앱을 지우고 다시 설치하면 예전 앱이 만든 같은 이름 파일은 덮어쓸 수 없음(안드로이드 저장소 규칙) → 이름 뒤에 시각을 붙여 Documents에 저장.
+// Documents 자체에 못 쓸 때만 앱 전용 폴더로.
 async function saveToDevice(rel, bytes) {
   await ensureStorage();
+  const DOC = "내 파일 › Documents › ", where = (r) => DOC + r.split("/").join(" › ");
+  const stamp = () => { const d = new Date(); return `${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}${String(d.getSeconds()).padStart(2, "0")}`; };
+  const alt = rel.replace(/(\.[^./]+)?$/, (ext) => `_${stamp()}${ext || ""}`);
   let last;
-  for (const [dir, label] of [["DOCUMENTS", "내 파일 › Documents › "], ["EXTERNAL", "내 파일 › Android › data › kr.strcad.survey › files › "]]) {
-    try { const uri = await writeBytesNative(rel, bytes, dir); return { uri, dir, where: label + rel.split("/").join(" › ") }; }
-    catch (e) { last = e; }
+  for (const r of [rel, alt]) {
+    try { const uri = await writeBytesNative(r, bytes, "DOCUMENTS"); return { uri, dir: "DOCUMENTS", rel: r, where: where(r) }; }
+    catch (e) { last = e; console.warn("Documents 저장 실패", r, e); }
   }
-  throw last;
+  try { const uri = await writeBytesNative(rel, bytes, "EXTERNAL"); return { uri, dir: "EXTERNAL", rel, where: "내 파일 › Android › data › kr.strcad.survey › files › " + rel.split("/").join(" › ") + "  (Documents에 저장할 수 없어 앱 폴더에 저장)" }; }
+  catch (e) { throw last || e; }
 }
 function shareUri(uri, title) {
   return window.Capacitor.Plugins.Share.share({ title, dialogTitle: title, url: uri })
@@ -382,12 +417,16 @@ function P(x, y) { return [x - S.sheet.origin.ox, y - S.sheet.origin.oy]; }     
 function A(x, y) { return [x + S.sheet.origin.ox, y + S.sheet.origin.oy]; }      // sheet-relative → absolute
 function memEnds(m) { const l = m.l; return [[l[0], l[1]], [l[l.length - 2], l[l.length - 1]]]; }
 const FIELD_CHOICES = { use: Object.keys(LL_KDS), fin: Object.keys(FIN_GAMMA), ceil: Object.keys(CEIL_KN) };
-function areaRect(rec) { if (!rec.area) return null; const [x0, y0] = P(rec.area[0], rec.area[1]), [x1, y1] = P(rec.area[2], rec.area[3]);
+function isPlaced(rec) { return !(rec.x == null && !rec.area && !rec.poly && rec.member == null); }
+function polyRel(rec) { if (!rec.poly || rec.poly.length < 6) return null; const o = []; for (let i = 0; i + 1 < rec.poly.length; i += 2) o.push(...P(rec.poly[i], rec.poly[i + 1])); return o; }
+function polyArea(flat) { let a = 0; for (let i = 0, n = flat.length / 2; i < n; i++) { const j = (i + 1) % n; a += flat[2 * i] * flat[2 * j + 1] - flat[2 * j] * flat[2 * i + 1]; } return Math.abs(a) / 2; }
+function areaRect(rec) { const pl = polyRel(rec); if (pl) { const xs = pl.filter((_, i) => i % 2 === 0), ys = pl.filter((_, i) => i % 2); return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]; }
+  if (!rec.area) return null; const [x0, y0] = P(rec.area[0], rec.area[1]), [x1, y1] = P(rec.area[2], rec.area[3]);
   return [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)]; }
-function areaOf(rec) { const r = areaRect(rec); return r ? (r[2] - r[0]) * (r[3] - r[1]) / 1e6 : 0; }
+function areaOf(rec) { const pl = polyRel(rec); if (pl) return polyArea(pl) / 1e6; const r = areaRect(rec); return r ? (r[2] - r[0]) * (r[3] - r[1]) / 1e6 : 0; }
 function geom(rec) {             // → {type:'point', p} | {type:'span', a, b} in sheet-relative coords
   const ar = areaRect(rec);
-  if (ar) return { type: "area", r: ar, p: [(ar[0] + ar[2]) / 2, (ar[1] + ar[3]) / 2] };
+  if (ar) return { type: "area", r: ar, poly: polyRel(rec), p: [(ar[0] + ar[2]) / 2, (ar[1] + ar[3]) / 2] };
   const m = S.sheet.byId.get(rec.member);
   if (m && m.k !== "c" && !m.cv && rec.t0 != null) {
     const [p1, p2] = memEnds(m);
@@ -398,7 +437,9 @@ function geom(rec) {             // → {type:'point', p} | {type:'span', a, b} 
   if (m && m.k === "c" && rec.dx != null) return { type: "point", p: [m.c[0] + rec.dx, m.c[1] + rec.dy] };
   return { type: "point", p: P(rec.x, rec.y) };
 }
-function anchor(rec) { const g = geom(rec); return g.type === "span" ? [(g.a[0] + g.b[0]) / 2, (g.a[1] + g.b[1]) / 2] : g.type === "area" ? [g.r[0], g.r[3]] : g.p; }
+function anchor(rec) { const g = geom(rec); if (g.type === "span") return [(g.a[0] + g.b[0]) / 2, (g.a[1] + g.b[1]) / 2];
+  if (g.type === "area") { if (g.poly) { let bi = 0; for (let i = 0; i < g.poly.length; i += 2) if (g.poly[i + 1] - g.poly[i] > g.poly[bi + 1] - g.poly[bi]) bi = i; return [g.poly[bi], g.poly[bi + 1]]; } return [g.r[0], g.r[3]]; }
+  return g.p; }
 function bubble(rec) { const a = anchor(rec); return [a[0] + (rec.bx || 0), a[1] + (rec.by || 0)]; }
 function distSeg(px, py, x1, y1, x2, y2) {
   const dx = x2 - x1, dy = y2 - y1, L2 = dx * dx + dy * dy;
@@ -438,7 +479,10 @@ function locate(x, y, only) {     // sheet-relative point → {m, t, dxy, p}
 }
 function memberName(m) { if (!m) return ""; return m.n ? `${KIND_KO[m.k]} ${m.n}` : KIND_KO[m.k]; }
 function memberSize(m) { return m ? m.s : ""; }
-function nextNo() { return S.recs.reduce((a, r) => Math.max(a, +r.no || 0), 0) + 1; }
+function nextNo() {
+  const own = window.CO && CO.active() ? S.recs.filter((r) => CO.mine(r)) : S.recs;
+  return own.reduce((a, r) => Math.max(a, +r.no || 0), 0) + 1;
+}
 
 // ======================================================================= drawing
 const cv = $("#cv"); const ctx = cv.getContext("2d");
@@ -517,50 +561,90 @@ function draw() {
     for (let i = 0; i + 3 < m.l.length; i += 2) line(m.l, i); ctx.stroke(); } }
   if (window.SK) SK.draw();
   // survey bubbles
-  for (const rec of S.recs) if (purposeVisible(rec.purpose)) drawRec(rec, cur && rec.uid === cur.uid ? (S.edit || rec) : rec, cur && rec.uid === cur.uid);
+  for (const rec of S.recs) if (purposeVisible(rec.purpose) && ownerVisible(rec) && isPlaced(cur && rec.uid === cur.uid ? (S.edit || rec) : rec)) drawRec(rec, cur && rec.uid === cur.uid ? (S.edit || rec) : rec, cur && rec.uid === cur.uid);
   if (S.areaDraft) { const [x0, y0, x1, y1] = S.areaDraft, a = w2s(Math.min(x0, x1), Math.max(y0, y1)), b = w2s(Math.max(x0, x1), Math.min(y0, y1));
     ctx.save(); ctx.strokeStyle = purposeColor(S.purpose); ctx.lineWidth = 2; ctx.setLineDash([6, 4]); ctx.strokeRect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
     const A = Math.abs((x1 - x0) * (y1 - y0)) / 1e6; ctx.setLineDash([]); ctx.font = "bold 12px sans-serif"; ctx.fillStyle = purposeColor(S.purpose);
     ctx.fillText(`${(Math.abs(x1 - x0) / 1000).toFixed(2)} × ${(Math.abs(y1 - y0) / 1000).toFixed(2)} m · ${A.toFixed(1)} m²`, a[0] + 4, a[1] - 6); ctx.restore(); }
-  if (S.edit && !S.recs.some((r) => r.uid === S.edit.uid)) drawRec(S.edit, S.edit, true);
+  if (S.edit && !S.recs.some((r) => r.uid === S.edit.uid) && isPlaced(S.edit)) drawRec(S.edit, S.edit, true);
+  if (S.polyDraft && S.polyDraft.length) { const col = purposeColor(S.purpose), pts = S.polyDraft.map((p) => w2s(...p));
+    ctx.save(); ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 2; ctx.setLineDash([6, 4]); ctx.beginPath();
+    pts.forEach((v, i) => (i ? ctx.lineTo(...v) : ctx.moveTo(...v))); if (pts.length > 2) { ctx.closePath(); ctx.globalAlpha = 0.12; ctx.fill(); ctx.globalAlpha = 1; } ctx.stroke(); ctx.setLineDash([]);
+    pts.forEach((v, i) => { ctx.beginPath(); ctx.arc(v[0], v[1], i ? 5 : 9, 0, 7); i ? ctx.fill() : ctx.stroke(); });
+    if (S.polyDraft.length > 2) { const fl = S.polyDraft.flat(); ctx.font = "bold 12px sans-serif"; ctx.fillText(`${(polyArea(fl) / 1e6).toFixed(1)} m²`, pts[0][0] + 12, pts[0][1] - 10); }
+    ctx.restore(); }
   if (S.spanStart) { const a = w2s(...S.spanStart.p); ctx.fillStyle = purposeColor(S.purpose); ctx.beginPath(); ctx.arc(a[0], a[1], 7, 0, 7); ctx.fill(); }
   if (window.NS) NS.drawCalib();
 }
 function drawRec(_r, rec, hl) {
+  const sel = S.edit || S.sel;
+  if (!hl && sel && rec.label && sel.label === rec.label && String(sel.owner || "") === String(rec.owner || "")) hl = "sib";
   const col = purposeColor(rec.purpose), g = geom(rec);
   let px, py;
   ctx.strokeStyle = col; ctx.fillStyle = col;
   const [bx, by] = w2s(...bubble(rec)), R = hl ? 15 : 13;
   if (g.type === "area") {
     const a = w2s(g.r[0], g.r[3]), b = w2s(g.r[2], g.r[1]);
-    ctx.save(); ctx.globalAlpha = hl ? 0.22 : 0.12; ctx.fillRect(a[0], a[1], b[0] - a[0], b[1] - a[1]); ctx.globalAlpha = 1;
-    ctx.lineWidth = hl ? 3 : 2; ctx.setLineDash([10, 5]); ctx.strokeRect(a[0], a[1], b[0] - a[0], b[1] - a[1]); ctx.setLineDash([]);
+    ctx.save(); ctx.beginPath();
+    if (g.poly) { for (let i = 0; i < g.poly.length; i += 2) { const v = w2s(g.poly[i], g.poly[i + 1]); i ? ctx.lineTo(...v) : ctx.moveTo(...v); } ctx.closePath(); }
+    else ctx.rect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
+    ctx.globalAlpha = hl ? 0.22 : 0.12; ctx.fill(); ctx.globalAlpha = 1;
+    ctx.lineWidth = hl ? 3 : 2; ctx.setLineDash([10, 5]); ctx.stroke(); ctx.setLineDash([]);
     const fl = rec.fields || {}, w = b[0] - a[0];
     if (w > 70) { const lines = [fl.use, [fl.fin, fl.fin_t ? fl.fin_t + "mm" : ""].filter(Boolean).join(" "), fl.ceil, loadText(fl)].filter(Boolean);
       ctx.font = "bold 12px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
       const cx = (a[0] + b[0]) / 2, cy = (a[1] + b[1]) / 2 - (lines.length - 1) * 8;
       lines.slice(0, Math.max(1, Math.floor((b[1] - a[1]) / 16))).forEach((t, i) => { ctx.lineWidth = 3; ctx.strokeStyle = "#fff"; ctx.strokeText(t, cx, cy + i * 16, w - 8); ctx.fillStyle = col; ctx.fillText(t, cx, cy + i * 16, w - 8); }); }
-    ctx.restore(); ctx.strokeStyle = col; ctx.fillStyle = col; [px, py] = a;
+    ctx.restore(); ctx.strokeStyle = col; ctx.fillStyle = col; [px, py] = w2s(...anchor(rec));
   } else if (g.type === "span") { const a = w2s(...g.a), b = w2s(...g.b); ctx.lineWidth = hl ? 11 : 7; ctx.lineCap = "round";
     ctx.beginPath(); segTo(a, b); ctx.stroke(); ctx.lineCap = "butt"; px = (a[0] + b[0]) / 2; py = (a[1] + b[1]) / 2; }
   else { [px, py] = w2s(...g.p); if (onScreen(px, py)) { ctx.beginPath(); ctx.arc(px, py, 3.5, 0, 7); ctx.fill(); } }
   if (!onScreen(bx, by) && !onScreen(px, py)) return;
   const d = Math.hypot(px - bx, py - by);
   if (d > R) { ctx.lineWidth = 2; ctx.beginPath(); segTo([bx + (px - bx) * R / d, by + (py - by) * R / d], [px, py]); ctx.stroke(); }
-  ctx.fillStyle = "#fff"; ctx.lineWidth = hl ? 4 : 3; ctx.beginPath(); ctx.arc(bx, by, R, 0, 7); ctx.fill(); ctx.stroke();
-  if (hl) { ctx.strokeStyle = "#f59e0b"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(bx, by, R + 5, 0, 7); ctx.stroke(); }
-  ctx.fillStyle = col; ctx.font = "bold 12px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillText(String(rec.no), bx, by + 0.5); ctx.textBaseline = "alphabetic";
+  const txt = String(rec.label || rec.no);
+  ctx.font = "bold 12px sans-serif"; const hw = Math.max(R, ctx.measureText(txt).width / 2 + 8);
+  const shape = (pad) => { ctx.beginPath(); if (hw > R) { const r = R + pad, w = hw + pad; ctx.moveTo(bx - w + r, by - r); ctx.lineTo(bx + w - r, by - r); ctx.arc(bx + w - r, by, r, -Math.PI / 2, Math.PI / 2);
+    ctx.lineTo(bx - w + r, by + r); ctx.arc(bx - w + r, by, r, Math.PI / 2, Math.PI * 1.5); ctx.closePath(); } else ctx.arc(bx, by, R + pad, 0, 7); };
+  ctx.fillStyle = "#fff"; ctx.lineWidth = hl ? 4 : 3; shape(0); ctx.fill(); ctx.stroke();
+  if (hl) { ctx.strokeStyle = hl === "sib" ? "#fbbf24" : "#f59e0b"; ctx.lineWidth = 3; if (hl === "sib") ctx.setLineDash([4, 3]); shape(5); ctx.stroke(); ctx.setLineDash([]); }
+  ctx.fillStyle = col; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(txt, bx, by + 0.5); ctx.textBaseline = "alphabetic";
 }
 
 // ======================================================================= touch / mouse
-const ptrs = new Map(); let gesture = null;
+const ptrs = new Map(), ptrType = new Map(); let gesture = null;
+// ---- 편집/뷰어 · 펜 전용 (손가락은 이동·확대만)
+S.viewOnly = (() => { try { return localStorage.getItem("viewOnly") === "1"; } catch (e) { return false; } })();
+S.penOnly = (() => { try { return localStorage.getItem("penOnly") !== "0"; } catch (e) { return true; } })();
+function syncInputBtns() {
+  const m = $("#btnEditMode"), p = $("#btnPen");
+  const lab = (ic, tx) => [el("span", {}, ic), el("span", { class: "tx" }, " " + tx)];
+  if (m) { m.replaceChildren(...lab(S.viewOnly ? "👁" : "✎", S.viewOnly ? "뷰어" : "편집")); m.classList.toggle("viewing", S.viewOnly); }
+  if (p) { p.replaceChildren(...lab(S.penOnly ? "🖊" : "☝", S.penOnly ? "펜" : "손")); p.classList.toggle("hand", !S.penOnly); p.title = S.penOnly ? "펜 전용 — 손가락은 이동·확대만" : "손으로도 입력"; }
+  document.body.classList.toggle("viewonly", S.viewOnly);
+}
+function setViewOnly(v) { S.viewOnly = v; try { localStorage.setItem("viewOnly", v ? "1" : "0"); } catch (e) { /* ignore */ }
+  if (v) { if (S.edit && !guardEdit()) { S.viewOnly = false; return; } S.placing = null; S.spanStart = null; S.polyDraft = null; closePanel(); if (window.SK) SK.cancel(); }
+  syncInputBtns(); hint(v ? "👁 뷰어 — 눌러도 입력되지 않습니다 (보기·이동·확대만)" : "✎ 편집 — 입력할 수 있습니다"); setTimeout(() => hint(""), 2200); draw(); }
+function setPenOnly(v) { S.penOnly = v; try { localStorage.setItem("penOnly", v ? "1" : "0"); } catch (e) { /* ignore */ }
+  syncInputBtns(); toast(v ? "🖊 펜 전용 — 손가락은 이동·확대만 (입력 안 됨)" : "☝ 손 입력 켬 — 손가락으로도 찍고 그립니다", 2600); }
+let penHintAt = 0;
+function penHint() { if (Date.now() - penHintAt < 4000) return; penHintAt = Date.now();
+  toast("🖊 펜 전용 — 손가락은 이동·확대만. 손으로 입력하려면 위쪽 🖊 버튼을 눌러 ☝ 손으로 바꾸세요", 3000); }
 cv.addEventListener("pointerdown", (e) => {
-  cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, [e.offsetX, e.offsetY]);
-  if (ptrs.size === 1 && S.mode === "sketch" && window.SK) { gesture = { type: "sketch", view: { ...S.view } }; SK.down(e.offsetX, e.offsetY); return; }
+  const touch = e.pointerType === "touch";
+  if (S.penOnly && touch && [...ptrType.values()].includes("pen")) return;          // 펜으로 쓰는 중 손바닥 무시
+  if (S.penOnly && e.pointerType === "pen") {                                        // 펜이 닿으면 손가락 제스처는 버림
+    for (const [id, t] of [...ptrType]) if (t === "touch") { ptrs.delete(id); ptrType.delete(id); }
+    if (gesture && gesture.type !== "sketch") gesture = null;
+  }
+  cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, [e.offsetX, e.offsetY]); ptrType.set(e.pointerId, e.pointerType);
+  const noInput = S.viewOnly || (S.penOnly && touch);
+  if (ptrs.size === 1 && !noInput && S.mode === "sketch" && window.SK && !(window.NS && NS.calibrating)) { gesture = { type: "sketch", view: { ...S.view } }; SK.down(e.offsetX, e.offsetY); return; }
   if (ptrs.size === 2 && gesture && gesture.type === "sketch") SK.cancel();
   if (ptrs.size === 2 && gesture && gesture.type === "area") { S.areaDraft = null; }
-  if (ptrs.size === 1 && (S.mode === "point" || S.mode === "span") && (S.purposes[S.purpose] || {}).area) {
+  if (ptrs.size === 1 && !noInput && (S.mode === "point" || S.mode === "span") && (S.purposes[S.purpose] || {}).area && areaShape() === "rect" && !S.placing && !(window.NS && NS.calibrating)) {
     const [x, y] = s2w(e.offsetX, e.offsetY);
     const hit = bubbleHit(x, y);
     if (!hit) { gesture = { type: "area", x0: e.offsetX, y0: e.offsetY, w0: [x, y], moved: false }; return; }
@@ -568,7 +652,7 @@ cv.addEventListener("pointerdown", (e) => {
   if (ptrs.size === 1) {
     const [x, y] = s2w(e.offsetX, e.offsetY);
     const hit = bubbleHit(x, y);
-    gesture = { type: "tap", x0: e.offsetX, y0: e.offsetY, moved: false, bubble: hit, view: { ...S.view } };
+    gesture = { type: "tap", x0: e.offsetX, y0: e.offsetY, moved: false, bubble: hit && isMine(hit) && !noInput ? hit : null, view: { ...S.view }, noTap: S.penOnly && touch && !S.viewOnly };
   } else if (ptrs.size === 2) {
     const [a, b] = [...ptrs.values()];
     gesture = { type: "pinch", d0: Math.hypot(a[0] - b[0], a[1] - b[1]), c0: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], view: { ...S.view } };
@@ -599,7 +683,7 @@ cv.addEventListener("pointermove", (e) => {
 });
 function endPtr(e) {
   if (!ptrs.has(e.pointerId)) return;
-  ptrs.delete(e.pointerId);
+  ptrs.delete(e.pointerId); ptrType.delete(e.pointerId);
   if (!gesture) return;
   if (gesture.type === "pinch") { if (ptrs.size === 0) gesture = null; return; }
   if (gesture.type === "sketch") { gesture = null; SK.up(e.offsetX, e.offsetY, e.type === "pointercancel"); return; }
@@ -610,8 +694,9 @@ function endPtr(e) {
     newAreaRec(d); return;
   }
   const g = gesture; gesture = null;
-  if (g.bubble && g.moved) { const rec = g.bubbleRec; if (rec && !S.edit) saveRec(rec); selectRec(rec.uid, true); return; }
-  if (!g.moved) tap(...s2w(e.offsetX, e.offsetY));
+  if (g.bubble && g.moved) {                     // 번호 옮기기: 저장만 하고 현장조사 창은 열지 않음
+    const rec = g.bubbleRec; if (rec && !(S.edit && S.edit.uid === rec.uid)) saveRec(rec); draw(); return; }
+  if (!g.moved) { if (g.noTap) { if (S.sheet && !S.placing) penHint(); else if (S.placing) tap(...s2w(e.offsetX, e.offsetY)); return; } tap(...s2w(e.offsetX, e.offsetY)); }
 }
 cv.addEventListener("pointerup", endPtr); cv.addEventListener("pointercancel", endPtr);
 cv.addEventListener("wheel", (e) => { e.preventDefault(); const k = e.deltaY < 0 ? 1.2 : 1 / 1.2; const [wx, wy] = s2w(e.offsetX, e.offsetY);
@@ -620,7 +705,7 @@ cv.addEventListener("wheel", (e) => { e.preventDefault(); const k = e.deltaY < 0
 function bubbleHit(x, y) {
   for (let i = S.recs.length - 1; i >= 0; i--) {
     const r = S.edit && S.edit.uid === S.recs[i].uid ? S.edit : S.recs[i];
-    if (!purposeVisible(r.purpose)) continue;
+    if (!purposeVisible(r.purpose) || !ownerVisible(r) || !isPlaced(r)) continue;
     const [bx, by] = bubble(r);
     if (Math.hypot(x - bx, y - by) * S.view.s <= 18) return S.recs[i];
   }
@@ -631,10 +716,22 @@ function editTarget(rec) { return S.edit && S.edit.uid === rec.uid ? S.edit : re
 function tap(x, y) {
   if (!S.sheet) return;
   if (window.NS && NS.tapCalib(x, y)) return;
+  if (S.placing) { placeRec(x, y); return; }
+  if (S.viewOnly) {                               // 뷰어: 번호를 누르면 위치·내용만, 입력 없음
+    const h = bubbleHit(x, y);
+    if (h) { showRec(h.uid, true); hint(`${h.label || "#" + h.no} ${listValue(h, "summary")}`.slice(0, 60)); setTimeout(() => hint(""), 2500); }
+    else if (S.sel) { S.sel = null; draw(); renderList(); }
+    return;
+  }
+  const PP = S.purposes[S.purpose] || {};
+  if ((S.mode === "point" || S.mode === "span") && PP.area && areaShape() === "poly") {
+    const h0 = !S.polyDraft && bubbleHit(x, y); if (h0) { selectRec(h0.uid); return; }
+    polyTap(x, y); return; }
   const hit = bubbleHit(x, y);
   if (hit && !S.spanStart) { selectRec(hit.uid); return; }
   if (S.mode === "view") { if (!guardEdit()) return; S.sel = null; closePanel(); draw(); renderList(); return; }
-  if (S.mode === "point") { const L = locate(x, y); newRec(L.m, L.t ?? null, null, L.p, L.dxy); return; }
+  if (S.mode === "point" && PP.crack) { const L = locate(x, y); crackAdd(L); return; }
+  if (S.mode === "point" || PP.crack || PP.area || S.purpose === "기타") { const L = locate(x, y); newRec(L.m, L.t ?? null, null, L.p, L.dxy); return; }
   if (!S.spanStart) {
     const L = locate(x, y);
     if (!L.m || L.m.k === "c") { hint("구간은 보·거더·벽 위에서 시작하세요"); setTimeout(() => hint(""), 1800); return; }
@@ -647,14 +744,159 @@ function tap(x, y) {
   newRec(st.m, a, b, [(st.p[0] + L.p[0]) / 2, (st.p[1] + L.p[1]) / 2]);
 }
 
-function newAreaRec(d) {
+// ---- 하중조사 영역 모양: 사각형(끌기) / 다각형(점 찍기)
+function areaShape() { try { return localStorage.getItem("areaShape") === "poly" ? "poly" : "rect"; } catch (e) { return "rect"; } }
+function setAreaShape(v) { try { localStorage.setItem("areaShape", v); } catch (e) { /* ignore */ } S.polyDraft = null; buildPointOpts(); draw();
+  hint(v === "poly" ? "다각형: 꼭짓점을 차례로 누르고, 첫 점을 누르거나 ✔ 완료" : "사각형: 끌어서 영역을 그리세요"); setTimeout(() => hint(""), 2200); }
+function polyTap(x, y) {
+  const d = S.polyDraft || (S.polyDraft = []);
+  let p = [x, y];
+  if (window.SK && SK.snapPoint) { const sp = SK.snapPoint(x, y); if (sp) p = sp.p; }
+  if (d.length >= 3 && Math.hypot(p[0] - d[0][0], p[1] - d[0][1]) * S.view.s < 16) { polyFinish(); return; }
+  d.push(p); buildPointOpts(); draw();
+  hint(d.length < 3 ? `꼭짓점 ${d.length}개 — 계속 누르세요` : `꼭짓점 ${d.length}개 — 첫 점을 누르거나 ✔ 완료`);
+}
+function polyFinish() {
+  const d = S.polyDraft; if (!d || d.length < 3) { toast("꼭짓점을 3개 이상 찍으세요"); return; }
+  S.polyDraft = null; hint(""); buildPointOpts();
+  if (polyArea(d.flat()) * S.view.s * S.view.s < 150) { draw(); toast("영역이 너무 작습니다"); return; }
+  newAreaRec(null, d);
+}
+// 위치(locate 결과)에 바로 놓기 — 도면을 눌러 연 균열 창에서 기존 번호 고를 때
+function placeAt(L) { placeRec(L.p[0], L.p[1]); }
+// ---- 균열 목록에서 만든 번호를 도면에 놓기
+function placeRec(x, y) {
+  const src = S.recs.find((r) => r.uid === S.placing) || S.placingRec; S.placing = null; S.placingRec = null; hint("");
+  if (!src) { draw(); return; }
+  let rec = src;
+  if (S.placingAdd && isPlaced(src)) {            // 같은 균열번호를 다른 위치에 하나 더 (개수 집계)
+    rec = JSON.parse(JSON.stringify(src));
+    Object.assign(rec, { id: S.recs.reduce((a, r) => Math.max(a, r.id || 0), 0) + 1, uid: uid(), no: nextNo(), name: "", date: today(), inspector: inspector(), photos: [] });
+    delete rec.calc;
+    if (window.CO) CO.stamp(rec);
+  }
+  S.placingAdd = false;
+  const L = locate(x, y), [ax, ay] = A(...L.p);
+  Object.assign(rec, { member: L.m ? L.m.i : null, t0: L.t ?? null, t1: null, x: ax, y: ay, bx: 26 / S.view.s, by: 30 / S.view.s });
+  if (L.dxy) { rec.dx = L.dxy[0]; rec.dy = L.dxy[1]; } else { delete rec.dx; delete rec.dy; }
+  if (!rec.name && L.m) rec.name = memberName(L.m);
+  saveRec(rec); if (S.edit && S.edit.uid === rec.uid) S.edit = JSON.parse(JSON.stringify(rec));
+  const added = rec !== src;
+  renderList(); draw();
+  if (added) { selectRec(rec.uid); toast(`${rec.label} 위치 추가 — 지금 ${crackCount(rec.label, rec.owner)}곳 · 이 위치 사진을 찍으세요`, 3000); return; }
+  toast(rec.label ? `${rec.label} 배치 — 지금 ${crackCount(rec.label, rec.owner)}곳` : `#${rec.no} 배치 완료`);
+}
+// 같은 균열번호(같은 검토자)의 모든 위치 — 도면 전체
+function crackSiblings(label, owner) {
+  const out = [];
+  for (const r of q("SELECT sheet_id, rec FROM surveys WHERE deleted=0")) {
+    let o; try { o = JSON.parse(r.rec); } catch (e) { continue; }
+    if (o.label === label && String(o.owner || "") === String(owner || "")) { o._sheet = r.sheet_id; out.push(o); }
+  }
+  return out;
+}
+function crackCount(label, owner) { return crackSiblings(label, owner).filter(isPlaced).length; }
+// 크기·형태·메모를 고치면 같은 번호의 다른 위치에도 똑같이 (사진은 위치마다 따로)
+function syncCrackSiblings(rec) {
+  if (!rec.label || !(S.purposes[rec.purpose] || {}).crack) return;
+  for (const o of crackSiblings(rec.label, rec.owner)) {
+    if (o.uid === rec.uid) continue;
+    const sh = o._sheet; delete o._sheet;
+    Object.assign(o, { fields: JSON.parse(JSON.stringify(rec.fields || {})), memo: rec.memo, updated: nowIso() });
+    run("UPDATE surveys SET rec=?, updated=? WHERE uid=?", [JSON.stringify(o), o.updated, o.uid]);
+    if (window.CO) CO.mark("rec", o.uid);
+    const i = S.recs.findIndex((r) => r.uid === o.uid); if (i >= 0 && S.sheet && S.sheet.id === sh) S.recs[i] = o;
+  }
+}
+function startPlacing(rec, add) {
+  if (!guardEdit()) return;
+  if (!isMine(rec)) { notMineToast(rec); return; }
+  if (S.mode === "sketch") $("#modeSeg").querySelector('[data-mode="point"]').click();
+  S.placing = rec.uid; S.placingRec = rec; S.placingAdd = !!add; closePanel(); draw();
+  if (add && rec.label) { hint(`도면에서 ${rec.label} 위치를 하나 더 누르세요 (지금 ${crackCount(rec.label, rec.owner)}곳)`); return; }
+  hint(`도면에서 ${rec.label || "#" + rec.no} 위치를 누르세요`);
+}
+function crackNextNo(code) {
+  let mx = 0;
+  for (const r of q("SELECT rec FROM surveys WHERE deleted=0")) { try { const o = JSON.parse(r.rec); const m = new RegExp("^" + code + "(\\d+)$").exec(o.label || ""); if (m) mx = Math.max(mx, +m[1]); } catch (e) { /* ignore */ } }
+  for (const r of S.recs) { const m = new RegExp("^" + code + "(\\d+)$").exec(r.label || ""); if (m) mx = Math.max(mx, +m[1]); }
+  return mx + 1;
+}
+// 균열·누수·파손·철근노출 추가: 종류 → 크기 → 사진(여러 장, crack_번호_00) → 저장 / 도면에 배치
+function crackAdd(at) {
   if (!guardEdit()) return;
   if (!inspector() && !S.askedInsp) { S.askedInsp = true; askInspector(); }
+  const purpose = Object.keys(S.purposes).find((k) => S.purposes[k].crack) || "균열검토";
+  const rec = { id: S.recs.reduce((a, r) => Math.max(a, r.id || 0), 0) + 1, uid: uid(), updated: nowIso(), no: nextNo(),
+    purpose, member: null, t0: null, t1: null, x: null, y: null, bx: 26 / S.view.s, by: 30 / S.view.s,
+    name: "", size_b: "", size_h: "", length: "", rebar: {}, exist: "", fields: {}, photos: [], memo: "", date: today(), mobile: true, inspector: inspector() };
+  if (window.CO) CO.stamp(rec);
+  let type = null;
+  const close = () => $("#modal").classList.remove("show");
+  const drop = () => { for (const id of rec.photos) { run("DELETE FROM photos WHERE uid=?", [id]); run("DELETE FROM orig WHERE uid=?", [id]); } };
+  sheet((b) => {
+    const render = () => {
+      b.innerHTML = "";
+      if (!type) {
+        const mineLabels = [...new Map(S.recs.filter((r) => r.label && isMine(r) && (S.purposes[r.purpose] || {}).crack).map((r) => [r.label, r])).values()];
+        if (at && mineLabels.length) b.append(el("h3", {}, "기존 번호를 여기에 하나 더"), el("div", { class: "sk-chips crack-exist" }, mineLabels.map((r) => el("button", { onclick: () => {
+          close(); S.placing = r.uid; S.placingRec = r; S.placingAdd = isPlaced(r); placeAt(at, r); } }, `${r.label} ${r.fields.ctype || ""} · ${crackCount(r.label, r.owner)}곳`))));
+        b.append(el("h3", {}, mineLabels.length && at ? "새 번호 만들기" : "균열·손상 종류"), el("div", { class: "grid crack-types" }, CRACK_TYPES.map((t) => el("button", { class: "opt",
+          onclick: () => { type = t; rec.fields.ctype = t.k; rec.label = t.code + crackNextNo(t.code); render(); } }, el("b", {}, t.k), el("small", {}, t.code + crackNextNo(t.code))))),
+          el("div", { class: "btns" }, el("span", { class: "sp" }), el("button", { class: "b gray", onclick: close }, "취소")));
+        return;
+      }
+      b.append(el("h3", {}, `${rec.label} · ${type.k}`));
+      for (const k of type.f) {
+        const def = DEFAULT_PURPOSES["균열검토"].fields.find((f) => f[0] === k) || [k, k, ""];
+        const inp = el("input", { type: "number", class: "sk-num", inputmode: "decimal", step: "any", value: rec.fields[k] ?? "" });
+        inp.oninput = () => { rec.fields[k] = inp.value; };
+        b.append(el("div", { class: "sk-numrow" }, el("span", { class: "sk-lab" }, `${def[1]} (${def[2]})`), inp,
+          el("div", { class: "sk-chips" }, (CRACK_CHIPS[k] || []).map((c) => el("button", { class: String(c) === String(rec.fields[k]) ? "on" : "", onclick: () => { rec.fields[k] = String(c); render(); } }, String(c))))));
+      }
+      if (type.f[0] === "crack_w") {
+        const sh = el("div", { class: "sk-chips" }, ["수직", "수평", "경사", "망상", "기타"].map((c) => el("button", { class: rec.fields.shape === c ? "on" : "", onclick: () => { rec.fields.shape = rec.fields.shape === c ? "" : c; render(); } }, c)));
+        b.append(el("div", { class: "sk-numrow" }, el("span", { class: "sk-lab" }, "형태"), sh));
+      }
+      const ph = el("div", { class: "photos" });
+      for (const id of rec.photos) { const u = photoURL(id); ph.append(el("div", { class: "ph" }, u ? el("img", { src: u }) : "?",
+        el("button", { class: "del", onclick: () => { rec.photos = rec.photos.filter((x) => x !== id); run("DELETE FROM photos WHERE uid=?", [id]); render(); } }, "✕"))); }
+      const cam = el("input", { type: "file", accept: "image/*", capture: "environment", hidden: "" });
+      const gal = el("input", { type: "file", accept: "image/*", multiple: "", hidden: "" });
+      const onFiles = async (ev) => { const ids = await addPhotoFiles([...ev.target.files], rec); rec.photos.push(...ids); ev.target.value = ""; render(); };
+      cam.onchange = onFiles; gal.onchange = onFiles;
+      const memo = el("input", { type: "text", class: "sk-input", placeholder: "메모 (선택)", value: rec.memo });
+      memo.oninput = () => { rec.memo = memo.value; };
+      b.append(el("div", { class: "row two" }, el("div", { class: "lab" }, `사진 ${rec.photos.length}장`),
+        el("button", { class: "val", onclick: () => cam.click() }, "📷 촬영"), el("div"), el("button", { class: "val", onclick: () => gal.click() }, "🖼 앨범")),
+        el("p", { class: "small" }, `사진 이름: crack_${rec.label}_01, _02 …`), cam, gal, ph, memo);
+      const save = (place) => {
+        if (at) { const [ax, ay] = A(...at.p); Object.assign(rec, { member: at.m ? at.m.i : null, t0: at.t ?? null, x: ax, y: ay, name: at.m ? memberName(at.m) : "" }); if (at.dxy) { rec.dx = at.dxy[0]; rec.dy = at.dxy[1]; } }
+        saveRec(rec); close(); renderList(); draw();
+        toast(`${rec.label} ${type.k} ${crackSize(rec.fields)} 저장` + (rec.photos.length ? ` · 사진 ${rec.photos.length}장` : ""));
+        if (place) startPlacing(rec);
+      };
+      b.append(el("div", { class: "btns" },
+        el("button", { class: "b gray", onclick: () => { type = null; delete rec.label; render(); } }, "‹ 종류"),
+        el("span", { class: "sp" }), el("button", { class: "b gray", onclick: () => { drop(); close(); } }, "취소"),
+        at ? el("button", { class: "b ok", onclick: () => save(false) }, "💾 저장") :
+          [el("button", { class: "b edit", onclick: () => save(false) }, "저장"), el("button", { class: "b ok", onclick: () => save(true) }, "저장 후 도면에 배치")]));
+    };
+    render();
+  });
+}
+
+function newAreaRec(d, poly) {
+  if (!guardEdit()) return;
+  if (!inspector() && !S.askedInsp) { S.askedInsp = true; askInspector(); }
+  if (poly) { const xs = poly.map((p) => p[0]), ys = poly.map((p) => p[1]); d = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]; }
   const [x0, y0] = A(Math.min(d[0], d[2]), Math.min(d[1], d[3])), [x1, y1] = A(Math.max(d[0], d[2]), Math.max(d[1], d[3]));
   const rec = { id: S.recs.reduce((a, r) => Math.max(a, r.id || 0), 0) + 1, uid: uid(), updated: nowIso(), no: nextNo(),
     purpose: S.purpose, member: null, t0: null, t1: null, x: (x0 + x1) / 2, y: (y0 + y1) / 2, area: [x0, y0, x1, y1],
     bx: -14 / S.view.s, by: 14 / S.view.s, name: "", size_b: "", size_h: "", length: "", rebar: {}, exist: "", fields: {},
     photos: [], memo: "", date: today(), mobile: true, inspector: inspector() };
+  if (window.CO) CO.stamp(rec);
+  if (poly) { rec.poly = poly.flatMap((p) => A(...p)).map((v) => Math.round(v)); const c = poly.reduce((a, p) => [a[0] + p[0] / poly.length, a[1] + p[1] / poly.length], [0, 0]); [rec.x, rec.y] = A(...c); }
   saveRec(rec);
   S.sel = rec; S.edit = JSON.parse(JSON.stringify(rec));
   openPanel(); renderForm(); renderList(); draw();
@@ -663,6 +905,44 @@ function newAreaRec(d) {
 // ---- 용도별 도면 표시 (부재검측 / 균열검토 / 하중조사 … 따로 또는 같이)
 function hiddenPurposes() { try { return new Set(JSON.parse(localStorage.getItem("hidePurposes") || "[]")); } catch (e) { return new Set(); } }
 function purposeVisible(p) { return !hiddenPurposes().has(p); }
+// ---- 검토자별 보기 켬/끔 (👤 버튼)
+function ownerKey(o) { return o.owner ? "@" + o.owner : "~" + (o.inspector || ""); }
+let _hidOwn = null;
+function hiddenOwners() { if (_hidOwn) return _hidOwn; try { _hidOwn = new Set(JSON.parse(localStorage.getItem("hideOwners") || "[]")); } catch (e) { _hidOwn = new Set(); } return _hidOwn; }
+function ownerVisible(o) { const h = hiddenOwners(); return !h.size || !h.has(ownerKey(o)); }
+function setHiddenOwners(set) { _hidOwn = set; try { localStorage.setItem("hideOwners", JSON.stringify([...set])); } catch (e) { /* ignore */ }
+  if (S.sel && !ownerVisible(S.sel)) { S.sel = null; closePanel(); } draw(); renderList(); }
+function showInspectors() {
+  const meKey = window.CO && CO.me() ? "@" + CO.me().login : "~" + inspector();
+  const people = new Map();
+  const add = (o, t) => { const k = ownerKey(o); if (!people.has(k)) people.set(k, { k, name: (o.owner && window.CO ? CO.ownerName(o) : o.inspector) || o.inspector || "(이름 없음)", rec: 0, sk: 0 }); if (t) people.get(k)[t]++; };
+  add(window.CO && CO.me() ? { owner: CO.me().login, inspector: CO.me().name } : { inspector: inspector() });
+  for (const r of S.recs) add(r, "rec");
+  if (window.SK) for (const k of SK.list) add(k, "sk");
+  const pal = ["#2563eb", "#e11d48", "#16a34a", "#f28c28", "#7c3aed", "#0891b2", "#ca8a04", "#db2777"];
+  sheet((b) => {
+    const render = () => {
+      b.innerHTML = ""; const hid = hiddenOwners();
+      const list = [...people.values()].sort((a, c) => (c.k === meKey) - (a.k === meKey) || a.name.localeCompare(c.name));
+      const box = el("div", { class: "lay-box" });
+      list.forEach((p, i) => { const on = !hid.has(p.k);
+        box.append(el("button", { class: "lay" + (on ? " on" : ""), style: `--c:${pal[i % pal.length]}`, onclick: () => { const h = new Set(hiddenOwners()); if (on) h.add(p.k); else h.delete(p.k); setHiddenOwners(h); render(); } },
+          el("i"), `👤 ${p.name}${p.k === meKey ? " (나)" : ""}`, el("small", {}, `검측 ${p.rec} · 스케치 ${p.sk}`))); });
+      const co = window.CO && CO.me();
+      b.append(el("h3", {}, "👥 검토자 — 도면에 보기 켬/끔"),
+        el("p", { class: "small" }, co ? `${CO.me().name} 님 로그인${CO.active() ? " · 협업 중" : ""} — 끄면 그 사람의 검측점·스케치가 도면과 목록에서 숨겨집니다.` : "끄면 그 사람의 검측점·스케치가 도면과 목록에서 숨겨집니다."),
+        box,
+        el("div", { class: "btns" },
+          el("button", { class: "b gray", onclick: () => { setHiddenOwners(new Set()); render(); } }, "모두 보기"),
+          el("button", { class: "b gray", onclick: () => { setHiddenOwners(new Set(list.map((p) => p.k).filter((k) => k !== meKey))); render(); } }, "나만 보기"),
+          el("span", { class: "sp" }),
+          co ? el("button", { class: "b edit", onclick: () => { $("#modal").classList.remove("show"); CO.hub(); } }, "👥 협업 창") :
+            el("button", { class: "b edit", onclick: () => { $("#modal").classList.remove("show"); askInspector(); } }, "이름 변경"),
+          el("button", { class: "b ok", onclick: () => $("#modal").classList.remove("show") }, "닫기")));
+    };
+    render();
+  });
+}
 function showLayers() {
   sheet((b) => {
     const hid = hiddenPurposes();
@@ -674,11 +954,23 @@ function showLayers() {
           on ? hid.add(p) : hid.delete(p); try { localStorage.setItem("hidePurposes", JSON.stringify([...hid])); } catch (e) { /* ignore */ }
           render(); draw(); } }, el("i"), `${p}`, el("small", {}, `${n}건`)));
       }
+      if (window.SK) { const on = !SK.hidden();
+        box.append(el("button", { class: "lay" + (on ? " on" : ""), style: "--c:#e11d48", onclick: () => { SK.setHidden(on); render(); } },
+          el("i"), "✎ 스케치 전체", el("small", {}, `${SK.list.length}개`)));
+        const ls = SK.layerStats();
+        if (ls.kinds.length) box.append(el("div", { class: "lay-sec" }, "스케치 — 종류별"), el("div", { class: "lay-grid" + (on ? "" : " dim") },
+          ls.kinds.map((k) => el("button", { class: "lay sm" + (k.on ? " on" : ""), style: "--c:#2563eb", onclick: () => { SK.setLayer("kind", k.key, !k.on); render(); } },
+            el("i"), k.name, el("small", {}, String(k.n))))));
+        if (ls.colors.length) box.append(el("div", { class: "lay-sec" }, "스케치 — 색깔별"), el("div", { class: "lay-grid" + (on ? "" : " dim") },
+          ls.colors.map((c) => el("button", { class: "lay sm" + (c.on ? " on" : ""), style: `--c:${c.key}`, onclick: () => { SK.setLayer("color", c.key, !c.on); render(); } },
+            el("i"), ({ "#e11d48": "빨강", "#f28c28": "주황", "#eab308": "노랑", "#16a34a": "초록", "#2563eb": "파랑", "#7c3aed": "보라", "#111827": "검정", "#ec4899": "분홍" })[c.key] || "",
+            el("small", {}, String(c.n))))));
+      }
     };
     const box = el("div", { class: "lay-box" });
     b.append(el("h3", {}, "도면에 표시할 조사"), box,
       el("div", { class: "btns" },
-        el("button", { class: "b gray", onclick: () => { hid.clear(); try { localStorage.setItem("hidePurposes", "[]"); } catch (e) { /* ignore */ } render(); draw(); } }, "모두 보기"),
+        el("button", { class: "b gray", onclick: () => { hid.clear(); try { localStorage.setItem("hidePurposes", "[]"); } catch (e) { /* ignore */ } if (window.SK) { SK.setHidden(false); SK.showAllLayers(); } render(); draw(); } }, "모두 보기"),
         el("span", { class: "sp" }), el("button", { class: "b ok", onclick: () => $("#modal").classList.remove("show") }, "닫기")));
     render();
   });
@@ -692,6 +984,7 @@ function newRec(m, t0, t1, p, dxy) {
     purpose: S.purpose, member: m ? m.i : null, t0, t1, x: ax, y: ay, bx: 26 / S.view.s, by: 30 / S.view.s,
     name: memberName(m), size_b: "", size_h: "", length: "", rebar: {}, exist: m ? "존재" : "", fields: {},
     photos: [], memo: "", date: today(), mobile: true, inspector: inspector() };
+  if (window.CO) CO.stamp(rec);
   if (dxy) { rec.dx = dxy[0]; rec.dy = dxy[1]; }
   saveRec(rec);
   S.sel = rec; S.edit = JSON.parse(JSON.stringify(rec));
@@ -700,11 +993,37 @@ function newRec(m, t0, t1, p, dxy) {
 }
 
 // ======================================================================= selection / panel
+// ---- 목록 줄: 누르면 위치만 표시(한 번 더 누르면 해제), 길게 누르면 수정·삭제 버튼
+function rowGestures(tr, onTap, onLong) {
+  let t = null, longed = false;
+  tr.addEventListener("pointerdown", () => { longed = false; clearTimeout(t); t = setTimeout(() => { longed = true; try { navigator.vibrate && navigator.vibrate(25); } catch (e) { /* ignore */ } onLong(); }, 500); });
+  for (const ev of ["pointerup", "pointerleave", "pointercancel"]) tr.addEventListener(ev, () => clearTimeout(t));
+  tr.addEventListener("contextmenu", (e) => e.preventDefault());
+  tr.addEventListener("click", (e) => { if (longed || e.target.closest("button")) return; onTap(); });
+}
+function showRec(u, keep) {              // 창을 열지 않고 위치만 (선택 표시)
+  if (S.edit && !guardEdit()) return;
+  if (!keep && S.sel && S.sel.uid === u && $("#panel").classList.contains("hidden")) { S.sel = null; S.rowMenu = null; renderList(); draw(); return; }
+  S.sel = S.recs.find((r) => r.uid === u) || null; S.rowMenu = null;
+  if (S.sel && isPlaced(S.sel)) { const a = anchor(S.sel), [sx, sy] = w2s(...a), r = cv.getBoundingClientRect();
+    if (sx < 40 || sy < 40 || sx > r.width - 40 || sy > r.height - 40) { S.view.ox = a[0] - r.width / 2 / S.view.s; S.view.oy = a[1] + r.height / 2 / S.view.s; } }
+  closePanel(); renderList(); draw();
+}
+function rowMenuRow(r, ncol, extra) {
+  const mine = isMine(r);
+  return el("tr", { class: "sk-rowmenu" }, el("td", { colspan: String(ncol) },
+    mine ? el("button", { class: "b edit", onclick: () => { S.rowMenu = null; selectRec(r.uid, true); beginEdit(); renderForm(); } }, "✎ 수정") :
+      el("button", { class: "b gray", onclick: () => { S.rowMenu = null; selectRec(r.uid, true); } }, "👁 보기"),
+    mine ? el("button", { class: "b danger", onclick: () => { S.rowMenu = null; S.sel = r; delCurrent(); } }, "삭제") : "",
+    extra || "",
+    el("button", { class: "b gray", onclick: () => { S.rowMenu = null; renderList(); } }, "닫기"),
+    el("small", {}, `${r.inspector || ""}${r.date ? " · " + r.date : ""}`)));
+}
 function selectRec(u, center) {
   if (S.edit && S.edit.uid !== u && !guardEdit()) return;
   S.sel = S.recs.find((r) => r.uid === u) || null;
   if (!S.sel) return;
-  if (center) { const a = anchor(S.sel), [sx, sy] = w2s(...a), r = cv.getBoundingClientRect();
+  if (center && isPlaced(S.sel)) { const a = anchor(S.sel), [sx, sy] = w2s(...a), r = cv.getBoundingClientRect();
     if (sx < 40 || sy < 40 || sx > r.width - 40 || sy > r.height - 40) { S.view.ox = a[0] - r.width / 2 / S.view.s; S.view.oy = a[1] + r.height / 2 / S.view.s; } }
   openPanel(); renderForm(); renderList(); draw();
 }
@@ -728,7 +1047,9 @@ function guardEdit() {
   if (confirm(`#${S.edit.no} 편집 내용을 저장할까요?\n(취소 = 저장하지 않음)`)) saveEdit(); else S.edit = null;
   return true;
 }
-function beginEdit() { if (!S.sel) return false; if (!S.edit || S.edit.uid !== S.sel.uid) S.edit = JSON.parse(JSON.stringify(S.sel)); return true; }
+function isMine(r) { return !window.CO || CO.mine(r); }
+function notMineToast(r) { toast(`👁 ${window.CO ? CO.ownerName(r) : ""} 님 기록 — 보기만 가능합니다`); }
+function beginEdit() { if (!S.sel) return false; if (!isMine(S.sel)) { notMineToast(S.sel); return false; } if (!S.edit || S.edit.uid !== S.sel.uid) S.edit = JSON.parse(JSON.stringify(S.sel)); return true; }
 function inspector() { try { return localStorage.getItem("inspector") || ""; } catch (e) { return ""; } }
 function showInspector() { const b = $("#btnInsp"), n = inspector(); b.textContent = n ? `👤 ${n}` : "👤 검토자"; b.classList.toggle("none", !n); }
 function askInspector() {
@@ -736,11 +1057,15 @@ function askInspector() {
   if (v == null) return; try { localStorage.setItem("inspector", v.trim()); } catch (e) { /* private */ }
   showInspector(); toast(v.trim() ? `검토자: ${v.trim()}` : "검토자 지움");
 }
-function saveEdit() { if (!S.edit) return; if (!S.edit.inspector) S.edit.inspector = inspector(); saveRec(S.edit); S.sel = S.edit; S.edit = null; toast(`#${S.sel.no} 저장`); renderForm(); renderList(); draw(); }
+function saveEdit() { if (!S.edit) return; if (!S.edit.inspector) S.edit.inspector = inspector(); saveRec(S.edit); syncCrackSiblings(S.edit); S.sel = S.edit; S.edit = null; toast(`#${S.sel.no} 저장`); renderForm(); renderList(); draw(); }
 function cancelEdit() { S.edit = null; renderForm(); draw(); }
 
 function summary(r) {
   const p = S.purposes[r.purpose] || {}; const parts = [];
+  if (p.crack && (r.fields || {}).ctype) {
+    const fl = r.fields; parts.push(`${fl.ctype} ${crackSize(fl)}`); if (fl.shape) parts.push(fl.shape); if (fl.progress) parts.push(`진행성 ${fl.progress}`);
+    if (!isPlaced(r)) parts.push("📍미배치"); return parts.join(" · ");
+  }
   if (p.size && (r.size_b || r.size_h)) parts.push(`${r.size_b || "?"}×${r.size_h || "?"}`);
   if (p.length && r.length) parts.push(`L=${r.length}m`);
   if (p.rebar && Object.values(r.rebar || {}).some(Boolean)) parts.push("철근 입력");
@@ -753,7 +1078,9 @@ function summary(r) {
 }
 function positionText(r) {
   const m = S.sheet.byId.get(r.member);
+  if (r.poly) return `다각형 영역 · 꼭짓점 ${r.poly.length / 2}개 · ${areaOf(r).toFixed(1)} m²`;
   if (r.area) { const [a, b, c, d] = r.area; return `영역 ${((c - a) / 1000).toFixed(2)} × ${((d - b) / 1000).toFixed(2)} m · ${areaOf(r).toFixed(1)} m²`; }
+  if (!isPlaced(r)) return "📍 아직 도면에 배치하지 않음 — 아래 '도면에 배치'를 누르세요";
   if (!m) return r.member == null ? "부재 미지정" : "(부재 없음)";
   let s = `${KIND_KO[m.k]} ${m.n || "(미표기)"} #${m.i}`;
   if (m.k !== "c" && r.t0 != null) {
@@ -771,12 +1098,15 @@ function renderForm() {
   $("#editFlag").textContent = editing ? "✎ 편집 중 — 저장을 누르세요" : "";
   if (!rec) { $("#pos").textContent = ""; f.append(el("div", { class: "empty" }, "도면에서 검측위치를 누르면 번호가 붙고 여기에서 입력합니다.")); return; }
   $("#pos").textContent = positionText(rec);
+  const ro = !isMine(rec);
+  if (ro) f.append(el("div", { class: "ro-box" }, `👁 ${CO.ownerName(rec)} 님 기록 — 보기만 가능 (고칠 수 없음)`));
   const P = S.purposes[rec.purpose] || DEFAULT_PURPOSES["부재검측"];
   const valTxt = (v, unit) => (v !== "" && v != null ? `${v}${unit && v ? unit : ""}` : "선택");
   const row = (label, ...vals) => f.append(el("div", { class: vals.length > 1 ? "row two" : "row" }, el("div", { class: "lab" }, label), ...vals));
   const vbtn = (key, opts = {}) => el("button", { class: "val" + (editing ? "" : " dim"), onclick: () => pick(key, opts) },
     valTxt(opts.field ? (rec.fields || {})[key] : rec[key], opts.unit ?? FIELD_UNIT[key]));
-  row("번호", vbtn("no"));
+  if (P.crack && rec.label) row("균열번호", el("div", { class: "val dim" }, rec.label));
+  else row("번호", vbtn("no"));
   row(P.area ? "구역명" : "부재명", vbtn("name", P.area ? { choices: ["사무실", "회의실", "복도", "화장실", "계단실", "기계실", "창고", "주거", "옥상"] } : {}));
   row("용도", vbtn("purpose", { choices: Object.keys(S.purposes) }));
   row("검토자", vbtn("inspector", { choices: inspector() ? [inspector()] : [] }));
@@ -787,7 +1117,18 @@ function renderForm() {
   if (P.length) row("길이", vbtn("length"));
   if (P.rebar) row("철근", el("button", { class: "val" + (editing ? "" : " dim"), onclick: rebarGrid }, Object.values(rec.rebar || {}).some(Boolean) ? "입력됨." : "선택"));
   if (P.exist) row("부재<br>유무".replace("<br>", "\n"), vbtn("exist"));
-  for (const [k, lab, unit, ch] of P.fields || []) row(lab, vbtn(k, { field: true, unit, choices: ch || FIELD_CHOICES[k] }));
+  const ctT = P.crack ? CRACK_BY[(rec.fields || {}).ctype] : null;
+  for (const [k, lab, unit, ch] of P.fields || []) {
+    if (P.crack && k !== "ctype" && ctT && !ctT.f.includes(k) && !(ctT.f[0] === "crack_w" && (k === "shape" || k === "progress"))) continue;
+    row(lab, vbtn(k, { field: true, unit, choices: ch || FIELD_CHOICES[k] || (k === "ctype" ? CRACK_TYPES.map((t) => t.k) : CRACK_CHIPS[k] && CRACK_CHIPS[k].map(String)) }));
+  }
+  if (P.crack && rec.label) f.append(el("div", { class: "load-box" }, el("b", {}, `${rec.label} — 지금 ${crackCount(rec.label, rec.owner)}곳`),
+    el("small", {}, "같은 번호를 여러 곳에 표시하면 개수가 집계됩니다 (크기·형태는 모든 위치 공통, 사진은 위치마다 따로 — 이 위치 사진만 여기에)")));
+  if (P.crack && !ro) {
+    if (isPlaced(rec)) f.append(el("div", { class: "btn-pair" }, el("button", { class: "val", onclick: () => startPlacing(rec, true) }, "📍＋ 같은 번호 위치 추가"),
+      el("button", { class: "val", onclick: () => startPlacing(rec) }, "↻ 이 위치 다시 지정")));
+    else f.append(el("button", { class: "val wide", onclick: () => startPlacing(rec) }, "📍 도면에 배치"));
+  }
   if (P.area) {
     const t = loadText(rec.fields), A = areaOf(rec);
     f.append(el("div", { class: "load-box" }, el("b", {}, "하중 참고"), el("span", {}, (A ? `면적 ${A.toFixed(1)} m² · ` : "") + (t || "실 용도·마감·천장을 고르면 계산됩니다")),
@@ -805,18 +1146,21 @@ function renderForm() {
   const onFiles = async (ev) => { if (!beginEdit()) return; const ids = await addPhotoFiles([...ev.target.files], S.edit);
     S.edit.photos.push(...ids); ev.target.value = ""; renderForm(); toast(`사진 ${ids.length}장 — 저장을 누르세요`); };
   cam.onchange = onFiles; gal.onchange = onFiles;
-  f.append(el("div", { class: "row two" }, el("div", { class: "lab" }, "사진"),
-    el("button", { class: "val", onclick: () => cam.click() }, "📷 촬영"), el("div"), el("button", { class: "val", onclick: () => gal.click() }, "🖼 앨범")), cam, gal, ph);
+  if (!ro) f.append(el("div", { class: "row two" }, el("div", { class: "lab" }, "사진"),
+    el("button", { class: "val", onclick: () => cam.click() }, "📷 촬영"), el("div"), el("button", { class: "val", onclick: () => gal.click() }, "🖼 앨범")), cam, gal);
+  f.append(ph);
   f.append(el("button", { class: "val wide", onclick: memoSheet }, "추가사항" + (rec.memo ? " ✓" : "")));
   if (rec.memo) f.append(el("div", { class: "memo" }, rec.memo));
   f.append(el("div", { class: "row", style: "margin-top:10px" }, el("div", { class: "lab" }, "조사일"), vbtn("date", { choices: [today()] })));
-  const btns = el("div", { class: "btns" }, el("button", { class: "b danger", onclick: delCurrent }, "위치 삭제"), el("div", { class: "sp" }));
-  if (editing) btns.append(el("button", { class: "b gray", onclick: cancelEdit }, "취소"), el("button", { class: "b ok", onclick: saveEdit }, "💾 저장"));
+  const btns = el("div", { class: "btns" }, ro ? "" : el("button", { class: "b danger", onclick: delCurrent }, "위치 삭제"), el("div", { class: "sp" }));
+  if (ro) btns.append(el("button", { class: "b gray", onclick: () => { S.sel = null; closePanel(); renderList(); draw(); } }, "닫기"));
+  else if (editing) btns.append(el("button", { class: "b gray", onclick: cancelEdit }, "취소"), el("button", { class: "b ok", onclick: saveEdit }, "💾 저장"));
   else btns.append(el("button", { class: "b edit", onclick: () => { beginEdit(); renderForm(); } }, "✎ 편집"));
   f.append(btns);
 }
 function delCurrent() {
   const r = S.sel; if (!r) return;
+  if (!isMine(r)) { notMineToast(r); return; }
   if (!confirm(`#${r.no} 검측위치를 삭제할까요?`)) return;
   S.edit = null; deleteRec(r); S.sel = null; closePanel(); renderList(); draw(); toast(`#${r.no} 삭제`);
 }
@@ -895,6 +1239,7 @@ function pick(key, opts = {}) {
   function done(v) {
     if (key === "no") { if (!/^\d+$/.test(v)) return; v = +v; }
     if (field) { e.fields = e.fields || {}; e.fields[key] = v; } else e[key] = v;
+    if (field && key === "ctype" && CRACK_BY[v] && !(e.label || "").startsWith(CRACK_BY[v].code)) e.label = CRACK_BY[v].code + crackNextNo(CRACK_BY[v].code);
     close(); renderForm(); draw();
     if (key === "size_b" && (S.purposes[e.purpose] || {}).size && !e.size_h) setTimeout(() => pick("size_h"), 80);
   }
@@ -970,7 +1315,36 @@ function showPhoto(u) { sheet((b) => b.append(el("img", { src: u, style: "width:
 function buildPurposeSeg() {
   const seg = $("#purposeSeg"); seg.innerHTML = "";
   for (const p of Object.keys(S.purposes)) seg.append(el("button", { class: p === S.purpose ? "on" : "", style: p === S.purpose ? `background:${purposeColor(p)}` : "",
-    onclick: () => { S.purpose = p; buildPurposeSeg(); } }, p));
+    onclick: () => { S.purpose = p; S.polyDraft = null; if (S.mode === "span" && !(S.purposes[p] || {}).size) setMode("point"); buildPurposeSeg(); draw(); } }, p));
+  buildPointOpts();
+}
+// 용도별 보조 버튼: 부재검측 = 구간 / 균열검토 = ＋추가 / 하중조사 = 사각형·다각형(+완료)
+function buildPointOpts() {
+  const box = $("#pointOpts"); if (!box) return; box.innerHTML = "";
+  const P = S.purposes[S.purpose] || {};
+  if (S.mode === "sketch" || !S.db) { box.classList.add("hidden"); return; }
+  if (P.area) {
+    const sh = areaShape();
+    box.append(el("button", { class: sh === "rect" ? "on" : "", onclick: () => setAreaShape("rect") }, "▭ 사각형"),
+      el("button", { class: sh === "poly" ? "on" : "", onclick: () => setAreaShape("poly") }, "⬠ 다각형"));
+    if (sh === "poly" && S.polyDraft && S.polyDraft.length) box.append(
+      el("button", { class: "go", onclick: polyFinish }, "✔ 완료"),
+      el("button", { onclick: () => { S.polyDraft.pop(); if (!S.polyDraft.length) S.polyDraft = null; buildPointOpts(); draw(); } }, "↶"),
+      el("button", { onclick: () => { S.polyDraft = null; hint(""); buildPointOpts(); draw(); } }, "✕"));
+  } else if (P.crack) box.append(el("button", { class: "go", onclick: () => crackAdd(null) }, "＋ 균열 추가"));
+  else if (P.size) box.append(el("button", { class: S.mode === "span" ? "on" : "", onclick: () => setMode(S.mode === "span" ? "point" : "span") }, "↔ 구간"));
+  box.classList.toggle("hidden", !box.children.length);
+}
+function setMode(m) {
+  S.mode = m; S.spanStart = null; S.polyDraft = null; S.placing = null; hint("");
+  const top = m === "sketch" ? "sketch" : "point";
+  for (const b of $("#modeSeg").children) b.classList.toggle("on", b.dataset.mode === top);
+  document.body.classList.toggle("sketching", m === "sketch");
+  $("#purposeSeg").classList.toggle("hidden", m === "sketch"); $("#filters").classList.toggle("hidden", m === "sketch");
+  $("#listTitle").textContent = m === "sketch" ? "스케치 목록" : "조사 목록";
+  if (window.SK) SK.mode(m === "sketch");
+  if (m === "span") { hint("구간: 보·거더·벽 위 시작점과 끝점을 누르세요"); setTimeout(() => hint(""), 2000); }
+  buildPointOpts(); renderList(); draw();
 }
 function buildFilters() {
   const f = $("#filters"); f.innerHTML = "";
@@ -978,9 +1352,10 @@ function buildFilters() {
     onclick: () => { S.filter = p; buildFilters(); renderList(); } }, p));
 }
 function listColumns() {
-  if (!$("#list").classList.contains("dock-bottom")) return [["no", "번호"], ["name", "부재명"], ["summary", "내용"]];
+  if (!$("#list").classList.contains("dock-bottom")) return [["label", "번호"], ["name", "부재명"], ["summary", "내용"]];
   const P = S.purposes[S.filter];
   if (!P) return [["no", "번호"], ["purpose", "용도"], ["name", "부재명"], ["summary", "내용"], ["inspector", "검토자"], ["ph", "사진"]];
+  if (P.crack) return [["label", "번호"], ["f:ctype", "종류"], ["csize", "크기"], ["count", "개수"], ["f:shape", "형태"], ["inspector", "검토자"], ["ph", "사진"], ["add", ""]];
   const c = [["no", "번호"], ["name", P.area ? "구역" : "부재명"]];
   if (P.area) c.push(["areaM2", "면적(m²)"]);
   if (P.size) c.push(["size", "치수"]); if (P.length) c.push(["length", "길이(m)"]); if (P.rebar) c.push(["rebar", "철근"]); if (P.exist) c.push(["exist", "부재유무"]);
@@ -991,6 +1366,8 @@ function listColumns() {
 function rebarText(r) { const rb = r.rebar || {}; const cols = ["I단", "단부", "중앙", "J단", "수직근", "수평근"].filter((c) => Object.keys(rb).some((k) => k.endsWith("|" + c)));
   return cols.map((c) => `[${c}] ` + Object.entries(rb).filter(([k, v]) => k.endsWith("|" + c) && v).map(([k, v]) => (k.startsWith("주근배치") ? "배치" : k.split("|")[0].endsWith("2") ? k[0] + "2" : k[0]) + ":" + v).join(" ")).join(" "); }
 function listValue(r, k) {
+  if (k === "count") return r.label ? `${crackCount(r.label, r.owner)}곳` : "";
+  if (k === "label") return r.label || r.no; if (k === "csize") return crackSize(r.fields); if (k === "placed") return isPlaced(r) ? "배치" : "📍미배치";
   if (k === "summary") return summary(r); if (k === "ph") return (r.photos || []).length || "";
   if (k === "size") return r.size_b || r.size_h ? `${r.size_b || "?"}×${r.size_h || "?"}` : ""; if (k === "rebar") return rebarText(r);
   if (k === "areaM2") return r.area ? areaOf(r).toFixed(1) : "";
@@ -998,13 +1375,97 @@ function listValue(r, k) {
   if (k.startsWith("f:")) return (r.fields || {})[k.slice(2)] || ""; return r[k] ?? "";
 }
 function renderList() {
-  const recs = S.recs.filter((r) => S.filter === "전체" || r.purpose === S.filter).sort((a, b) => a.no - b.no);
+  if (S.mode === "sketch" && window.SK) { SK.renderList(); return; }
+  if ((S.purposes[S.filter] || {}).crack) { renderCrackList(); return; }
+  const recs = S.recs.filter((r) => (S.filter === "전체" || r.purpose === S.filter) && ownerVisible(r)).sort((a, b) => (isPlaced(a) - isPlaced(b)) || a.no - b.no);
   $("#listCount").textContent = `${recs.length}건`;
   const cols = listColumns();
   $("#lt-h").innerHTML = ""; $("#lt-h").append(el("tr", {}, cols.map(([, t]) => el("th", {}, t))));
   const tb = $("#lt-b"); tb.innerHTML = "";
   const cur = S.edit || S.sel;
-  for (const r of recs) tb.append(el("tr", { class: cur && cur.uid === r.uid ? "sel" : "", onclick: () => selectRec(r.uid, true) }, cols.map(([k]) => el("td", {}, String(listValue(r, k))))));
+  const rowOf = (r, sub) => {
+    const tr = el("tr", { class: (sub ? "sub" : "") + (cur && cur.uid === r.uid ? " sel" : "") + (isPlaced(r) ? "" : " unplaced") + (isMine(r) ? "" : " others") },
+      cols.map(([k]) => el("td", {}, k === "no" && sub && r.label ? r.label : String(listValue(r, k)))));
+    rowGestures(tr, () => (isPlaced(r) || !isMine(r) ? showRec(r.uid) : startPlacing(r)), () => { showRec(r.uid, true); S.rowMenu = r.uid; renderList(); });
+    tb.append(tr);
+    if (S.rowMenu === r.uid) tb.append(rowMenuRow(r, cols.length));
+  };
+  if (S.filter === "전체" && recs.length) {        // 전체: 용도별(부재검측·균열검토 …) 묶음 — 누르면 하위 목록
+    S.allOpen = S.allOpen || new Set();
+    if (cur && S.allOpenAuto !== cur.uid) { S.allOpen.add(cur.purpose); S.allOpenAuto = cur.uid; }
+    const order = [...Object.keys(S.purposes), ...new Set(recs.map((r) => r.purpose))].filter((v, i, a) => a.indexOf(v) === i);
+    for (const pu of order) {
+      const its = recs.filter((r) => r.purpose === pu); if (!its.length) continue;
+      const open = S.allOpen.has(pu), P = S.purposes[pu] || {};
+      const nUn = its.filter((r) => !isPlaced(r)).length;
+      const extra = P.crack ? `${new Set(its.map((r) => r.label || r.uid)).size}종 · ${its.filter(isPlaced).length}곳` : `${its.length}건`;
+      const hr = el("tr", { class: "kgrp" + (open ? " open" : "") }, el("td", { colspan: String(cols.length) },
+        `${open ? "▾" : "▸"} ${pu}`, el("small", {}, extra + (nUn ? ` · 미배치 ${nUn}` : ""))));
+      hr.addEventListener("click", () => { if (open) S.allOpen.delete(pu); else S.allOpen.add(pu); S.rowMenu = null; renderList(); });
+      tb.append(hr);
+      if (open) its.forEach((r) => rowOf(r, true));
+    }
+  } else for (const r of recs) rowOf(r);
+  const P = S.purposes[S.filter] || S.purposes[S.purpose] || {};
+  if (P.crack && (S.filter === "전체" ? S.purpose : S.filter) && S.db) tb.append(el("tr", { class: "add-row" },
+    el("td", { colspan: String(cols.length) }, el("button", { class: "b ok", onclick: (ev) => { ev.stopPropagation(); crackAdd(null); } }, "＋ 균열·손상 추가 (종류 → 크기 → 사진)"))));
+}
+// 균열 목록: 번호(PW1 …)마다 한 줄 + 개수, 맨 아래 종류별 합계
+function renderCrackList() {
+  const groups = new Map();
+  for (const r of S.recs.filter((x) => x.purpose === S.filter && ownerVisible(x)).sort((a, b) => a.no - b.no)) {
+    const key = r.label ? `${r.owner || ""}|${r.label}` : r.uid;
+    if (!groups.has(key)) groups.set(key, []); groups.get(key).push(r);
+  }
+  const cols = listColumns();
+  $("#listCount").textContent = `${groups.size}종 · ${S.recs.filter((x) => x.purpose === S.filter && isPlaced(x)).length}곳`;
+  $("#lt-h").innerHTML = ""; $("#lt-h").append(el("tr", {}, cols.map(([, t]) => el("th", {}, t))));
+  const tb = $("#lt-b"); tb.innerHTML = "";
+  const cur = S.edit || S.sel;
+  const sorted = [...groups.values()].sort((a, b) => String(a[0].label).localeCompare(String(b[0].label), "ko", { numeric: true }));
+  S.crackOpen = S.crackOpen || new Set();
+  for (const lst of sorted) {
+    const r = lst.find(isPlaced) || lst[0], placed = lst.some(isPlaced), mine = isMine(r);
+    const pl = lst.filter(isPlaced), key = `${r.owner || ""}|${r.label || r.uid}`, multi = pl.length > 1, open = multi && S.crackOpen.has(key);
+    const curIn = cur && lst.find((x) => x.uid === cur.uid);
+    const tr = el("tr", { class: (curIn && !open ? "sel" : "") + (placed ? "" : " unplaced") + (mine ? "" : " others") + (multi ? " grp" : "") + (open ? " open" : "") },
+      cols.map(([k]) => el("td", {}, k === "add" ? (mine && placed ? el("button", { class: "mini-add", onclick: (ev) => { ev.stopPropagation(); startPlacing(r, true); } }, "📍＋") : "")
+        : k === "count" ? (placed ? `${crackCount(r.label, r.owner)}곳` : "📍미배치")
+        : k === "ph" ? String(lst.reduce((a, x) => a + (x.photos || []).length, 0) || "")
+        : (k === "label" || (k === "no" && !cols.some((c) => c[0] === "label"))) && multi ? `${open ? "▾" : "▸"} ${listValue(r, k)}` : String(listValue(r, k)))));
+    rowGestures(tr, () => {
+      if (!placed && mine) { startPlacing(r); return; }
+      if (multi) {                                 // 같은 번호 여러 곳 — 누르면 펼치기, 다시 누르면 합치기
+        if (open) S.crackOpen.delete(key); else S.crackOpen.add(key);
+        S.rowMenu = null; renderList(); return;
+      }
+      showRec(r.uid);
+    }, () => { showRec((curIn || r).uid, true); S.rowMenu = (curIn || r).uid; renderList(); });
+    tb.append(tr);
+    const menuFor = (x) => rowMenuRow(x, cols.length,
+      mine && placed ? el("button", { class: "b ok", onclick: () => { S.rowMenu = null; startPlacing(r, true); } }, "📍＋ 위치 추가") : "");
+    if (!open) {
+      if (S.rowMenu && lst.some((x) => x.uid === S.rowMenu)) tb.append(menuFor(lst.find((x) => x.uid === S.rowMenu)));
+      continue;
+    }
+    if (S.rowMenu && S.rowMenu === (curIn || r).uid && !pl.some((x) => x.uid === S.rowMenu)) tb.append(menuFor(curIn || r));
+    pl.forEach((x, i) => {                         // 펼친 하위 줄 — 위치마다 (누르면 위치 보기, 길게 누르면 수정·삭제)
+      const ctr = el("tr", { class: "sub" + (cur && cur.uid === x.uid ? " sel" : "") + (isMine(x) ? "" : " others") },
+        cols.map(([k]) => el("td", {}, k === "label" || (k === "no" && !cols.some((c) => c[0] === "label")) ? `└ ${x.label || x.no}-${i + 1}`
+          : k === "count" || k === "add" ? "" : k === "ph" ? String(listValue(x, k)) : k === "inspector" ? String(listValue(x, k))
+          : k === "summary" || k === "name" ? String(listValue(x, k)) : "")));
+      rowGestures(ctr, () => showRec(x.uid), () => { showRec(x.uid, true); S.rowMenu = x.uid; renderList(); });
+      tb.append(ctr);
+      if (S.rowMenu === x.uid) tb.append(menuFor(x));
+    });
+  }
+  // 종류별 합계 (추후 균열 면적·개수 집계용)
+  const tot = {};
+  for (const r of S.recs.filter((x) => x.purpose === S.filter && isPlaced(x))) { const t = (r.fields || {}).ctype || "기타"; tot[t] = (tot[t] || 0) + 1; }
+  if (Object.keys(tot).length) tb.append(el("tr", { class: "tot-row" }, el("td", { colspan: String(cols.length) },
+    "합계 — " + Object.entries(tot).map(([t, n]) => `${t} ${n}곳`).join(" · "))));
+  if (S.db) tb.append(el("tr", { class: "add-row" }, el("td", { colspan: String(cols.length) },
+    el("button", { class: "b ok", onclick: (ev) => { ev.stopPropagation(); crackAdd(null); } }, "＋ 균열·손상 추가 (종류 → 크기 → 사진)"))));
 }
 function toggleIcon() {
   const L = $("#list"), c = L.classList.contains("collapsed"), d = listDock();
@@ -1068,21 +1529,65 @@ function exportCsv() {
 // ======================================================================= sheets / menu / PC link
 $("#pgPrev").onclick = () => S.db && loadSheet(S.sheetIdx - 1);
 $("#pgNext").onclick = () => S.db && loadSheet(S.sheetIdx + 1);
-$("#btnSheets").onclick = $("#floorBtn").onclick = () => {
+// ---- 도면 LIST — 분류(미정·평면도(건축)·평면도(구조)·입면도·기타) 탭, 이름 변경·분류 지정
+const SHEET_CATS = ["미정", "평면도(건축)", "평면도(구조)", "입면도", "기타"];
+function sheetCat(id) { try { return JSON.parse(q("SELECT origin FROM sheets WHERE id=?", [id])[0].origin).cat || "미정"; } catch (e) { return "미정"; } }
+function setSheetMeta(id, { name, cat }) {
+  const row = q("SELECT name, origin FROM sheets WHERE id=?", [id])[0]; if (!row) return;
+  let o; try { o = JSON.parse(row.origin) || {}; } catch (e) { o = { ox: 0, oy: 0 }; }
+  if (cat != null) { if (cat === "미정") delete o.cat; else o.cat = cat; }
+  run("UPDATE sheets SET name=?, origin=? WHERE id=?", [name != null ? name : row.name, JSON.stringify(o), id]);
+  if (window.CO) CO.mark("sheet", id);
+  S.sheets = q("SELECT id, analysis_id, seq, name FROM sheets ORDER BY seq, id");
+  if (S.sheet && S.sheet.id === id && name != null) { S.sheet.name = name; $("#floorBtn").textContent = name; }
+  persistSoon();
+}
+function showSheets() {
   if (!S.db) return;
-  const close = sheet((b) => { b.append(el("h3", {}, "도면 LIST")); const l = el("div", { class: "sheets-list" });
-    S.sheets.forEach((s, i) => { const n = q("SELECT COUNT(*) AS n FROM surveys WHERE sheet_id=? AND deleted=0", [s.id])[0].n;
-      l.append(el("button", { class: i === S.sheetIdx ? "cur" : "", onclick: () => { close(); loadSheet(i); } }, el("span", {}, `${i + 1}. ${s.name}`), el("span", {}, `${n}건`))); });
-    b.append(l); });
-};
+  let tab = localStorage.getItem("sheetTab") || "전체", menuFor = null;
+  const close = sheet((b) => {
+    const render = () => {
+      b.innerHTML = "";
+      const cats = S.sheets.map((s) => sheetCat(s.id));
+      const tabs = el("div", { class: "sh-tabs" }, ["전체", ...SHEET_CATS].map((t) => {
+        const n = t === "전체" ? S.sheets.length : cats.filter((c) => c === t).length;
+        return el("button", { class: (tab === t ? "on" : "") + (n ? "" : " empty"), onclick: () => { tab = t; try { localStorage.setItem("sheetTab", t); } catch (e) { /* ignore */ } menuFor = null; render(); } }, t, el("small", {}, String(n)));
+      }));
+      const l = el("div", { class: "sheets-list" });
+      S.sheets.forEach((s, i) => {
+        const c = cats[i]; if (tab !== "전체" && c !== tab) return;
+        const n = q("SELECT COUNT(*) AS n FROM surveys WHERE sheet_id=? AND deleted=0", [s.id])[0].n;
+        const row = el("div", { class: "sh-row" },
+          el("button", { class: "sh-main" + (i === S.sheetIdx ? " cur" : ""), onclick: () => { close(); loadSheet(i); } },
+            el("span", {}, `${i + 1}. ${s.name}`), el("span", {}, el("em", { class: "sh-cat" + (c === "미정" ? " none" : "") }, c), ` ${n}건`)),
+          el("button", { class: "sh-more", onclick: () => { menuFor = menuFor === s.id ? null : s.id; render(); } }, "⋯"));
+        l.append(row);
+        if (menuFor === s.id) {
+          const inp = el("input", { type: "text", class: "sk-input", value: s.name });
+          l.append(el("div", { class: "sh-edit" },
+            el("div", { class: "sk-numrow" }, el("span", { class: "sk-lab" }, "이름"), inp,
+              el("button", { class: "b ok", onclick: () => { const v = inp.value.trim(); if (!v) return; setSheetMeta(s.id, { name: v }); toast(`도면 이름: ${v}`); render(); } }, "변경")),
+            el("div", { class: "sk-numrow" }, el("span", { class: "sk-lab" }, "분류"),
+              el("div", { class: "sk-chips" }, SHEET_CATS.map((t) => el("button", { class: t === c ? "on" : "", onclick: () => { setSheetMeta(s.id, { cat: t }); toast(`${s.name} → ${t}`); render(); } }, t))))));
+        }
+      });
+      if (!l.children.length) l.append(el("p", { class: "small" }, `'${tab}' 도면이 없습니다. 다른 도면의 ⋯ 에서 분류를 지정하세요.`));
+      b.append(el("h3", {}, "도면 LIST"), tabs, l,
+        el("p", { class: "small" }, "⋯ 를 눌러 도면 이름·분류(평면도(건축)/평면도(구조)/입면도 …)를 정합니다. PDF로 여러 장 올리면 처음엔 '미정'."),
+        el("div", { class: "btns" }, el("button", { class: "b edit", onclick: () => { close(); NS.dialog(false); } }, "＋ 도면 추가 (PDF 여러 장 가능)"),
+          el("span", { class: "sp" }), el("button", { class: "b ok", onclick: () => close() }, "닫기")));
+    };
+    render();
+  });
+}
+$("#btnSheets").onclick = $("#floorBtn").onclick = () => showSheets();
 $("#btnFit").onclick = fit;
-$("#modeSeg").addEventListener("click", (e) => { const m = e.target.dataset.mode; if (!m) return; S.mode = m; S.spanStart = null; hint("");
-  for (const b of $("#modeSeg").children) b.classList.toggle("on", b.dataset.mode === m);
-  document.body.classList.toggle("sketching", m === "sketch"); if (window.SK) SK.mode(m === "sketch"); draw(); });
+$("#modeSeg").addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return; setMode(b.dataset.mode); });
 $("#btnMenu").onclick = () => { $("#menuInfo").textContent = S.db ? `${S.fileName} · 내보낸 날짜 ${S.meta.exported || "-"}` : ""; $("#menu").classList.add("show"); };
 $("#menu").addEventListener("click", (e) => { if (e.target.id === "menu" || e.target.hasAttribute("data-close")) $("#menu").classList.remove("show"); });
 $("#miSave").onclick = () => { $("#menu").classList.remove("show"); saveFile(); };
 $("#miPurpose").onclick = () => { $("#menu").classList.remove("show"); if (S.db) addPurpose(); };
+$("#miSettings").onclick = () => { $("#menu").classList.remove("show"); if (window.SK) SK.settings(); };
 $("#miCsv").onclick = () => { $("#menu").classList.remove("show"); if (S.db) exportCsv(); };
 $("#btnLayers").onclick = () => showLayers();
 $("#miSketch").onclick = () => { $("#menu").classList.remove("show"); if (window.SK) SK.toggleHidden(); };
@@ -1151,7 +1656,10 @@ async function sendOriginals() {
   bz.close(); persistSoon();
   toast(`원본 사진 ${ok}장 PC 전송` + (fail ? ` · 실패 ${fail}장 (다음에 다시 보냄)` : ""), 4000);
 }
-$("#btnInsp").onclick = askInspector;
+$("#btnInsp").onclick = () => (S.db ? showInspectors() : (window.CO && CO.me() ? CO.hub() : askInspector()));
+$("#btnEditMode").onclick = () => setViewOnly(!S.viewOnly);
+$("#btnPen").onclick = () => setPenOnly(!S.penOnly);
+syncInputBtns();
 $("#btnPcGet").onclick = pcGet; $("#miPcGet").onclick = pcGet; $("#miPcPut").onclick = pcPut;
 $("#miPcAddr").onclick = () => { $("#menu").classList.remove("show"); askPcAddress(); };
 

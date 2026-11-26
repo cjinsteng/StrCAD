@@ -27,11 +27,15 @@ FONT = (TH.FAM, 9)
 # name: {color, size, length, rebar, exist, fields: [(key, label, unit, choices)]}
 DEFAULT_PURPOSES = {
     "부재검측": {"color": "#d62828", "size": True, "length": True, "rebar": True, "exist": True, "fields": []},
-    "균열검토": {"color": "#ea580c", "size": False, "length": False, "rebar": False, "exist": False, "fields": [
+    # 균열·손상: 종류별 번호(CR1, LK1 …) — 휴대폰 '＋ 균열 추가'에서 종류 → 크기 → 사진(crack_번호_00)
+    "균열검토": {"color": "#ea580c", "crack": True, "size": False, "length": False, "rebar": False, "exist": False, "fields": [
+        ["ctype", "종류", "", ["보 미장균열", "기둥 미장균열", "벽 미장균열", "균열", "누수", "파손", "철근노출", "기타"]],
         ["crack_w", "균열폭", "mm", None],
         ["crack_l", "균열길이", "m", None],
+        ["leak_w", "누수폭", "m", None], ["leak_l", "누수길이", "m", None],
+        ["dmg_b", "파손범위 B", "mm", None], ["dmg_d", "파손범위 D", "mm", None],
+        ["rebar_l", "노출길이", "mm", None],
         ["shape", "균열형태", "", ["수직", "수평", "경사", "망상", "기타"]],
-        ["face", "위치(면)", "", ["상면", "하면", "측면", "단부", "중앙"]],
         ["progress", "진행성", "", ["없음", "있음", "관찰필요"]]]},
     # 영역(사각형) 조사 — 실 용도 · 마감 · 천장 → 하중 참고값
     "하중조사": {"color": "#0f766e", "area": True, "size": False, "length": False, "rebar": False, "exist": False,
@@ -40,7 +44,31 @@ DEFAULT_PURPOSES = {
                  ["ceil", "천장", "", None], ["ceil_h", "천장고", "m", None],
                  ["part", "칸막이", "", ["없음", "가동 경량칸막이", "조적·고정벽"]],
                  ["equip", "설비·장비", "", ["없음", "있음(경량)", "있음(중량)"]]]},
+    "기타": {"color": "#64748b", "size": False, "length": False, "rebar": False, "exist": False, "fields": [
+        ["item", "구분", "", ["외관", "마감", "설비", "누수흔적", "변형", "기타"]], ["desc", "내용", "", None]]},
 }
+CRACK_CODE = {"보 미장균열": "PB", "기둥 미장균열": "PC", "벽 미장균열": "PW", "균열": "CR", "누수": "LK", "파손": "DM",
+              "철근노출": "RB", "기타": "ET"}
+
+
+def crack_size(fl):
+    fl = fl or {}
+    t = fl.get("ctype")
+    v = lambda k: fl.get(k) if fl.get(k) not in (None, "") else "?"      # noqa: E731
+    if t in ("보 미장균열", "기둥 미장균열", "벽 미장균열", "균열"):
+        return f"{v('crack_w')}mm × {v('crack_l')}m"
+    if t == "누수":
+        return f"{v('leak_w')}m × {v('leak_l')}m"
+    if t == "파손":
+        return f"{v('dmg_b')} × {v('dmg_d')}mm"
+    if t == "철근노출":
+        return f"L={v('rebar_l')}mm"
+    return ""
+
+
+def is_placed(rec):
+    """휴대폰 균열 목록에서 만들고 아직 도면에 놓지 않은 기록은 False."""
+    return not (rec.get("x") is None and not rec.get("area") and not rec.get("poly") and rec.get("member") is None)
 
 # KDS 41 12 00 표 3.2-1 기본등분포활하중 (kN/m²) — 대표 용도
 LL_KDS = {
@@ -90,7 +118,16 @@ def load_text(fl):
     return " · ".join(parts) + " kN/m²" if parts else ""
 
 
+def poly_pts(rec):
+    p = rec.get("poly") or []
+    return [(p[i], p[i + 1]) for i in range(0, len(p) - 1, 2)] if len(p) >= 6 else None
+
+
 def area_rect(rec):
+    pl = poly_pts(rec)
+    if pl:
+        xs, ys = [q[0] for q in pl], [q[1] for q in pl]
+        return (min(xs), min(ys), max(xs), max(ys))
     a = rec.get("area")
     if not a or len(a) != 4:
         return None
@@ -98,6 +135,10 @@ def area_rect(rec):
 
 
 def area_m2(rec):
+    pl = poly_pts(rec)
+    if pl:
+        n = len(pl)
+        return abs(sum(pl[i][0] * pl[(i + 1) % n][1] - pl[(i + 1) % n][0] * pl[i][1] for i in range(n))) / 2 / 1e6
     r = area_rect(rec)
     return (r[2] - r[0]) * (r[3] - r[1]) / 1e6 if r else 0.0
 EXTRA_COLORS = ("#2563eb", "#7c3aed", "#0f766e", "#ca8a04", "#db2777", "#0891b2", "#4d7c0f", "#6b7280")
@@ -203,6 +244,8 @@ def geometry(rec, byid):
         return ("point", a)
     if m is not None and m.kind == "column" and rec.get("dx") is not None:
         return ("point", (m.center[0] + rec["dx"], m.center[1] + rec["dy"]))
+    if rec.get("x") is None:
+        return ("point", (0.0, 0.0))
     return ("point", (rec["x"], rec["y"]))
 
 
@@ -211,6 +254,9 @@ def anchor(rec, byid):
     if g[0] == "span":
         return ((g[1][0] + g[2][0]) / 2, (g[1][1] + g[2][1]) / 2)
     if g[0] == "area":
+        pl = poly_pts(rec)
+        if pl:
+            return max(pl, key=lambda q: q[1] - q[0])      # 왼쪽 위 꼭짓점
         return (g[1][0], g[1][3])          # 왼쪽 위 모서리
     return g[1]
 
@@ -221,6 +267,10 @@ def bubble(rec, byid):
 
 
 def position_text(rec, byid):
+    if rec.get("poly"):
+        return f"다각형 영역 · 꼭짓점 {len(rec['poly']) // 2}개 · {area_m2(rec):.1f} m²"
+    if not is_placed(rec):
+        return "아직 도면에 배치하지 않음 (휴대폰 균열 목록)"
     r = area_rect(rec)
     if r:
         return f"영역 {(r[2] - r[0]) / 1000:.2f} × {(r[3] - r[1]) / 1000:.2f} m · {area_m2(rec):.1f} m²"
@@ -255,6 +305,11 @@ def rebar_filled(rec):
 def summary(rec, P):
     p = P.get(rec["purpose"], {})
     parts = []
+    fl = rec.get("fields") or {}
+    if p.get("crack") and fl.get("ctype"):
+        parts += [f"{fl['ctype']} {crack_size(fl)}", fl.get("shape", ""), f"진행성 {fl['progress']}" if fl.get("progress") else "",
+                  "" if is_placed(rec) else "미배치"]
+        return " · ".join(x for x in parts if x)
     if rec.get("area"):
         parts.append(f"{area_m2(rec):.1f}m²")
     if p.get("size") and (rec.get("size_b") or rec.get("size_h")):
@@ -666,6 +721,10 @@ def list_columns(purpose, P):
         return [("no", "번호", 50), ("purpose", "용도", 80), ("name", "부재명", 110), ("summary", "내용", 360),
                 ("inspector", "검토자", 70), ("ph", "사진", 45)]
     p = P[purpose]
+    if p.get("crack"):
+        return [("label", "번호", 55), ("f:ctype", "종류", 90), ("csize", "크기", 110), ("name", "부재", 100),
+                ("f:shape", "형태", 60), ("f:progress", "진행성", 60), ("placed", "위치", 55), ("inspector", "검토자", 70),
+                ("ph", "사진", 45), ("date", "조사일", 85)]
     cols = [("no", "번호", 50), ("name", "구역명" if p.get("area") else "부재명", 110)]
     if p.get("area"):
         cols.append(("area_m2", "면적(m²)", 70))
@@ -686,6 +745,12 @@ def list_columns(purpose, P):
 
 
 def list_value(r, key):
+    if key == "label":
+        return r.get("label") or r.get("no", "")
+    if key == "csize":
+        return crack_size(r.get("fields"))
+    if key == "placed":
+        return "배치" if is_placed(r) else "미배치"
     if key == "summary":
         return summary(r, P_CACHE)
     if key == "ph":
