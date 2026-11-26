@@ -15,6 +15,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from . import boreholes as BH
 from . import boringlog as BL
+from . import odcloud as OD
 from . import composite as CP
 from . import exposure as EX
 from . import geo
@@ -612,6 +613,7 @@ class InformationApp(tk.Toplevel):
         T.btn(bar, "🗑 선택 공 삭제", self._delete_hole).pack(side="right", padx=3)
         T.btn(bar, "✏ 시추공 직접 입력", self._manual_hole).pack(side="right", padx=3)
         T.btn(bar, "📥 시추자료 CSV 가져오기", self._import_csv, bg=T.BG5, fg=T.WHI).pack(side="right", padx=3)
+        T.btn(bar, "🌐 공공데이터 API로 받기", self._api_download, bg=T.BG5, fg=T.WHI).pack(side="right", padx=3)
         mid = tk.Frame(p, bg=T.BG2)
         mid.pack(fill="both", expand=True, padx=10)
         rf = tk.Frame(mid, bg=T.BG2, width=520)
@@ -1636,6 +1638,13 @@ class InformationApp(tk.Toplevel):
         if self.bh_results and self._inputs().get("lat") is not None:
             self._search_boreholes()                 # 새로 넣은 N치·지층이 목록·주상도에 바로 반영
 
+    def _api_download(self):
+        dlg = _ApiDialog(self, self.db)
+        self.wait_window(dlg)
+        self._refresh_db_label()
+        if dlg.imported and self.bh_results and self._inputs().get("lat") is not None:
+            self._search_boreholes()
+
     def _manual_hole(self):
         inp = self._inputs()
         dlg = _HoleDialog(self, inp.get("lat"), inp.get("lon"))
@@ -1856,6 +1865,118 @@ class _SettingsDialog(tk.Toplevel):
         self.s["bedrock_rule"] = self.v_rock.get()
         geo.save_settings(self.s)
         self.saved = True
+        self.destroy()
+
+
+class _ApiDialog(tk.Toplevel):
+    """공공데이터포털 파일데이터 OpenAPI(api.odcloud.kr)로 전체 행을 받아 시추 DB 에 넣는다."""
+
+    def __init__(self, app, db):
+        super().__init__(app)
+        self.app, self.db = app, db
+        self.imported = False
+        self._cancel = False
+        self._busy = False
+        self.title("공공데이터 API로 받기")
+        self.configure(bg=T.BG2)
+        self.transient(app)
+        self.geometry("860x420")
+        st = app.settings
+        T.label(self, "국토교통부_지반정보 — 파일과 같은 내용을 API로 끝까지 받습니다 (CSV가 잘린 경우 대신 사용).",
+                fg=T.WHI, font=T.FONT_B).pack(anchor="w", padx=14, pady=(12, 4))
+        f = tk.Frame(self, bg=T.BG2)
+        f.pack(fill="x", padx=14, pady=6)
+        self.v_ds = tk.StringVar(value="표준관입시험정보")
+        self.v_path = tk.StringVar(value=(st.get("odcloud_paths") or {}).get("표준관입시험정보", OD.DATASETS["표준관입시험정보"]))
+        self.v_key = tk.StringVar(value=st.get("data_go_key", ""))
+        rows = (("자료", lambda w: T.combo(w, self.v_ds, list(OD.DATASETS) + ["직접 입력"], width=20)),
+                ("API 경로", lambda w: T.entry(w, self.v_path, 70)),
+                ("일반 인증키", lambda w: T.entry(w, self.v_key, 70)))
+        for i, (lab, mk) in enumerate(rows):
+            tk.Label(f, text=lab, width=10, anchor="w", font=T.FONT, bg=T.BG2, fg=T.TX2).grid(row=i, column=0, sticky="w", pady=3)
+            w = mk(f)
+            w.grid(row=i, column=1, sticky="w", pady=3)
+            if lab == "자료":
+                w.bind("<<ComboboxSelected>>", lambda e: self.v_path.set(OD.DATASETS.get(self.v_ds.get(), self.v_path.get())))
+        T.label(self, "  경로는 활용신청 화면 'API 목록'의 /15148686/v1/uddi:… 부분, 키는 '일반 인증키'. 키는 설정 파일에만 저장됩니다.",
+                fg=T.TX3, font=T.FONT_S).pack(anchor="w", padx=14)
+        b = tk.Frame(self, bg=T.BG2)
+        b.pack(fill="x", padx=14, pady=8)
+        T.btn(b, "연결 확인", self._probe).pack(side="left")
+        self.btn_go = T.btn(b, "⬇ 받아서 DB에 넣기", self._go, bg=T.ACC, fg=T.WHI)
+        self.btn_go.pack(side="left", padx=6)
+        T.btn(b, "중지", self._stop).pack(side="left")
+        T.btn(b, "닫기", self._close).pack(side="right")
+        self.pb = ttk.Progressbar(self, mode="determinate", maximum=100)
+        self.pb.pack(fill="x", padx=14, pady=(4, 2))
+        self.msg = tk.Text(self, bg=T.BG3, fg=T.TXT, font=T.FONT_S, relief="flat", height=9, wrap="word")
+        self.msg.pack(fill="both", expand=True, padx=14, pady=(2, 12))
+        self.protocol("WM_DELETE_WINDOW", self._close)
+
+    def _log(self, t):
+        self.app.ui(lambda: (self.msg.insert("end", t + "\n"), self.msg.see("end")))
+
+    def _save_settings(self):
+        st = self.app.settings
+        st["data_go_key"] = self.v_key.get().strip()
+        paths = dict(st.get("odcloud_paths") or {})
+        paths[self.v_ds.get()] = self.v_path.get().strip()
+        st["odcloud_paths"] = paths
+        geo.save_settings(st)
+
+    def _probe(self):
+        self._save_settings()
+        path, key = self.v_path.get().strip(), self.v_key.get().strip()
+
+        def work():
+            try:
+                tot, cols, first = OD.probe(path, key)
+                self._log(f"연결 OK — 전체 {tot:,}행\n열: {', '.join(cols)}\n첫 행: {first}")
+            except Exception as e:                   # noqa: BLE001
+                self._log(f"연결 실패: {e}")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _go(self):
+        if self._busy:
+            return
+        self._save_settings()
+        self._busy = True
+        self._cancel = False
+        path, key = self.v_path.get().strip(), self.v_key.get().strip()
+        name = self.v_ds.get() if self.v_ds.get() != "직접 입력" else path.split("uddi:")[-1][:12]
+        out = geo.APP_DIR / "api" / f"{name}.csv"
+        out.parent.mkdir(parents=True, exist_ok=True)
+
+        def prog(done, total, page, pages):
+            pct = 100.0 * done / total if total else 0
+            self.app.ui(lambda: self.pb.config(value=pct * 0.85))
+            if page == 1 or page % 20 == 0 or (total and done >= total):
+                self._log(f"받는 중 {done:,}/{total:,}행 ({page}/{pages}쪽)")
+
+        def work():
+            try:
+                self._log(f"내려받기 시작 → {out}  (끊겨도 다시 누르면 이어받음)")
+                done, total, finished = OD.download(path, key, out, progress=prog, cancel=lambda: self._cancel)
+                if not finished:
+                    self._log(f"중지됨 — {done:,}/{total:,}행까지 받음. [받아서 DB에 넣기]를 다시 누르면 이어받습니다.")
+                    return
+                self._log(f"다 받음 {done:,}행 — DB에 넣는 중…")
+                n, m = self.db.import_csv(str(out), progress=lambda f, k: self.app.ui(
+                    lambda: self.pb.config(value=85 + 15 * f)), cancel=lambda: self._cancel)
+                self.imported = True
+                self.app.ui(lambda: self.pb.config(value=100))
+                self._log("완료: " + m)
+            except Exception as e:                   # noqa: BLE001
+                self._log(f"실패: {e}")
+            finally:
+                self._busy = False
+        threading.Thread(target=work, daemon=True).start()
+
+    def _stop(self):
+        self._cancel = True
+
+    def _close(self):
+        self._cancel = True
         self.destroy()
 
 
