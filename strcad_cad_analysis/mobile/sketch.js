@@ -640,8 +640,9 @@ const SK = (() => {
       const a = scr(p[0], p[1]), b = scr(p[2], p[3]), L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
       const ux = (b[0] - a[0]) / L, uy = (b[1] - a[1]) / L, R = 13;
       halo(() => { ctx.lineWidth = 7; ctx.beginPath(); segTo(a, b); ctx.stroke(); });
+      ctx.save(); if (!sel && !live) ctx.globalAlpha = 0.35;          // 축선은 배경처럼 옅게
       ctx.lineWidth = 1.5; ctx.setLineDash([14, 4, 3, 4]);
-      ctx.beginPath(); segTo(a, b); ctx.stroke(); ctx.setLineDash([]);
+      ctx.beginPath(); segTo(a, b); ctx.stroke(); ctx.setLineDash([]); ctx.restore();
       // 버블: 축 끝이 화면 밖이면 화면 가장자리에 (확대·축소해도 항상 보이게)
       const M = R + 4, inR = (v) => v[0] >= M && v[1] >= M && v[0] <= VW - M && v[1] <= VH - M;
       let t0 = -Infinity, t1 = Infinity;            // a + (b-a)·t 가 화면 안쪽 사각형에 드는 범위
@@ -707,14 +708,55 @@ const SK = (() => {
     }
     return out;
   }
+  // 축간 간격: 버블 쪽(화면 가장자리 안쪽)에 치수선 — 화면 좌표로 계산
   function drawAxisGaps() {
+    const ax = st.list.filter((a) => a.kind === "axis" && shown(a)); if (ax.length < 2) return;
+    const VW = $("#cv").getBoundingClientRect().width, VH = $("#cv").getBoundingClientRect().height, R = 13, M = R + 4;
+    const groups = [];
+    for (const a of ax) {
+      const p = a.pts, L = Math.hypot(p[2] - p[0], p[3] - p[1]); if (L < 1) continue;
+      let ux = (p[2] - p[0]) / L, uy = (p[3] - p[1]) / L; if (ux < -1e-9 || (Math.abs(ux) < 1e-9 && uy < 0)) { ux = -ux; uy = -uy; }
+      let g = groups.find((G) => Math.abs(G.ux * uy - G.uy * ux) < 0.02);
+      if (!g) groups.push(g = { ux, uy, items: [] });
+      g.items.push(a);
+    }
     ctx.save();
-    for (const { p1, p2, d } of axisGaps(46 / S.view.s, 14 / S.view.s)) {
-      const a = scr(...p1), b = scr(...p2);
-      ctx.strokeStyle = "#475569"; ctx.lineWidth = 1.2; ctx.beginPath(); segTo(a, b); ctx.stroke();
-      for (const v of [a, b]) { ctx.beginPath(); ctx.arc(v[0], v[1], 2.5, 0, 7); ctx.fillStyle = "#475569"; ctx.fill(); }
-      const ang = Math.atan2(b[1] - a[1], b[0] - a[0]), upA = ang > Math.PI / 2 || ang < -Math.PI / 2 ? ang + Math.PI : ang;
-      ctx.save(); ctx.translate((a[0] + b[0]) / 2, (a[1] + b[1]) / 2); ctx.rotate(upA); label(Math.round(d).toLocaleString(), 0, -9, "#334155", 11); ctx.restore();
+    for (const g of groups) {
+      if (g.items.length < 2) continue;
+      const nx = -g.uy, ny = g.ux;
+      const rows = g.items.map((a) => {
+        const p = a.pts, s0 = p[0] * g.ux + p[1] * g.uy, s1 = p[2] * g.ux + p[3] * g.uy;
+        const [A0, B0] = s0 <= s1 ? [[p[0], p[1]], [p[2], p[3]]] : [[p[2], p[3]], [p[0], p[1]]];
+        return { a, off: p[0] * nx + p[1] * ny, A: scr(...A0), B: scr(...B0) };
+      }).sort((r1, r2) => r1.off - r2.off);
+      const su = (() => { const r0 = rows[0], L = Math.hypot(r0.B[0] - r0.A[0], r0.B[1] - r0.A[1]) || 1; return [(r0.B[0] - r0.A[0]) / L, (r0.B[1] - r0.A[1]) / L]; })();
+      // 각 축의 화면 안쪽 끝(버블 자리)까지의 su 방향 거리 → 가장 안쪽 끝에서 버블 하나만큼 안으로
+      let edge = Infinity;
+      for (const r of rows) {
+        let t1 = Infinity, t0 = -Infinity; const d = [r.B[0] - r.A[0], r.B[1] - r.A[1]];
+        for (const [o, dd, lo, hi] of [[r.A[0], d[0], M, VW - M], [r.A[1], d[1], M, VH - M]]) {
+          if (Math.abs(dd) < 1e-9) { if (o < lo || o > hi) { t0 = 1; t1 = 0; } continue; }
+          let ta = (lo - o) / dd, tb = (hi - o) / dd; if (ta > tb) [ta, tb] = [tb, ta]; t0 = Math.max(t0, ta); t1 = Math.min(t1, tb);
+        }
+        if (t0 > t1) continue;
+        const tt = Math.min(1, t1), E = [r.A[0] + d[0] * tt, r.A[1] + d[1] * tt];
+        edge = Math.min(edge, E[0] * su[0] + E[1] * su[1]);
+      }
+      if (!isFinite(edge)) continue;
+      const pos = edge - (2 * R + 12);
+      const at = (r) => { const t = pos - (r.A[0] * su[0] + r.A[1] * su[1]); return [r.A[0] + su[0] * t, r.A[1] + su[1] * t]; };
+      for (let i = 0; i + 1 < rows.length; i++) {
+        const d = rows[i + 1].off - rows[i].off; if (d < 1) continue;
+        const a = at(rows[i]), b = at(rows[i + 1]), sl = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        if (sl < 18) continue;
+        if (Math.max(a[0], b[0]) < 0 || Math.min(a[0], b[0]) > VW || Math.max(a[1], b[1]) < 0 || Math.min(a[1], b[1]) > VH) continue;
+        ctx.globalAlpha = 1; ctx.strokeStyle = "#be123c"; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+        for (const v of [a, b]) { ctx.beginPath(); ctx.moveTo(v[0] - su[0] * 5, v[1] - su[1] * 5); ctx.lineTo(v[0] + su[0] * 5, v[1] + su[1] * 5); ctx.stroke(); }
+        if (sl > 34) {
+          const ang = Math.atan2(b[1] - a[1], b[0] - a[0]), upA = ang > Math.PI / 2 || ang < -Math.PI / 2 ? ang + Math.PI : ang;
+          ctx.save(); ctx.translate((a[0] + b[0]) / 2, (a[1] + b[1]) / 2); ctx.rotate(upA); label(Math.round(d).toLocaleString(), 0, -8, "#be123c", 12); ctx.restore();
+        }
+      }
     }
     ctx.restore();
   }
@@ -1063,7 +1105,9 @@ const SK = (() => {
     st.cur = null; st.pend = null; if (!on) st.sel = null;
   }
 
-  return { selected: () => st.sel, memberAt, memberInfo, sameName, setMemberSize, nextMemberName, get: (u) => st.list.find((o) => o.uid === u), settings, shown, setLayer, layerStats, showAllLayers, load, draw: drawAll, axisGaps, toggleHidden, setHidden, hidden, down, move, up, cancel, mode, undo, renderList, dimAt, calibrateWith, snapPoint,
+  function centerOf(sk) { const p = sk.pts; return sk.kind === "column" ? colCenter(sk) : [(p[0] + p[2]) / 2, (p[1] + p[3]) / 2]; }
+  function focusUid(u) { const sk = st.list.find((o) => o.uid === u); if (sk) { focus(sk); window.renderList(); } }
+  return { centerOf, focusUid, selected: () => st.sel, memberAt, memberInfo, sameName, setMemberSize, nextMemberName, get: (u) => st.list.find((o) => o.uid === u), settings, shown, setLayer, layerStats, showAllLayers, load, draw: drawAll, axisGaps, toggleHidden, setHidden, hidden, down, move, up, cancel, mode, undo, renderList, dimAt, calibrateWith, snapPoint,
     get list() { return st.list; }, get busy() { return !!(st.pend || st.cur); }, COLORS };
 })();
 window.SK = SK;

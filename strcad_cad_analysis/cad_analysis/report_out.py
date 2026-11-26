@@ -97,15 +97,19 @@ def items(res, P, purposes=("균열검토", "기타"), sheet="", with_unplaced=F
         m = byid.get(r.get("member"))
         placed = next((x for x in lst if SV.is_placed(x)), None)
         it["axis"] = axis_loc(res, *rec_point(placed, byid)) if placed else ""
-        it["member"] = r.get("name") or (m.name if m is not None and getattr(m, "name", "") else "") or MEMBER_FROM_TYPE.get(ct, "")
+        it["member"] = (fl.get("cmem") if ct else "") or r.get("name") or (m.name if m is not None and getattr(m, "name", "") else "") or MEMBER_FROM_TYPE.get(ct, "")
         if ct:
             shape = fl.get("shape")
             it["desc"] = ct.replace(" 미장균열", " 미장균열") + (f"({shape})" if shape else "")
             if ct in CRACKISH:
                 it.update(E="cw=", F=_num(fl.get("crack_w")), H="/", I=_num(fl.get("crack_l")), kind="crack")
+            elif ct == "이질재이격":
+                it.update(E="cw=", F=_num(fl.get("gap_w")), H="/", I=_num(fl.get("gap_l")), kind="crack")
             elif ct == "누수":
                 it.update(E="A=", F=_num(fl.get("leak_w")), H="x", I=_num(fl.get("leak_l")), kind="area")
-            elif ct == "파손":
+            elif ct in ("백화", "열화"):
+                it.update(E="A=", F=_num(fl.get("ar_b")), H="x", I=_num(fl.get("ar_l")), kind="area")
+            elif ct in ("파손", "박리/박락"):
                 it.update(E="A=", F=_mm2m(fl.get("dmg_b")), H="x", I=_mm2m(fl.get("dmg_d")), kind="area")
             elif ct == "철근노출":
                 it.update(E="L=", F=_mm2m(fl.get("rebar_l")), H=None, I=None, J=None, kind="length")

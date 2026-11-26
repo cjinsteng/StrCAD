@@ -459,3 +459,28 @@ body.viewonly #stage::after { content: "👁 뷰어 — 입력 안 됨"; positio
 .sk-drag { display: inline-block; touch-action: none; cursor: grab; padding: 4px 8px 4px 2px; margin-right: 2px; color: #94a3b8; font-size: 16px; line-height: 1; vertical-align: middle; user-select: none; }
 .sk-ghost { position: fixed; z-index: 80; transform: translate(-50%, -130%); pointer-events: none; background: #fff; border: 2px solid; border-radius: 10px;
   padding: 6px 10px; font-weight: 700; color: var(--navy); box-shadow: 0 6px 18px rgba(0,0,0,.25); white-space: nowrap; }
+
+/* ===== 부재검측 목록 글씨 크기 — 여기 숫자(px)를 바꾸면 됩니다 ===== */
+#listBody.memtbl td { font-size: 16px; padding-top: 9px; padding-bottom: 9px; }
+#listBody.memtbl th { font-size: 14px; }
+/* ================================================================== */
+.chk-ok { color: #15803d; font-weight: 700; }
+.chk-no { color: #b91c1c; font-weight: 700; }
+#lt-b tr.skonly td { color: #64748b; background: #fafafa; }
+/* 균열검토: 손상종류 8 · 부재 8 버튼 */
+.lab8 { font-size: 13px; font-weight: 700; color: var(--navy); margin: 8px 0 4px; }
+.btn8 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.btn8 button { padding: 10px 2px; border-radius: 10px; border: 1.5px solid var(--line); background: #fff; color: var(--navy); font-size: 14px; font-weight: 600; word-break: keep-all; }
+.btn8 button.on { background: var(--orange); border-color: var(--orange); color: #fff; }
+.btn8 button.dim:not(.on) { opacity: .75; }
+/* 추가사항 (타이핑 · 스케치 여러 개) */
+.notes { margin: 10px 0 4px; border: 1px solid var(--line); border-radius: 10px; padding: 8px; background: #fff; }
+.notes-head { display: flex; align-items: center; gap: 6px; }
+.notes-head b { flex: 1; color: var(--navy); }
+.note { position: relative; margin-top: 6px; padding: 8px 30px 8px 10px; background: #f8fafc; border-radius: 8px; white-space: pre-wrap; font-size: 14px; }
+.note.sk { padding: 4px; background: #fff; border: 1px solid var(--line); }
+.note.sk img { display: block; width: 100%; border-radius: 6px; }
+.note .del { position: absolute; top: 4px; right: 4px; width: 24px; height: 24px; border: 0; border-radius: 12px; background: #e2e8f0; color: #334155; }
+.modal.ov2 { z-index: 35; }
+.note-pad { width: 100%; height: auto; border: 1.5px solid var(--line); border-radius: 8px; touch-action: none; background: #fff; }
+.note-tools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 6px; }

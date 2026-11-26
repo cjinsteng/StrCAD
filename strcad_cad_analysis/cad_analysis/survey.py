@@ -29,11 +29,14 @@ DEFAULT_PURPOSES = {
     "부재검측": {"color": "#d62828", "size": True, "length": True, "rebar": True, "exist": True, "fields": []},
     # 균열·손상: 종류별 번호(CR1, LK1 …) — 휴대폰 '＋ 균열 추가'에서 종류 → 크기 → 사진(crack_번호_00)
     "균열검토": {"color": "#ea580c", "crack": True, "size": False, "length": False, "rebar": False, "exist": False, "fields": [
-        ["ctype", "종류", "", ["보 미장균열", "기둥 미장균열", "벽 미장균열", "균열", "누수", "파손", "철근노출", "기타"]],
+        ["ctype", "손상종류", "", ["균열", "누수", "백화", "철근노출", "박리/박락", "열화", "이질재이격", "기타"]],
+        ["cmem", "부재", "", ["기둥", "큰보", "작은보", "슬래브", "바닥", "내력벽", "조적벽", "기타"]],
         ["crack_w", "균열폭", "mm", None],
         ["crack_l", "균열길이", "m", None],
         ["leak_w", "누수폭", "m", None], ["leak_l", "누수길이", "m", None],
-        ["dmg_b", "파손범위 B", "mm", None], ["dmg_d", "파손범위 D", "mm", None],
+        ["ar_b", "범위 가로", "m", None], ["ar_l", "범위 세로", "m", None],
+        ["dmg_b", "범위 B", "mm", None], ["dmg_d", "범위 D", "mm", None],
+        ["gap_w", "이격폭", "mm", None], ["gap_l", "이격길이", "m", None],
         ["rebar_l", "노출길이", "mm", None],
         ["shape", "균열형태", "", ["수직", "수평", "경사", "망상", "기타"]],
         ["progress", "진행성", "", ["없음", "있음", "관찰필요"]]]},
@@ -47,8 +50,10 @@ DEFAULT_PURPOSES = {
     "기타": {"color": "#64748b", "size": False, "length": False, "rebar": False, "exist": False, "fields": [
         ["item", "구분", "", ["외관", "마감", "설비", "누수흔적", "변형", "기타"]], ["desc", "내용", "", None]]},
 }
-CRACK_CODE = {"보 미장균열": "PB", "기둥 미장균열": "PC", "벽 미장균열": "PW", "균열": "CR", "누수": "LK", "파손": "DM",
-              "철근노출": "RB", "기타": "ET"}
+CRACK_CODE = {"균열": "CR", "누수": "LK", "백화": "EF", "철근노출": "RB", "박리/박락": "SP", "열화": "DT", "이질재이격": "SG",
+              "기타": "ET",
+              # 예전 종류 (v2.25 이전 기록)
+              "보 미장균열": "PB", "기둥 미장균열": "PC", "벽 미장균열": "PW", "파손": "DM"}
 
 
 def crack_size(fl):
@@ -59,7 +64,11 @@ def crack_size(fl):
         return f"{v('crack_w')}mm × {v('crack_l')}m"
     if t == "누수":
         return f"{v('leak_w')}m × {v('leak_l')}m"
-    if t == "파손":
+    if t in ("백화", "열화"):
+        return f"{v('ar_b')}m × {v('ar_l')}m"
+    if t == "이질재이격":
+        return f"{v('gap_w')}mm × {v('gap_l')}m"
+    if t in ("파손", "박리/박락"):
         return f"{v('dmg_b')} × {v('dmg_d')}mm"
     if t == "철근노출":
         return f"L={v('rebar_l')}mm"
@@ -307,7 +316,7 @@ def summary(rec, P):
     parts = []
     fl = rec.get("fields") or {}
     if p.get("crack") and fl.get("ctype"):
-        parts += [f"{fl['ctype']} {crack_size(fl)}", fl.get("shape", ""), f"진행성 {fl['progress']}" if fl.get("progress") else "",
+        parts += [f"{fl.get('cmem', '') + ' ' if fl.get('cmem') else ''}{fl['ctype']} {crack_size(fl)}", fl.get("shape", ""), f"진행성 {fl['progress']}" if fl.get("progress") else "",
                   "" if is_placed(rec) else "미배치"]
         return " · ".join(x for x in parts if x)
     if rec.get("area"):
