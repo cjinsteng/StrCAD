@@ -455,8 +455,12 @@ function inPoly(x, y, flat) {
   }
   return inside;
 }
-function locate(x, y, only) {     // sheet-relative point → {m, t, dxy, p}
+function locate(x, y, only) {     // sheet-relative point → {m, t, dxy, p, sk}
   const tol = 22 / S.view.s;
+  if (!only && window.SK && SK.memberAt) {         // 스케치로 그린 보·기둥·벽체도 부재로
+    const h = SK.memberAt(x, y);
+    if (h) return { m: null, sk: SK.memberInfo(h.sk), p: h.p };
+  }
   if (only) { const [p1, p2] = memEnds(only); let [, t] = distSeg(x, y, ...p1, ...p2); t = Math.max(0, Math.min(1, t));
     return { m: only, t, p: [p1[0] + (p2[0] - p1[0]) * t, p1[1] + (p2[1] - p1[1]) * t] }; }
   let best = null;
@@ -670,12 +674,13 @@ cv.addEventListener("pointerdown", (e) => {
   }
   if (ptrs.size === 1 && !noInput && S.mode === "point" && !S.placing && !S.areaPending && !S.polyDraft && !(window.NS && NS.calibrating)) {
     const [x, y] = s2w(e.offsetX, e.offsetY);           // 검측점: 누른 곳 = 점, 끌어서 놓은 곳 = 번호(지시선)
+    if (S.leadAct && S.leadAct.kind === "bubble") { gesture = { type: "lead", x0: e.offsetX, y0: e.offsetY, moved: true }; S.leadDraft = { a: anchor(S.leadAct.rec), b: [x, y] }; draw(); return; }
     if (S.leadAct || !bubbleHit(x, y)) { gesture = { type: "lead", x0: e.offsetX, y0: e.offsetY, moved: false }; S.leadDraft = { a: [x, y], b: null }; return; }
   }
   if (ptrs.size === 1) {
     const [x, y] = s2w(e.offsetX, e.offsetY);
     const hit = bubbleHit(x, y);
-    const g = gesture = { type: "tap", x0: e.offsetX, y0: e.offsetY, moved: false, bubble: hit && isMine(hit) && !noInput ? hit : null, view: { ...S.view }, noTap: S.penOnly && touch && !S.viewOnly };
+    const g = gesture = { type: "tap", x0: e.offsetX, y0: e.offsetY, moved: false, bubble: hit && isMine(hit) && !noInput && S.mode !== "point" ? hit : null, view: { ...S.view }, noTap: S.penOnly && touch && !S.viewOnly };
     if (hit && !noInput && S.mode === "point") g.lp = setTimeout(() => {      // 번호 길게 누르기 → 이동·복사·수정
       if (gesture !== g || g.moved) return; g.longed = true; try { navigator.vibrate && navigator.vibrate(30); } catch (er) { /* ignore */ } recActions(hit); }, 500);
   } else if (ptrs.size === 2) {
@@ -764,6 +769,12 @@ function tap(x, y) {
     const h0 = !S.polyDraft && bubbleHit(x, y); if (h0) { selectRec(h0.uid); return; }
     polyTap(x, y); return; }
   const hit = bubbleHit(x, y);
+  if (hit && !S.spanStart && S.mode === "point") {   // 번호: 한 번 = 반응 없음, 두 번(더블) = 지시선(번호 위치) 옮기기, 길게 = 이동·복사·수정
+    const now = Date.now();
+    if (S.lastBubTap && S.lastBubTap.uid === hit.uid && now - S.lastBubTap.t < 450) { S.lastBubTap = null; startBubbleMove(hit); }
+    else S.lastBubTap = { uid: hit.uid, t: now };
+    return;
+  }
   if (hit && !S.spanStart) { selectRec(hit.uid); return; }
   if (S.mode === "view") { if (!guardEdit()) return; S.sel = null; closePanel(); draw(); renderList(); return; }
   if (S.mode === "point") { if (S.sel) { S.sel = null; closePanel(); renderList(); draw(); } return; }   // 새 검측점은 끌어서 (leadFinish)
@@ -781,9 +792,16 @@ function tap(x, y) {
 }
 
 // ---- 검측점 새로 놓기: 끌어서 번호 위치 → 점/화살표 → 용도
+function startBubbleMove(r) {
+  if (!isMine(r)) { notMineToast(r); return; }
+  S.leadAct = { kind: "bubble", rec: r }; S.sel = r; buildPointOpts(); renderList(); draw();
+  hint("번호를 놓을 곳을 누르거나 끌어서 놓으세요"); try { navigator.vibrate && navigator.vibrate(20); } catch (e) { /* ignore */ }
+}
 function leadFinish(a, b) {
   const act = S.leadAct;
-  if (act) { S.leadAct = null; buildPointOpts(); (act.kind === "move" ? moveRecTo : copyRecTo)(act.rec, a, b); return; }
+  if (act) { S.leadAct = null; buildPointOpts();
+    if (act.kind === "bubble") { const rec = JSON.parse(JSON.stringify(S.recs.find((x) => x.uid === act.rec.uid) || act.rec)); applyLead(rec, { bub: b || a }); rec.updated = nowIso(); saveRec(rec); hint(""); draw(); toast(`${listNo(rec)} 번호 위치 이동`); return; }
+    (act.kind === "move" ? moveRecTo : copyRecTo)(act.rec, a, b); return; }
   if (!guardEdit()) { draw(); return; }
   S.leadPick = { a, b, mark: (() => { try { return localStorage.getItem("leadMark") || "dot"; } catch (e) { return "dot"; } })() };
   askLead();
@@ -821,7 +839,7 @@ function leadCreate(purpose) {
   }
   const L = locate(pk.a[0], pk.a[1]);
   if (P.crack) { crackAdd(Object.assign({}, L, { lead })); return; }
-  newRec(L.m, L.t ?? null, null, L.p, L.dxy, lead);
+  newRec(L.m, L.t ?? null, null, L.p, L.dxy, Object.assign(lead, { sk: L.sk }));
 }
 // ---- 번호 길게 누르기: 이동 · 복사 · 수정
 function recActions(r) {
@@ -852,6 +870,7 @@ function placeAtPoint(rec, a, b, keepBubble) {     // 점 위치(+번호 위치)
     Object.assign(rec, { member: L.m ? L.m.i : null, t0: L.t ?? null, t1: null, x: ax, y: ay });
     if (L.dxy) { rec.dx = L.dxy[0]; rec.dy = L.dxy[1]; } else { delete rec.dx; delete rec.dy; }
     if (autoName && L.m) rec.name = memberName(L.m);
+    if (L.sk) applySk(rec, L.sk); else delete rec.skm;
   }
   if (b) applyLead(rec, { bub: b }); else if (keepBubble) { rec.bx = off[0]; rec.by = off[1]; }
 }
@@ -1012,7 +1031,7 @@ function crackAdd(at) {
         el("button", { class: "val", onclick: () => cam.click() }, "📷 촬영"), el("div"), el("button", { class: "val", onclick: () => gal.click() }, "🖼 앨범")),
         el("p", { class: "small" }, `사진 이름: crack_${rec.label}_01, _02 …`), cam, gal, ph, memo);
       const save = (place) => {
-        if (at) { const [ax, ay] = A(...at.p); Object.assign(rec, { member: at.m ? at.m.i : null, t0: at.t ?? null, x: ax, y: ay, name: at.m ? memberName(at.m) : "" }); if (at.dxy) { rec.dx = at.dxy[0]; rec.dy = at.dxy[1]; } applyLead(rec, at.lead); }
+        if (at) { const [ax, ay] = A(...at.p); Object.assign(rec, { member: at.m ? at.m.i : null, t0: at.t ?? null, x: ax, y: ay, name: at.m ? memberName(at.m) : "" }); if (at.dxy) { rec.dx = at.dxy[0]; rec.dy = at.dxy[1]; } applyLead(rec, at.lead); if (at.sk) applySk(rec, at.sk); }
         saveRec(rec); close(); renderList(); draw();
         toast(`${rec.label} ${type.k} ${crackSize(rec.fields)} 저장` + (rec.photos.length ? ` · 사진 ${rec.photos.length}장` : ""));
         if (place) startPlacing(rec);
@@ -1118,6 +1137,11 @@ function showLayers() {
   });
 }
 
+function applySk(rec, info) {      // 스케치 부재 연결: 이름·크기 공유
+  if (!info) { delete rec.skm; return; }
+  rec.skm = info.uid; rec.name = info.label; rec.exist = rec.exist || "존재";
+  if ((S.purposes[rec.purpose] || {}).size) { rec.size_b = info.b; if (info.kind === "column") rec.size_h = info.h; }
+}
 function applyLead(rec, o) {      // 끌어서 정한 번호 위치(sheet-relative) · 점/화살표
   if (!o) return;
   if (o.bub) { const an = anchor(rec); rec.bx = o.bub[0] - an[0]; rec.by = o.bub[1] - an[1]; }
@@ -1134,10 +1158,11 @@ function newRec(m, t0, t1, p, dxy, lead) {
   if (window.CO) CO.stamp(rec);
   if (dxy) { rec.dx = dxy[0]; rec.dy = dxy[1]; }
   applyLead(rec, lead);
+  if (lead && lead.sk) applySk(rec, lead.sk);
   saveRec(rec);
   S.sel = rec; S.edit = JSON.parse(JSON.stringify(rec));
   openPanel(); renderForm(); renderList(); draw();
-  if (!m && S.sheet.members.length) toast("부재가 없는 위치 — 좌표만 기록합니다");
+  if (!m && !rec.skm && (S.sheet.members.length || (window.SK && SK.list.length))) toast("부재가 없는 위치 — 좌표만 기록합니다");
 }
 
 // ======================================================================= selection / panel
@@ -1192,7 +1217,8 @@ function guardEdit() {
   if (!S.edit) return true;
   const orig = S.recs.find((r) => r.uid === S.edit.uid);
   if (orig && JSON.stringify(orig) === JSON.stringify(S.edit)) { S.edit = null; return true; }
-  if (confirm(`#${S.edit.no} 편집 내용을 저장할까요?\n(취소 = 저장하지 않음)`)) saveEdit(); else S.edit = null;
+  if (confirm(`#${S.edit.no} 편집 내용을 저장할까요?\n(취소 = 저장하지 않음)`)) { saveEdit(); return !S.edit; }   // 스케치 크기 확인 창이 뜨면 대기
+  S.edit = null;
   return true;
 }
 function isMine(r) { return !window.CO || CO.mine(r); }
@@ -1205,7 +1231,64 @@ function askInspector() {
   if (v == null) return; try { localStorage.setItem("inspector", v.trim()); } catch (e) { /* private */ }
   showInspector(); toast(v.trim() ? `검토자: ${v.trim()}` : "검토자 지움");
 }
-function saveEdit() { if (!S.edit) return; if (!S.edit.inspector) S.edit.inspector = inspector(); saveRec(S.edit); syncCrackSiblings(S.edit); S.sel = S.edit; S.edit = null; toast(`#${S.sel.no} 저장`); renderForm(); renderList(); draw(); }
+function skMismatch(e) {
+  if (!e || !e.skm || !window.SK || !(S.purposes[e.purpose] || {}).size) return null;
+  const sk = SK.get(e.skm), info = SK.memberInfo(sk); if (!info) return null;
+  const bOk = !e.size_b || String(e.size_b) === info.b, hOk = info.kind !== "column" || !e.size_h || String(e.size_h) === info.h;
+  return bOk && hOk ? null : { sk, info };
+}
+function saveEdit() {
+  const mm = skMismatch(S.edit);
+  if (mm) { askSkSize(mm.sk, mm.info); return; }
+  saveEdit0();
+}
+function askSkSize(sk, info) {      // 검측 크기 ≠ 스케치 부재 크기 → 같은 이름 전체 반영 / 이 부재만(이름 변경)
+  const e = S.edit, same = SK.sameName(sk), szTxt = (b, h) => info.kind === "column" ? `${b || "?"}×${h || "?"}` : `${b || "?"}`;
+  const newSz = szTxt(e.size_b, e.size_h), oldSz = szTxt(info.b, info.h);
+  if (same.length <= 1) { SK.setMemberSize(sk.uid, e.size_b, e.size_h, {}); toast(`스케치 ${info.label} 크기 ${oldSz} → ${newSz}`); saveEdit0(); return; }
+  let step = 1;
+  sheet((b) => {
+    const close = () => $("#modal").classList.remove("show");
+    const render = () => {
+      b.innerHTML = "";
+      if (step === 1) {
+        b.append(el("h3", {}, "스케치 부재와 크기가 다릅니다"),
+          el("p", {}, `${info.label}: 스케치 ${oldSz} → 입력 ${newSz} mm`),
+          el("button", { class: "bigbtn navy", onclick: () => { close(); SK.setMemberSize(sk.uid, e.size_b, e.size_h, { all: true }); toast(`${info.label} ${same.length}개 모두 ${newSz}`); saveEdit0(); } },
+            `같은 이름 ${info.label} 전체 반영`, el("small", {}, ` (${same.length}개)`)),
+          el("button", { class: "bigbtn", onclick: () => { step = 2; render(); } }, "이 부재만 바꾸기", el("small", {}, " — 이름도 바꿔야 함")),
+          el("div", { class: "btns" }, el("span", { class: "sp" }), el("button", { class: "b gray", onclick: () => { close(); e.size_b = info.b; if (info.kind === "column") e.size_h = info.h; renderForm(); toast("스케치 크기로 되돌림"); } }, "취소 (되돌리기)")));
+        return;
+      }
+      const inp = el("input", { type: "text", class: "sk-input", value: SK.nextMemberName(info.kind) });
+      b.append(el("h3", {}, "이 부재만 — 새 이름"),
+        el("p", { class: "small" }, `같은 이름(${info.name})은 같은 크기여야 하므로, 크기를 ${newSz}로 바꾸는 이 부재는 이름을 바꿔야 합니다.`),
+        el("div", { class: "sk-numrow" }, el("span", { class: "sk-lab" }, `${info.ko} 이름`), inp),
+        el("div", { class: "btns" }, el("button", { class: "b gray", onclick: () => { step = 1; render(); } }, "‹ 뒤로"), el("span", { class: "sp" }),
+          el("button", { class: "b ok", onclick: () => {
+            const nm = inp.value.trim(); if (!nm || nm === info.name) { toast("다른 이름을 넣으세요"); return; }
+            close(); SK.setMemberSize(sk.uid, e.size_b, e.size_h, { name: nm }); e.name = `${info.ko} ${nm}`; toast(`${info.ko} ${nm} ${newSz}`); saveEdit0();
+          } }, "바꾸기")));
+      setTimeout(() => inp.focus(), 50);
+    };
+    render();
+  });
+}
+// 스케치 부재가 바뀌면 (이름·크기) 연결된 검측 기록도 같이
+window.onSkMembers = (list) => {
+  if (!S.db || !list.length) return;
+  const by = new Map(list.map((sk) => [sk.uid, SK.memberInfo(sk)]));
+  let n = 0;
+  for (const r of S.recs) {
+    const info = r.skm && by.get(r.skm); if (!info) continue;
+    const rec = JSON.parse(JSON.stringify(r)); applySk(rec, info);
+    if (JSON.stringify(rec) === JSON.stringify(r)) continue;
+    rec.updated = nowIso(); saveRec(rec); n++;
+    if (S.edit && S.edit.uid === rec.uid) { applySk(S.edit, info); renderForm(); }
+  }
+  if (n) { renderList(); draw(); }
+};
+function saveEdit0() { if (!S.edit) return; if (!S.edit.inspector) S.edit.inspector = inspector(); saveRec(S.edit); syncCrackSiblings(S.edit); S.sel = S.edit; S.edit = null; toast(`#${S.sel.no} 저장`); renderForm(); renderList(); draw(); }
 function cancelEdit() { S.edit = null; renderForm(); draw(); }
 
 function summary(r) {
@@ -1345,7 +1428,9 @@ function pick(key, opts = {}) {
   if (field) for (const [k, lab, u] of (S.purposes[e.purpose] || {}).fields || []) if (k === key) { title = lab; unit = u; }
   const cur = String((field ? (e.fields || {})[key] : e[key]) ?? "");
   const groups = [];
-  const dv = drawingValues(key, m); if (dv.length) groups.push(["도면값", dv, false]);
+  const ski = e.skm && window.SK ? SK.memberInfo(SK.get(e.skm)) : null;
+  const dv = ski ? ({ name: [ski.label, ski.name].filter(Boolean), size_b: [ski.b].filter(Boolean), size_h: [ski.h].filter(Boolean) }[key] || []) : drawingValues(key, m);
+  if (dv.length) groups.push([ski ? "스케치 부재" : "도면값", dv, false]);
   if (key === "no") {
     const used = new Set(S.recs.filter((r) => r.uid !== e.uid).map((r) => +r.no)), nx = Math.max(0, ...used) + 1;
     groups.push(["다음 번호", [String(nx)], false]);
@@ -1471,7 +1556,7 @@ function buildPointOpts() {
   const box = $("#pointOpts"); if (!box) return; box.innerHTML = "";
   if (S.mode === "sketch" || !S.db) { box.classList.add("hidden"); return; }
   if (S.leadAct) {
-    box.append(el("span", { class: "po-lab" }, `${S.leadAct.kind === "move" ? "✥ 이동" : "⧉ 복사"} ${listNo(S.leadAct.rec)} — 위치를 누르세요`),
+    box.append(el("span", { class: "po-lab" }, `${({ move: "✥ 이동", copy: "⧉ 복사", bubble: "↗ 지시선" })[S.leadAct.kind]} ${listNo(S.leadAct.rec)} — ${S.leadAct.kind === "bubble" ? "번호 놓을 곳을" : "위치를"} 누르세요`),
       el("button", { onclick: () => { S.leadAct = null; hint(""); buildPointOpts(); draw(); } }, "✕ 취소"));
   } else if (S.areaPending) {
     const sh = areaShape();

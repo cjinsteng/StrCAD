@@ -14,8 +14,8 @@ const SK = (() => {
   const KIND_NM = { beam: "보", column: "기둥", wall: "벽체", axis: "축", dim: "치수", text: "글자", free: "자유선" };
   const DEF = { tool: "member", mem: "beam", dbl: false, beamW: 400, colB: 500, colH: 500, colStep: 10, wallT: 200,
     autoName: true, ortho: true, snap: true, color: COLORS[0], memColor: "#2563eb",
-    freeMode: "free", grid: false, gridStep: 1000, gridSnap: true };
-  const st = Object.assign({ open: new Set(), openAuto: null, list: [], op: null, cur: null, pend: null, undo: [], sel: null, snapMark: null, ghost: null }, DEF);
+    freeMode: "free", grid: false, gridStep: 1000, gridSnap: true, axisMode: "h" };
+  const st = Object.assign({ open: new Set(), openSub: new Set(), selSet: null, act: null, openAuto: null, list: [], op: null, cur: null, pend: null, undo: [], sel: null, snapMark: null, ghost: null }, DEF);
   try { Object.assign(st, JSON.parse(localStorage.getItem("skOpts") || "{}")); } catch (e) { /* ignore */ }
   st.op = null;
   const saveOpts = () => { try { localStorage.setItem("skOpts", JSON.stringify(Object.fromEntries(Object.keys(DEF).map((k) => [k, st[k]])))); } catch (e) { /* ignore */ } };
@@ -58,6 +58,7 @@ const SK = (() => {
   function modify(sk, prev) {                    // prev: 고치기 전 복사본 (되돌리기용)
     sk.pts = sk.pts.map((v) => Math.round(v));
     write(sk, false); st.undo.push({ t: "mod", sk, prev }); draw(); renderList();
+    if (MEMK[sk.kind] && prev && (prev.name !== sk.name || sizeKey(prev) !== sizeKey(sk))) memberChanged([sk]);   // 검측 기록과 공유
   }
   function undo() {
     const a = st.undo.pop();
@@ -158,6 +159,7 @@ const SK = (() => {
     for (let i = st.list.length - 1; i >= 0; i--) {
       const sk = st.list[i], p = sk.pts;
       if ((kinds && !kinds.includes(sk.kind)) || !shown(sk)) continue;
+      if (sk.kind === "axis" && !kinds && st.tool !== "axis") continue;     // 축은 '축' 도구일 때만 잡힘
       if (sk.kind === "column") {
         const [x0, x1] = [Math.min(p[0], p[2]), Math.max(p[0], p[2])], [y0, y1] = [Math.min(p[1], p[3]), Math.max(p[1], p[3])];
         if (x >= x0 - lim && x <= x1 + lim && y >= y0 - lim && y <= y1 + lim) return sk;
@@ -208,17 +210,20 @@ const SK = (() => {
     const p = st.pend = { sx, sy, x, y, hit: st.op === "erase" ? hitItem(x, y) : hitItem(x, y), moved: false, mode: null };
     clearTimeout(st.lpT);
     if (st.op === "erase") return;
+    if (st.act) {                                   // 길게 눌러 고른 이동·복사: 이번 끌기로 옮김
+      const a = st.act, sk = st.list.find((o) => o.uid === a.uid); st.act = null; buildOps();
+      if (sk) { p.mode = a.kind; p.orig = clone(sk); p.ref = refPoint(sk, x, y); p.hit = sk; st.sel = sk.uid; draw(); return; }
+    }
     if (st.op === "move") { if (p.hit && !mineSk(p.hit)) { roToast(p.hit); p.hit = null; return; } if (p.hit) { p.mode = "move"; p.orig = clone(p.hit); p.ref = refPoint(p.hit, x, y); st.sel = p.hit.uid; draw(); } return; }
     if (p.hit && p.hit.kind === "axis") st.lpT = setTimeout(() => {   // 축: 꾹 누르면 바로 축 창 (간격 맞추기·평행 복사) — 눌러서는 반응 없음
       if (st.pend !== p || p.moved) return;
       st.pend = null; try { navigator.vibrate && navigator.vibrate(30); } catch (e) { /* ignore */ }
       editItem(p.hit);
     }, 450);
-    else if (p.hit && p.hit.kind !== "free") st.lpT = setTimeout(() => {
+    else if (p.hit) st.lpT = setTimeout(() => {     // 길게 누르기 → 이동 · 복사 · 수정
       if (st.pend !== p || p.moved) return;
-      p.mode = "copy"; p.orig = clone(p.hit); p.ref = refPoint(p.hit, x, y); st.sel = p.hit.uid;
-      try { navigator.vibrate && navigator.vibrate(30); } catch (e) { /* ignore */ }
-      hint(p.hit.kind === "axis" ? "끌어서 평행 복사 (간격 표시) · 그대로 떼면 수정" : "끌어서 복사 · 그대로 떼면 수정"); draw();
+      st.pend = null; try { navigator.vibrate && navigator.vibrate(30); } catch (e) { /* ignore */ }
+      st.sel = p.hit.uid; draw(); renderList(); itemActions(p.hit);
     }, 450);
   }
   function move(sx, sy) {
@@ -234,7 +239,7 @@ const SK = (() => {
     const p = st.pend; st.pend = null; clearTimeout(st.lpT);
     const fin = () => { st.cur = null; st.ghost = null; st.snapMark = null; hint(""); draw(); };
     if (!p || cancelled) { if (p && p.mode === "move") restore(p); fin(); return; }
-    if (!p.moved) { fin(); tapAt(p); return; }
+    if (!p.moved) { fin(); if (p.mode === "move" || p.mode === "copy") { hint(`${p.mode === "move" ? "이동" : "복사"}: 끌어서 놓으세요`); st.act = { kind: p.mode, uid: p.orig.uid }; buildOps(); return; } tapAt(p); return; }
     if (p.mode === "draw") finishDraw();
     else if (p.mode === "move") finishMove(p);
     else if (p.mode === "copy") finishCopy(p);
@@ -243,22 +248,44 @@ const SK = (() => {
   function cancel() { const p = st.pend; st.pend = null; clearTimeout(st.lpT); if (p && p.mode === "move") restore(p); st.cur = null; st.ghost = null; st.snapMark = null; draw(); }
   function restore(p) { const i = st.list.findIndex((o) => o.uid === p.orig.uid); if (i >= 0) st.list[i] = clone(p.orig); }
 
+  function toggleSel(hit) { st.selSet = null; st.sel = st.sel === hit.uid ? null : hit.uid; draw(); renderList(); }
   function tapAt(p) {
     let { x, y, hit } = p;
-    if (hit && hit.kind === "axis" && st.op !== "erase") hit = null;   // 축은 눌러도 반응 없음 (꾹 = 축 창)
-    if (p.mode === "copy") { editItem(hit); return; }                 // 꾹 눌렀다 뗌 → 수정
+    if (hit && hit.kind === "axis" && st.op !== "erase") hit = null;   // 축은 눌러도 반응 없음 (목록에서 선택 · 꾹 = 축 창)
     if (st.op === "erase") { if (hit) { remove(hit); toast(`${KIND_NM[hit.kind]} 삭제 — ↶ 되돌리기 가능`); } else hint("지울 스케치를 누르세요"); return; }
-    if (st.op === "move") { if (hit) editItem(hit); else hint("옮길 스케치를 끌거나, 눌러서 수정하세요 (축은 꾹 눌러 간격 입력)"); return; }
-    if (st.tool === "text") { if (hit && hit.kind === "text") editItem(hit); else askText([x, y]); return; }
+    if (hit) { toggleSel(hit); return; }                                // 한 번 = 선택, 또 한 번 = 해제 (길게 = 이동·복사·수정)
+    if (st.op === "move") { hint("옮길 스케치를 끌거나, 길게 눌러 이동·복사·수정"); return; }
+    if (st.sel || st.selSet) { st.sel = null; st.selSet = null; draw(); renderList(); }
+    if (st.tool === "text") { askText([x, y]); return; }
     if (st.tool === "member" && st.mem === "column") {
-      if (hit && hit.kind === "column") { editItem(hit); return; }
       const [cx, cy] = startPoint(x, y); st.snapMark = null;
       const sk = { kind: "column", color: colorFor("column"), b: st.colB, h: st.colH, pts: colPts(cx, cy, st.colB, st.colH) };
       applyAuto(sk); add(sk); toast(`기둥 ${sk.name ? sk.name + " " : ""}${st.colB}×${st.colH}`); return;
     }
-    if (hit) { editItem(hit); return; }
+    if (st.tool === "axis" && st.axisMode !== "free") { const [ax, ay] = startPoint(x, y); st.snapMark = null; askAxis({ kind: "axis", color: colorFor("axis"), pts: axisSpan(ax, ay) }); return; }
     hint({ dim: "길이를 잴 두 점을 끌어서 이으세요", axis: "끌어서 축선을 그리세요", free: "끌어서 그리세요" }[st.tool] || "끌어서 그리세요");
     setTimeout(() => hint(""), 1400);
+  }
+  // 가로/세로 축: 도면 전체 폭·높이로
+  function axisSpan(x, y) {
+    const e = (S.sheet && S.sheet.ext) || { w: 50000, h: 50000 }, mx = e.w * 0.03, my = e.h * 0.03;
+    return st.axisMode === "v" ? [x, -my, x, e.h + my] : [-mx, y, e.w + mx, y];
+  }
+  // ---- 길게 누르기: 이동 · 복사 · 수정 (+삭제)
+  function itemActions(sk) {
+    if (sk.kind === "axis") { editItem(sk); return; }
+    if (!mineSk(sk)) { roToast(sk); return; }
+    sheet((b) => {
+      const close = () => $("#modal").classList.remove("show");
+      const big = (ic, t, sub, fn) => el("button", { class: "act-btn", onclick: () => { close(); fn(); } }, el("b", {}, ic), el("span", {}, t), el("small", {}, sub));
+      b.append(el("h3", {}, `${KIND_NM[sk.kind]} ${sk.name || sk.text || ""} ${sizeText(sk)}`.trim()),
+        el("div", { class: "act-row" },
+          big("✥", "이동", "끌어서 옮기기", () => { st.act = { kind: "move", uid: sk.uid }; buildOps(); hint("이동: 아무 곳이나 눌러 끌어서 놓으세요 (스냅 적용)"); }),
+          big("⧉", "복사", "끌어서 하나 더", () => { st.act = { kind: "copy", uid: sk.uid }; buildOps(); hint("복사: 아무 곳이나 눌러 끌어서 놓으세요 (스냅 적용)"); }),
+          big("✎", "수정", "이름·크기·색", () => editItem(sk))),
+        el("div", { class: "btns" }, el("button", { class: "b danger", onclick: () => { close(); remove(sk); toast(`${KIND_NM[sk.kind]} 삭제 — ↶ 되돌리기 가능`); } }, "삭제"),
+          el("span", { class: "sp" }), el("button", { class: "b gray", onclick: close }, "닫기")));
+    });
   }
 
   // ---- 새로 그리기
@@ -268,9 +295,11 @@ const SK = (() => {
     const s = kind === "free" && !straight ? [p.x, p.y] : startPoint(p.x, p.y);
     st.cur = { kind, color: colorFor(kind), pts: [s[0], s[1], s[0], s[1]] };
     if (straight) st.cur.straight = true;
+    if (kind === "axis" && st.axisMode !== "free") { st.cur.pts = axisSpan(s[0], s[1]); st.cur.span = true; }
   }
   function updDraw(x, y) {
     const c = st.cur; if (!c) return;
+    if (c.span) { const q = startPoint(x, y); c.pts = axisSpan(q[0], q[1]); return; }
     if (c.kind === "free" && c.straight) { const q = endPoint(c.pts[0], c.pts[1], x, y); c.pts = [c.pts[0], c.pts[1], q[0], q[1]]; return; }
     if (c.kind === "free") { const n = c.pts.length; if (Math.hypot(x - c.pts[n - 2], y - c.pts[n - 1]) * S.view.s >= 3) c.pts.push(x, y); return; }
     if (c.kind === "column") {                     // 시작 모서리에서 끌기 — 크기는 5/10/50 단위
@@ -283,6 +312,7 @@ const SK = (() => {
   }
   function finishDraw() {
     const c = st.cur; st.cur = null; if (!c) return;
+    if (c.span) { delete c.span; askAxis(c); return; }
     const L = Math.hypot(c.pts[2] - c.pts[0], c.pts[3] - c.pts[1]);
     if (c.kind === "free" && c.straight) {        // 직선 — 자유선 2점으로 저장 (PC·DXF 그대로 호환)
       delete c.straight;
@@ -612,9 +642,22 @@ const SK = (() => {
       halo(() => { ctx.lineWidth = 7; ctx.beginPath(); segTo(a, b); ctx.stroke(); });
       ctx.lineWidth = 1.5; ctx.setLineDash([14, 4, 3, 4]);
       ctx.beginPath(); segTo(a, b); ctx.stroke(); ctx.setLineDash([]);
-      if (sk.text || live) for (const [v, sgn] of [[a, -1], [b, 1]]) {
-        const cx = v[0] + ux * R * sgn, cy = v[1] + uy * R * sgn;
-        if (cx < -40 || cy < -40 || cx > VW + 40 || cy > VH + 40) continue;
+      // 버블: 축 끝이 화면 밖이면 화면 가장자리에 (확대·축소해도 항상 보이게)
+      const M = R + 4, inR = (v) => v[0] >= M && v[1] >= M && v[0] <= VW - M && v[1] <= VH - M;
+      let t0 = -Infinity, t1 = Infinity;            // a + (b-a)·t 가 화면 안쪽 사각형에 드는 범위
+      for (const [o, d, lo, hi] of [[a[0], b[0] - a[0], M, VW - M], [a[1], b[1] - a[1], M, VH - M]]) {
+        if (Math.abs(d) < 1e-9) { if (o < lo || o > hi) { t0 = 1; t1 = 0; } continue; }
+        let ta = (lo - o) / d, tb = (hi - o) / d; if (ta > tb) [ta, tb] = [tb, ta]; t0 = Math.max(t0, ta); t1 = Math.min(t1, tb);
+      }
+      const ends = [];
+      if (t0 <= t1) {
+        const P = (t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        ends.push(inR(a) ? [a[0] - ux * R, a[1] - uy * R] : (t0 > 0 && t0 < 1 ? P(t0) : null));
+        ends.push(inR(b) ? [b[0] + ux * R, b[1] + uy * R] : (t1 > 0 && t1 < 1 ? P(t1) : null));
+      }
+      if (sk.text || live) for (const e of ends) {
+        if (!e) continue;
+        const [cx, cy] = e;
         ctx.fillStyle = "#fff"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.fill(); ctx.stroke();
         ctx.fillStyle = col; ctx.font = `bold ${(sk.text || "").length > 2 ? 10 : 12}px sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
         ctx.fillText(sk.text || "?", cx, cy + 0.5);
@@ -713,7 +756,7 @@ const SK = (() => {
     drawGrid();
     if (hidden() && S.mode !== "sketch") return;
     drawAxisGaps();
-    for (const sk of st.list) { if (!shown(sk)) continue; drawOne(sk, false, sk.uid === st.sel); if (sk.kind !== "axis" && sk.kind !== "dim") signature(sk); }
+    for (const sk of st.list) { if (!shown(sk)) continue; drawOne(sk, false, sk.uid === st.sel || !!(st.selSet && st.selSet.has(sk.uid))); if (sk.kind !== "axis" && sk.kind !== "dim") signature(sk); }
     if (st.ghost) { ctx.save(); ctx.globalAlpha = 0.6; drawOne(st.ghost, true); ctx.restore(); }
     if (st.cur) drawOne(st.cur, true);
     drawSnap();
@@ -745,17 +788,18 @@ const SK = (() => {
       hr.addEventListener("click", () => { if (open) st.open.delete(kind); else st.open.add(kind); st.rowMenu = null; renderList(); });
       tb.append(hr);
       if (!open) continue;
-      its.forEach((sk, i) => {
+      const MEM = { beam: 1, column: 1, wall: 1 };
+      const itemRow = (sk, i, sub2) => {
         const L = lenOf(sk) ? (lenOf(sk) / 1000).toFixed(2) : "";
         const nm = sk.name || sk.text || (kind === "free" ? `${sk.pts.length === 4 ? "╱" : "〰"} ${i + 1}` : kind === "dim" ? `D${i + 1}` : "-");
-        const tr = el("tr", { class: "sub" + (sk.uid === st.sel ? " sel" : "") + (shown(sk) ? "" : " hid") },
-          el("td", {}, el("b", { style: `color:${sk.color || COLORS[0]}` }, nm)), el("td", {}, KIND_NM[sk.kind]), el("td", {}, sizeText(sk)), el("td", {}, L),
+        const tr = el("tr", { class: "sub" + (sub2 ? " sub2" : "") + (sk.uid === st.sel ? " sel" : "") + (shown(sk) ? "" : " hid") },
+          el("td", {}, MEM[sk.kind] ? dragHandle(sk) : "", el("b", { style: `color:${sk.color || COLORS[0]}` }, nm)), el("td", {}, KIND_NM[sk.kind]), el("td", {}, sizeText(sk)), el("td", {}, L),
           el("td", { class: "sk-who" }, sk.inspector || ""));
         let lp = null, longed = false;
         tr.addEventListener("pointerdown", () => { longed = false; clearTimeout(lp); lp = setTimeout(() => { longed = true; rowMenu(tr, sk); }, 500); });
         for (const ev of ["pointerup", "pointerleave", "pointercancel"]) tr.addEventListener(ev, () => clearTimeout(lp));
         tr.addEventListener("contextmenu", (e) => e.preventDefault());
-        tr.addEventListener("click", () => { if (longed) return;
+        tr.addEventListener("click", () => { if (longed) return; st.selSet = null;
           if (st.sel === sk.uid) { st.sel = null; draw(); renderList(); } else { focus(sk); st.openAuto = sk.uid; renderList(); } });      // 한 번 더 누르면 선택 해제
         tb.append(tr);
         if (st.rowMenu === sk.uid) tb.append(el("tr", { class: "sk-rowmenu" }, el("td", { colspan: "5" },
@@ -763,8 +807,114 @@ const SK = (() => {
           mineSk(sk) ? el("button", { class: "b danger", onclick: () => { st.rowMenu = null; remove(sk); toast(`${KIND_NM[sk.kind]} 삭제 — ↶ 되돌리기 가능`); } }, "삭제") : "",
           el("button", { class: "b gray", onclick: () => { st.rowMenu = null; renderList(); } }, "닫기"),
           el("small", {}, sk.inspector ? `✍ ${sk.inspector}${sk.date ? " · " + sk.date : ""}` : ""))));
-      });
+      };
+      // 같은 이름 + 같은 색깔은 한 줄로 묶음 → 누르면 같은 부재 목록
+      const groups = new Map();
+      its.forEach((sk) => { const k = sk.name ? `${kind}|${sk.name}|${colKey(sk)}` : `#${sk.uid}`; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(sk); });
+      let idx = 0;
+      for (const [gk, g] of groups) {
+        if (g.length < 2) { itemRow(g[0], idx++); continue; }
+        const gopen = st.openSub.has(gk) || g.some((x) => x.uid === st.sel), f = g[0];
+        const tot2 = g.reduce((a, x) => a + lenOf(x), 0), selAll = st.selSet && g.every((x) => st.selSet.has(x.uid));
+        const gr = el("tr", { class: "sub grp2" + (gopen ? " open" : "") + (selAll ? " sel" : "") },
+          el("td", {}, MEM[kind] ? dragHandle(f) : "", el("b", { style: `color:${f.color || COLORS[0]}` }, `${gopen ? "▾" : "▸"} ${f.name}`), el("small", { class: "gcnt" }, ` ×${g.length}`)),
+          el("td", {}, KIND_NM[kind]), el("td", {}, [...new Set(g.map(sizeText))].join(", ")), el("td", {}, tot2 ? (tot2 / 1000).toFixed(2) : ""),
+          el("td", { class: "sk-who" }, [...new Set(g.map((x) => x.inspector || ""))].join(", ")));
+        gr.addEventListener("click", () => {                 // 펼치기/접기 + 도면에 같은 부재 모두 표시
+          if (st.openSub.has(gk) && selAll) { st.openSub.delete(gk); st.selSet = null; st.sel = null; }
+          else { st.openSub.add(gk); st.sel = null; st.selSet = new Set(g.map((x) => x.uid)); }
+          draw(); renderList();
+        });
+        tb.append(gr);
+        if (gopen) g.forEach((sk) => itemRow(sk, idx++, true)); else idx += g.length;
+      }
     }
+  }
+  // ---- 목록 → 도면 끌어 놓기: 놓은 곳(또는 선택한) 부재에 이름·색깔·크기 적용
+  function dragHandle(src) {
+    const h = el("span", { class: "sk-drag", title: "도면의 부재로 끌어 놓으면 이름·색깔·크기가 같아집니다" }, "⠿");
+    h.addEventListener("click", (e) => e.stopPropagation());
+    h.addEventListener("pointerdown", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      try { h.setPointerCapture(e.pointerId); } catch (er) { /* ignore */ }
+      const ghost = el("div", { class: "sk-ghost", style: `border-color:${src.color || COLORS[0]}` }, `${src.name || KIND_NM[src.kind]} · ${sizeText(src)}`);
+      document.body.append(ghost);
+      const pos = (ev) => { ghost.style.left = ev.clientX + "px"; ghost.style.top = ev.clientY + "px"; };
+      pos(e);
+      const end = (ev, ok) => {
+        h.removeEventListener("pointermove", pos); ghost.remove();
+        if (!ok) return;
+        const r = $("#cv").getBoundingClientRect();
+        if (ev.clientX < r.left || ev.clientX > r.right || ev.clientY < r.top || ev.clientY > r.bottom) { hint("도면 위 부재에 놓으세요"); setTimeout(() => hint(""), 1500); return; }
+        const [x, y] = s2w(ev.clientX - r.left, ev.clientY - r.top);
+        const tgt = hitItem(x, y, [src.kind]) || st.list.find((o) => o.uid === st.sel && o.kind === src.kind);
+        if (!tgt) { toast(`${KIND_NM[src.kind]} 위에 놓거나, 먼저 도면에서 ${KIND_NM[src.kind]}를 누른 뒤 끌어 오세요`, 2600); return; }
+        applyProps(src, tgt);
+      };
+      h.addEventListener("pointermove", pos);
+      h.addEventListener("pointerup", (ev) => end(ev, true), { once: true });
+      h.addEventListener("pointercancel", (ev) => end(ev, false), { once: true });
+    });
+    return h;
+  }
+  function applyProps(src, tgt) {
+    if (tgt.uid === src.uid) return;
+    if (!mineSk(tgt)) { roToast(tgt); return; }
+    const prev = clone(tgt);
+    Object.assign(tgt, { name: src.name, color: src.color, auto: !!src.auto });
+    if (tgt.kind === "beam") { tgt.w = src.w; tgt.dbl = !!src.dbl; }
+    if (tgt.kind === "wall") tgt.t = src.t;
+    if (tgt.kind === "column") { const c = colCenter(tgt); tgt.b = src.b; tgt.h = src.h; tgt.pts = colPts(c[0], c[1], src.b, src.h); }
+    modify(tgt, prev); st.sel = tgt.uid;
+    toast(`${KIND_NM[tgt.kind]} → ${tgt.name || ""} ${sizeText(tgt)}`);
+  }
+  // ---- 검측점 ↔ 스케치 부재 공유 (app.js: onSkMembers 로 검측 기록의 이름·크기 갱신)
+  const MEMK = { beam: "보", column: "기둥", wall: "벽체" };
+  function memberChanged(list) { if (window.onSkMembers) try { onSkMembers(list.filter((x) => MEMK[x.kind])); } catch (e) { console.error(e); } }
+  function memberInfo(sk) {
+    if (!sk || !MEMK[sk.kind]) return null;
+    const size = sk.kind === "column" ? [sk.b, sk.h] : sk.kind === "wall" ? [sk.t, ""] : [sk.w, ""];
+    return { uid: sk.uid, kind: sk.kind, ko: MEMK[sk.kind], name: sk.name || "", label: `${MEMK[sk.kind]}${sk.name ? " " + sk.name : ""}`, b: size[0] ? String(Math.round(size[0])) : "", h: size[1] ? String(Math.round(size[1])) : "" };
+  }
+  function memberAt(x, y) {                       // 검측점 위치의 스케치 부재 (보·기둥·벽체)
+    const lim = tolW(18);
+    let best = null;
+    for (let i = st.list.length - 1; i >= 0; i--) {
+      const sk = st.list[i]; if (!MEMK[sk.kind] || !shown(sk)) continue;
+      const p = sk.pts;
+      if (sk.kind === "column") {
+        const [x0, x1] = [Math.min(p[0], p[2]), Math.max(p[0], p[2])], [y0, y1] = [Math.min(p[1], p[3]), Math.max(p[1], p[3])];
+        if (x >= x0 - lim && x <= x1 + lim && y >= y0 - lim && y <= y1 + lim) return { sk, p: [x, y], d: 0 };
+        continue;
+      }
+      const half = Math.max(lim, ((sk.kind === "wall" ? sk.t : sk.w) || 200) / 2), d = distSeg2(x, y, ...p);
+      if (d < half && (!best || d < best.d)) {
+        const L2 = (p[2] - p[0]) ** 2 + (p[3] - p[1]) ** 2 || 1, t = Math.max(0, Math.min(1, ((x - p[0]) * (p[2] - p[0]) + (y - p[1]) * (p[3] - p[1])) / L2));
+        best = { sk, p: [p[0] + (p[2] - p[0]) * t, p[1] + (p[3] - p[1]) * t], d };
+      }
+    }
+    return best;
+  }
+  const sameName = (sk) => st.list.filter((o) => o.kind === sk.kind && o.name && o.name === sk.name);
+  // 검측 기록에서 크기를 바꿨을 때: all=true → 같은 이름 전체, 아니면 이 부재만 새 이름으로
+  function setMemberSize(uid, b, h, opt = {}) {
+    const sk = st.list.find((o) => o.uid === uid); if (!sk) return [];
+    const targets = opt.all ? sameName(sk) : [sk], changed = [];
+    for (const t of targets) {
+      if (!mineSk(t)) continue;
+      const prev = clone(t);
+      if (t.kind === "beam") t.w = +b || t.w;
+      if (t.kind === "wall") t.t = +b || t.t;
+      if (t.kind === "column") { const c = colCenter(t); t.b = +b || t.b; t.h = +h || t.h; t.pts = colPts(c[0], c[1], t.b, t.h); }
+      if (!opt.all && opt.name) { t.name = opt.name; t.auto = false; }
+      modify(t, prev); changed.push(t);
+    }
+    return changed;
+  }
+  function nextMemberName(kind) {
+    const pre = PREFIX[kind] || ""; const re = new RegExp("^" + pre + "(\\d+)$");
+    const used = st.list.filter((o) => o.kind === kind).map((o) => (re.exec(o.name || "") || [])[1]).filter(Boolean).map(Number);
+    return pre + (Math.max(0, ...used) + 1);
   }
   function rowMenu(tr, sk) {                     // 목록을 길게 누르면 수정·삭제 버튼
     try { navigator.vibrate && navigator.vibrate(25); } catch (e) { /* ignore */ }
@@ -781,11 +931,11 @@ const SK = (() => {
 
   // ------------------------------------------------------------------ toolbar
   function hintFor() {
-    if (st.op === "move") return "끌어서 옮기기 · 누르면 수정";
+    if (st.op === "move") return "끌어서 옮기기 · 길게 누르면 이동·복사·수정";
     if (st.op === "erase") return "지울 스케치를 누르세요";
     return { member: { beam: `끌어서 보 그리기 (${st.dbl ? "복선" : "단선"} B${st.beamW})`, column: `누르면 ${st.colB}×${st.colH} 기둥 · 끌면 ${st.colStep}단위 크기`,
       wall: `끌어서 벽 그리기 (두께 ${st.wallT})` }[st.mem],
-      axis: "끌어서 축선 → 이름 · 꾹 눌러 끌면 평행 복사(간격 표시)", free: st.freeMode === "line" ? "끌어서 직선 그리기 (직교·스냅 적용)" : "자유롭게 그리기", dim: "끌어서 거리 재기 · 치수를 누르면 수정/축척 맞추기",
+      axis: st.axisMode === "free" ? "끌어서 축선 → 이름 · 꾹 누르면 간격·평행 복사" : `누르면 도면 전체 ${st.axisMode === "v" ? "세로" : "가로"} 축 → 이름 · 꾹 누르면 간격·평행 복사`, free: st.freeMode === "line" ? "끌어서 직선 그리기 (직교·스냅 적용)" : "자유롭게 그리기", dim: "끌어서 거리 재기 · 치수를 누르면 수정/축척 맞추기",
       text: "글자 넣을 곳을 누르세요" }[st.tool];
   }
   function chip(text, on, fn, cls = "") { return el("button", { class: (on ? "on " : "") + cls, onclick: fn }, text); }
@@ -801,8 +951,13 @@ const SK = (() => {
   }
   function buildSub() {
     const box = $("#skSub"); if (!box) return; box.innerHTML = "";
-    box.classList.toggle("hidden", st.tool !== "member" && st.tool !== "free");
+    box.classList.toggle("hidden", st.tool !== "member" && st.tool !== "free" && st.tool !== "axis");
     const set = (k, v) => { st[k] = v; saveOpts(); buildSub(); hint(hintFor()); setTimeout(() => hint(""), 1600); };
+    if (st.tool === "axis") {
+      box.append(chip("━ 가로", st.axisMode === "h", () => set("axisMode", "h")), chip("┃ 세로", st.axisMode === "v", () => set("axisMode", "v")),
+        chip("╱ 자유", st.axisMode === "free", () => set("axisMode", "free")));
+      return;
+    }
     if (st.tool === "free") {
       box.append(chip("〰 자유선", st.freeMode !== "line", () => set("freeMode", "free")), chip("╱ 직선", st.freeMode === "line", () => set("freeMode", "line")));
       return;
@@ -819,6 +974,7 @@ const SK = (() => {
   }
   function buildOps() {
     const box = $("#skOps"); if (!box) return; box.innerHTML = "";
+    if (st.act) box.append(el("button", { class: "on", onclick: () => { st.act = null; hint(""); buildOps(); } }, `✕ ${st.act.kind === "move" ? "이동" : "복사"} 취소`));
     box.append(el("button", { onclick: pickColor }, el("i", { class: "sk-dot", style: `background:${st[curColorKey()]}` }), "색깔"),
       chip("✥ 이동", st.op === "move", () => { st.op = st.op === "move" ? null : "move"; buildOps(); hint(hintFor()); setTimeout(() => hint(""), 1600); }),
       chip("⌫ 지우기", st.op === "erase", () => { st.op = st.op === "erase" ? null : "erase"; buildOps(); hint(hintFor()); setTimeout(() => hint(""), 1600); }),
@@ -903,11 +1059,11 @@ const SK = (() => {
   function toggleHidden() { const h = !hidden(); setHidden(h); toast(h ? "스케치 숨김" : "스케치 표시"); return h; }
   function mode(on) {
     $("#sketchBar").classList.toggle("hidden", !on);
-    if (on) { hint("한 손가락: 그리기 · 두 손가락: 이동/확대 · 꾹 눌러 끌면 복사"); setTimeout(() => hint(""), 2400); }
+    if (on) { hint("끌어서 그리기 · 누르면 선택 · 길게 누르면 이동·복사·수정"); setTimeout(() => hint(""), 2400); }
     st.cur = null; st.pend = null; if (!on) st.sel = null;
   }
 
-  return { settings, shown, setLayer, layerStats, showAllLayers, load, draw: drawAll, axisGaps, toggleHidden, setHidden, hidden, down, move, up, cancel, mode, undo, renderList, dimAt, calibrateWith, snapPoint,
+  return { selected: () => st.sel, memberAt, memberInfo, sameName, setMemberSize, nextMemberName, get: (u) => st.list.find((o) => o.uid === u), settings, shown, setLayer, layerStats, showAllLayers, load, draw: drawAll, axisGaps, toggleHidden, setHidden, hidden, down, move, up, cancel, mode, undo, renderList, dimAt, calibrateWith, snapPoint,
     get list() { return st.list; }, get busy() { return !!(st.pend || st.cur); }, COLORS };
 })();
 window.SK = SK;

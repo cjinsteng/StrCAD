@@ -450,3 +450,12 @@ body.viewonly #stage::after { content: "👁 뷰어 — 입력 안 됨"; positio
 #btnNewSurvey.open { border-bottom-left-radius: 4px; border-bottom-right-radius: 4px; }
 .bigbtn.resume.dim { opacity: .55; }
 .bigbtn small { font-weight: 400; opacity: .8; }
+
+/* 스케치 목록: 같은 이름 묶음 · 끌어 놓기 손잡이 */
+#lt-b tr.grp2 td { background: #f8fafc; }
+#lt-b tr.grp2.open td { background: #eef2ff; }
+#lt-b tr.sub2 td:first-child { padding-left: 30px; }
+#lt-b .gcnt { color: var(--muted); font-weight: 400; }
+.sk-drag { display: inline-block; touch-action: none; cursor: grab; padding: 4px 8px 4px 2px; margin-right: 2px; color: #94a3b8; font-size: 16px; line-height: 1; vertical-align: middle; user-select: none; }
+.sk-ghost { position: fixed; z-index: 80; transform: translate(-50%, -130%); pointer-events: none; background: #fff; border: 2px solid; border-radius: 10px;
+  padding: 6px 10px; font-weight: 700; color: var(--navy); box-shadow: 0 6px 18px rgba(0,0,0,.25); white-space: nowrap; }
