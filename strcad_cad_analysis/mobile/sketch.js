@@ -729,7 +729,10 @@ const SK = (() => {
         const [A0, B0] = s0 <= s1 ? [[p[0], p[1]], [p[2], p[3]]] : [[p[2], p[3]], [p[0], p[1]]];
         return { a, off: p[0] * nx + p[1] * ny, A: scr(...A0), B: scr(...B0) };
       }).sort((r1, r2) => r1.off - r2.off);
-      const su = (() => { const r0 = rows[0], L = Math.hypot(r0.B[0] - r0.A[0], r0.B[1] - r0.A[1]) || 1; return [(r0.B[0] - r0.A[0]) / L, (r0.B[1] - r0.A[1]) / L]; })();
+      let su = (() => { const r0 = rows[0], L = Math.hypot(r0.B[0] - r0.A[0], r0.B[1] - r0.A[1]) || 1; return [(r0.B[0] - r0.A[0]) / L, (r0.B[1] - r0.A[1]) / L]; })();
+      if (Math.abs(su[1]) > Math.abs(su[0]) && su[1] < 0) {        // 세로 축: 치수는 아래쪽 버블 옆 (위는 버튼에 가려짐)
+        for (const r of rows) [r.A, r.B] = [r.B, r.A]; su = [-su[0], -su[1]];
+      }
       // 각 축의 화면 안쪽 끝(버블 자리)까지의 su 방향 거리 → 가장 안쪽 끝에서 버블 하나만큼 안으로
       let edge = Infinity;
       for (const r of rows) {
@@ -916,7 +919,8 @@ const SK = (() => {
   function memberInfo(sk) {
     if (!sk || !MEMK[sk.kind]) return null;
     const size = sk.kind === "column" ? [sk.b, sk.h] : sk.kind === "wall" ? [sk.t, ""] : [sk.w, ""];
-    return { uid: sk.uid, kind: sk.kind, ko: MEMK[sk.kind], name: sk.name || "", label: `${MEMK[sk.kind]}${sk.name ? " " + sk.name : ""}`, b: size[0] ? String(Math.round(size[0])) : "", h: size[1] ? String(Math.round(size[1])) : "" };
+    const ko = sk.kind === "beam" ? (/^B/i.test(sk.name || "") ? "작은보" : "큰보") : sk.kind === "wall" ? "내력벽" : "기둥";     // 부재 종류 목록과 같게
+    return { uid: sk.uid, kind: sk.kind, ko, name: sk.name || "", label: `${ko}${sk.name ? " " + sk.name : ""}`, b: size[0] ? String(Math.round(size[0])) : "", h: size[1] ? String(Math.round(size[1])) : "" };
   }
   function memberAt(x, y) {                       // 검측점 위치의 스케치 부재 (보·기둥·벽체)
     const lim = tolW(18);
@@ -1100,14 +1104,15 @@ const SK = (() => {
   function setHidden(h) { try { localStorage.setItem("skHide", h ? "1" : "0"); } catch (e) { /* ignore */ } draw(); }
   function toggleHidden() { const h = !hidden(); setHidden(h); toast(h ? "스케치 숨김" : "스케치 표시"); return h; }
   function mode(on) {
-    $("#sketchBar").classList.toggle("hidden", !on);
+    $("#sketchBar").classList.toggle("hidden", !on); $("#skOps").classList.toggle("hidden", !on);
     if (on) { hint("끌어서 그리기 · 누르면 선택 · 길게 누르면 이동·복사·수정"); setTimeout(() => hint(""), 2400); }
     st.cur = null; st.pend = null; if (!on) st.sel = null;
   }
 
   function centerOf(sk) { const p = sk.pts; return sk.kind === "column" ? colCenter(sk) : [(p[0] + p[2]) / 2, (p[1] + p[3]) / 2]; }
   function focusUid(u) { const sk = st.list.find((o) => o.uid === u); if (sk) { focus(sk); window.renderList(); } }
-  return { centerOf, focusUid, selected: () => st.sel, memberAt, memberInfo, sameName, setMemberSize, nextMemberName, get: (u) => st.list.find((o) => o.uid === u), settings, shown, setLayer, layerStats, showAllLayers, load, draw: drawAll, axisGaps, toggleHidden, setHidden, hidden, down, move, up, cancel, mode, undo, renderList, dimAt, calibrateWith, snapPoint,
+  function clearSel() { if (st.sel || st.selSet) { st.sel = null; st.selSet = null; draw(); } }
+  return { clearSel, centerOf, focusUid, selected: () => st.sel, memberAt, memberInfo, sameName, setMemberSize, nextMemberName, get: (u) => st.list.find((o) => o.uid === u), settings, shown, setLayer, layerStats, showAllLayers, load, draw: drawAll, axisGaps, toggleHidden, setHidden, hidden, down, move, up, cancel, mode, undo, renderList, dimAt, calibrateWith, snapPoint,
     get list() { return st.list; }, get busy() { return !!(st.pend || st.cur); }, COLORS };
 })();
 window.SK = SK;

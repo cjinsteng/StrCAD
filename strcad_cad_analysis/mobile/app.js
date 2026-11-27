@@ -36,7 +36,19 @@ const CRACK_LEGACY = [              // 예전 기록 표시용 (버튼에는 없
   { k: "보 미장균열", code: "PB", f: ["crack_w", "crack_l"] }, { k: "기둥 미장균열", code: "PC", f: ["crack_w", "crack_l"] },
   { k: "벽 미장균열", code: "PW", f: ["crack_w", "crack_l"] }, { k: "파손", code: "DM", f: ["dmg_b", "dmg_d"] }];
 const CRACK_BY = Object.fromEntries([...CRACK_TYPES, ...CRACK_LEGACY].map((t) => [t.k, t]));
-const CRACK_MEMBERS = ["기둥", "큰보", "작은보", "슬래브", "바닥", "내력벽", "조적벽", "기타"];
+const CRACK_MEMBERS = ["기둥", "큰보", "작은보", "슬래브", "바닥", "내력벽", "조적벽", "직접입력"];
+function memGrid(cur, can, set) {   // 부재 8 버튼 — '직접입력'은 이름을 적어서 (적은 이름이 버튼에 보임)
+  const custom = cur && !CRACK_MEMBERS.includes(cur) ? cur : "";
+  return el("div", { class: "btn8" }, CRACK_MEMBERS.map((t) => {
+    const isC = t === "직접입력", on = isC ? !!custom : cur === t;
+    return el("button", { class: (on ? "on" : "") + (can ? "" : " dim"), onclick: () => {
+      if (!isC) { set(cur === t ? "" : t); return; }
+      overlay((b, close) => { const inp = el("input", { type: "text", class: "sk-input", value: custom, placeholder: "부재 명칭 (예: 캔틸레버보, 옹벽)" });
+        b.append(el("h3", {}, "부재 — 직접입력"), inp, el("div", { class: "btns" }, el("span", { class: "sp" }), el("button", { class: "b gray", onclick: close }, "취소"),
+          el("button", { class: "b ok", onclick: () => { close(); set(inp.value.trim()); } }, "확인"))); setTimeout(() => inp.focus(), 50); });
+    } }, isC && custom ? custom : t);
+  }));
+}
 const CRACK_CHIPS = { crack_w: [0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 1.0, 2.0], crack_l: [0.2, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0],
   leak_w: [0.1, 0.2, 0.3, 0.5, 1.0], leak_l: [0.3, 0.5, 1.0, 2.0, 3.0], dmg_b: [50, 100, 150, 200, 300, 500], dmg_d: [20, 30, 50, 100, 150],
   ar_b: [0.3, 0.5, 1.0, 2.0, 3.0], ar_l: [0.3, 0.5, 1.0, 2.0, 3.0], gap_w: [1, 2, 3, 5, 10], gap_l: [0.5, 1.0, 2.0, 3.0, 5.0],
@@ -741,6 +753,7 @@ function endPtr(e) {
   if (gesture.type === "sketch") { gesture = null; SK.up(e.offsetX, e.offsetY, e.type === "pointercancel"); return; }
   if (gesture.type === "bubdrag") {
     const g = gesture; gesture = null; const d = S.leadDraft; S.leadDraft = null;
+    if (!g.moved && e.type !== "pointercancel") { if (window.SK) SK.clearSel(); showRec(g.rec.uid, true); return; }      // 두 번 누르기 = 선택 (도면을 가리지 않게 표시만, 수정은 길게)
     if (g.moved && d && e.type !== "pointercancel") {
       const rec = JSON.parse(JSON.stringify(S.recs.find((x) => x.uid === g.rec.uid) || g.rec));
       applyLead(rec, { bub: d.b }); rec.updated = nowIso(); saveRec(rec);
@@ -797,8 +810,9 @@ function tap(x, y) {
     const h0 = !S.polyDraft && bubbleHit(x, y); if (h0) { selectRec(h0.uid); return; }
     polyTap(x, y); return; }
   const hit = bubbleHit(x, y);
-  if (hit && !S.spanStart && S.mode === "point") {   // 번호: 한 번 = 반응 없음, 두 번(더블) = 지시선(번호 위치) 옮기기, 길게 = 이동·복사·수정
+  if (hit && !S.spanStart && S.mode === "point") {   // 번호: 한 번 = 반응 없음(선택돼 있으면 해제), 두 번 = 선택, 두 번째에 끌기 = 지시선 이동, 길게 = 이동·복사·수정
     const now = Date.now();
+    if (S.sel && S.sel.uid === hit.uid) { if (S.edit && !guardEdit()) return; S.sel = null; closePanel(); renderList(); draw(); S.lastBubTap = null; return; }
     S.lastBubTap = { uid: hit.uid, t: now };      // 다음 터치를 끌면 지시선 이동 (pointerdown 'bubdrag')
     return;
   }
@@ -1029,23 +1043,35 @@ function crackAdd(at) {
     purpose, member: null, t0: null, t1: null, x: null, y: null, bx: 26 / S.view.s, by: 30 / S.view.s,
     name: "", size_b: "", size_h: "", length: "", rebar: {}, exist: "", fields: {}, photos: [], memo: "", date: today(), mobile: true, inspector: inspector() };
   if (window.CO) CO.stamp(rec);
-  let type = null;
+  let type = null, typePick = null;
   const close = () => $("#modal").classList.remove("show");
   const drop = () => { for (const id of rec.photos) { run("DELETE FROM photos WHERE uid=?", [id]); run("DELETE FROM orig WHERE uid=?", [id]); } };
   sheet((b) => {
     const render = () => {
       b.innerHTML = "";
+      if (!type && typePick) {                     // 종류를 고르면: 새로 만들기 + 그 종류의 기존 번호 목록
+        const t = typePick;
+        const ex = [...new Map(S.recs.filter((r) => r.label && isMine(r) && (S.purposes[r.purpose] || {}).crack && (r.fields || {}).ctype === t.k).map((r) => [r.label, r])).values()]
+          .sort((a, c) => a.label.localeCompare(c.label, "ko", { numeric: true }));
+        b.append(el("h3", {}, `${t.k}`),
+          el("button", { class: "bigbtn navy", onclick: () => { type = t; rec.fields.ctype = t.k; rec.label = t.code + crackNextNo(t.code); render(); } }, `＋ 새로 만들기`, el("small", {}, ` ${t.code}${crackNextNo(t.code)}`)));
+        if (at && ex.length) b.append(el("div", { class: "grp" }, `기존 ${t.k} — 여기에 같은 번호 하나 더`), el("div", { class: "crack-exist-list" }, ex.map((r) => el("button", { class: "opt", onclick: () => {
+          close(); S.placing = r.uid; S.placingRec = r; S.placingAdd = isPlaced(r); placeRec(at.p[0], at.p[1], at.lead); } },
+          el("b", {}, r.label), el("span", {}, `${[r.fields.cmem, crackSize(r.fields)].filter(Boolean).join(" ")}`), el("small", {}, `${crackCount(r.label, r.owner)}곳`)))));
+        else if (at) b.append(el("p", { class: "small" }, `아직 ${t.k} 기록이 없습니다.`));
+        b.append(el("div", { class: "btns" }, el("button", { class: "b gray", onclick: () => { typePick = null; render(); } }, "‹ 종류"), el("span", { class: "sp" }), el("button", { class: "b gray", onclick: close }, "취소")));
+        return;
+      }
       if (!type) {
-        const mineLabels = [...new Map(S.recs.filter((r) => r.label && isMine(r) && (S.purposes[r.purpose] || {}).crack).map((r) => [r.label, r])).values()];
-        if (at && mineLabels.length) b.append(el("h3", {}, "기존 번호를 여기에 하나 더"), el("div", { class: "sk-chips crack-exist" }, mineLabels.map((r) => el("button", { onclick: () => {
-          close(); S.placing = r.uid; S.placingRec = r; S.placingAdd = isPlaced(r); placeRec(at.p[0], at.p[1], at.lead); } }, `${r.label} ${r.fields.ctype || ""} · ${crackCount(r.label, r.owner)}곳`))));
-        b.append(el("h3", {}, mineLabels.length && at ? "새 번호 만들기" : "균열·손상 종류"), el("div", { class: "grid crack-types" }, CRACK_TYPES.map((t) => el("button", { class: "opt",
-          onclick: () => { type = t; rec.fields.ctype = t.k; rec.label = t.code + crackNextNo(t.code); render(); } }, el("b", {}, t.k), el("small", {}, t.code + crackNextNo(t.code))))),
+        b.append(el("h3", {}, "균열·손상 종류"), el("div", { class: "grid crack-types" }, CRACK_TYPES.map((t) => {
+          const n = new Set(S.recs.filter((r) => r.label && isMine(r) && (r.fields || {}).ctype === t.k).map((r) => r.label)).size;
+          return el("button", { class: "opt", onclick: () => { typePick = t; render(); } }, el("b", {}, t.k), el("small", {}, n ? `기존 ${n}개` : t.code));
+        })),
           el("div", { class: "btns" }, el("span", { class: "sp" }), el("button", { class: "b gray", onclick: close }, "취소")));
         return;
       }
       b.append(el("h3", {}, `${rec.label} · ${type.k}`), el("div", { class: "lab8" }, "부재"),
-        el("div", { class: "btn8" }, CRACK_MEMBERS.map((t) => el("button", { class: rec.fields.cmem === t ? "on" : "", onclick: () => { rec.fields.cmem = rec.fields.cmem === t ? "" : t; render(); } }, t))));
+        memGrid(rec.fields.cmem, true, (v) => { rec.fields.cmem = v; render(); }));
       for (const k of type.f) {
         const def = DEFAULT_PURPOSES["균열검토"].fields.find((f) => f[0] === k) || [k, k, ""];
         const inp = el("input", { type: "number", class: "sk-num", inputmode: "decimal", step: "any", value: rec.fields[k] ?? "" });
@@ -1278,7 +1304,26 @@ function skMismatch(e) {
 function saveEdit() {
   const mm = skMismatch(S.edit);
   if (mm) { askSkSize(mm.sk, mm.info); return; }
+  if (crackSplitAsk()) return;
   saveEdit0();
+}
+// 같은 번호(복사·위치 추가)인 균열의 내용을 바꾸면: 같은 번호 전체 변경 / 이 위치만 새 번호
+function crackSplitAsk() {
+  const e = S.edit; if (!e || !(S.purposes[e.purpose] || {}).crack || !e.label || e._splitOk) { if (e) delete e._splitOk; return false; }
+  const orig = S.recs.find((r) => r.uid === e.uid); if (!orig) return false;
+  const sibs = S.recs.filter((r) => r.uid !== e.uid && r.label === e.label && (r.owner || "") === (e.owner || "") && (S.purposes[r.purpose] || {}).crack);
+  const pick = (f) => JSON.stringify(Object.fromEntries(Object.entries(f || {}).filter(([k, v]) => k !== "trace" && v !== "" && v != null).sort()));
+  if (!sibs.length || pick(orig.fields) === pick(e.fields)) return false;
+  const t = CRACK_BY[(e.fields || {}).ctype] || CRACK_BY[(orig.fields || {}).ctype], code = t ? t.code : (e.label.match(/^[A-Z]+/) || ["CR"])[0];
+  const nl = code + crackNextNo(code);
+  sheet((b) => {
+    const close = () => $("#modal").classList.remove("show");
+    b.append(el("h3", {}, `${e.label} 내용이 바뀌었습니다`), el("p", { class: "small" }, `${e.label}은(는) ${sibs.length + 1}곳에 같은 번호로 표시되어 있습니다. 같은 번호는 같은 내용이어야 합니다.`),
+      el("button", { class: "bigbtn navy", onclick: () => { close(); e._splitOk = true; saveEdit0(); toast(`${e.label} ${sibs.length + 1}곳 모두 변경`); } }, `같은 번호 전체 내용 변경`, el("small", {}, ` (${sibs.length + 1}곳)`)),
+      el("button", { class: "bigbtn", onclick: () => { close(); e.label = nl; e._splitOk = true; saveEdit0(); toast(`이 위치만 ${nl}(으)로 번호 변경`); } }, `이 위치만 — 번호 변경`, el("small", {}, ` → ${nl}`)),
+      el("div", { class: "btns" }, el("span", { class: "sp" }), el("button", { class: "b gray", onclick: close }, "취소")));
+  });
+  return true;
 }
 function askSkSize(sk, info) {      // 검측 크기 ≠ 스케치 부재 크기 → 같은 이름 전체 반영 / 이 부재만(이름 변경)
   const e = S.edit, same = SK.sameName(sk), szTxt = (b, h) => info.kind === "column" ? `${b || "?"}×${h || "?"}` : `${b || "?"}`;
@@ -1326,9 +1371,26 @@ window.onSkMembers = (list) => {
   }
   if (n) { renderList(); draw(); }
 };
-function saveEdit0() { if (!S.edit) return; if (!S.edit.inspector) S.edit.inspector = inspector(); saveRec(S.edit); syncCrackSiblings(S.edit); S.sel = S.edit; S.edit = null; toast(`#${S.sel.no} 저장`); renderForm(); renderList(); draw(); }
+function saveEdit0() { if (!S.edit) return; delete S.edit._splitOk; if (!S.edit.inspector) S.edit.inspector = inspector(); saveRec(S.edit); syncCrackSiblings(S.edit); S.sel = S.edit; S.edit = null; toast(`#${S.sel.no} 저장`); renderForm(); renderList(); draw(); }
 function cancelEdit() { S.edit = null; renderForm(); draw(); }
 
+function shortSum(r) {              // 목록 '내용': 짧게 (균열 0.3×1) — 줄을 누르면 전체 입력 내용
+  const p = S.purposes[r.purpose] || {}, fl = r.fields || {};
+  const n = (v) => String(v).replace(/\.0+$/, "");
+  if (p.crack && fl.ctype) {
+    const t = CRACK_BY[fl.ctype], f = t ? t.f : [];
+    const sz = f.length ? f.map((k) => fl[k]).filter((v) => v !== undefined && v !== "").map(n).join("×") : "";
+    return `${fl.ctype}${sz ? " " + sz : ""}`;
+  }
+  if (p.size) return r.size_b || r.size_h ? `${r.size_b || "?"}×${r.size_h || "?"}` : "";
+  if (p.area) { const A = areaOf(r); return A ? `${A.toFixed(1)}m²` : ""; }
+  const t = summary(r) || r.memo || ""; return t.length > 14 ? t.slice(0, 14) + "…" : t;
+}
+function detailRow(r, ncol) {       // 선택한 줄 아래: 입력 내용 전체
+  const parts = [summary(r), r.memo].filter(Boolean), nn = notesOf(r).filter((x) => x.t === "sketch").length;
+  return el("tr", { class: "detail-row" }, el("td", { colspan: String(ncol) },
+    el("div", {}, parts.join(" · ") || "(입력 내용 없음)"), el("small", {}, [r.name, r.inspector, r.date, (r.photos || []).length ? `사진 ${r.photos.length}` : "", nn ? `스케치 ${nn}` : ""].filter(Boolean).join(" · "))));
+}
 function summary(r) {
   const p = S.purposes[r.purpose] || {}; const parts = [];
   if (p.crack && (r.fields || {}).ctype) {
@@ -1380,8 +1442,9 @@ function renderForm() {
   else row("번호", vbtn("no"));
   if (P.crack) {                                   // 균열검토: 손상종류 8 · 부재 8 버튼
     const fl = rec.fields || {};
-    const grid8 = (key, items) => el("div", { class: "btn8" }, items.map((t) => el("button", { class: (fl[key] === t ? "on" : "") + (editing ? "" : " dim"),
-      onclick: () => { if (!beginEdit()) return; const e = S.edit; e.fields = e.fields || {}; e.fields[key] = e.fields[key] === t && key === "cmem" ? "" : t;
+    const grid8 = (key, items) => key === "cmem" ? memGrid(fl.cmem, editing, (v) => { if (!beginEdit()) return; S.edit.fields = S.edit.fields || {}; S.edit.fields.cmem = v; renderForm(); })
+      : el("div", { class: "btn8" }, items.map((t) => el("button", { class: (fl[key] === t ? "on" : "") + (editing ? "" : " dim"),
+      onclick: () => { if (!beginEdit()) return; const e = S.edit; e.fields = e.fields || {}; e.fields[key] = t;
         if (key === "ctype" && !e.label) e.label = CRACK_BY[t].code + crackNextNo(CRACK_BY[t].code); renderForm(); draw(); } }, t)));
     f.append(el("div", { class: "lab8" }, "손상종류" + (fl.ctype && !CRACK_TYPES.some((t) => t.k === fl.ctype) ? ` (예전: ${fl.ctype})` : "")), grid8("ctype", CRACK_TYPES.map((t) => t.k)),
       el("div", { class: "lab8" }, "부재"), grid8("cmem", CRACK_MEMBERS));
@@ -1444,11 +1507,11 @@ function traceRow(v, can, set) {
   return el("div", { class: "row two trace" }, el("div", { class: "lab" }, "흔적"),
     ...["있음", "없음"].flatMap((t, i) => [i ? el("div") : null, el("button", { class: "val" + (v === t ? " on" : "") + (can ? "" : " dim"), onclick: () => set(t) }, t)]).filter(Boolean));
 }
-const MEMBER_KINDS = ["기둥", "거더", "보", "작은보", "벽체", "슬래브", "기초", "계단", "기타"];
+const MEMBER_KINDS = CRACK_MEMBERS;      // 부재검측 부재 종류도 균열검토와 같게 (직접입력 = 이름 적기)
 function nameParts(r) {             // 부재명 → [종류, 이름]  (보 G1 → 보 / G1)
   if (r.mkind != null || r.mname != null) return [r.mkind || "", r.mname || ""];
   const n = String(r.name || "").trim(); if (!n) return ["", ""];
-  const kinds = [...MEMBER_KINDS, ...Object.values(KIND_KO)].sort((a, b) => b.length - a.length);
+  const kinds = [...MEMBER_KINDS.filter((x) => x !== "직접입력"), ...Object.values(KIND_KO), "보", "벽체", "기초", "계단", "기타"].sort((a, b) => b.length - a.length);
   const k = kinds.find((x) => n === x || n.startsWith(x + " "));
   return k ? [k, n.slice(k.length).trim()] : ["", n];
 }
@@ -1592,7 +1655,7 @@ function pick(key, opts = {}) {
         const g = el("div", { class: "grid" });
         for (const v of vals) {
           if (manage && mine) g.append(el("button", { class: "opt rm", onclick: () => { vals.splice(vals.indexOf(v), 1); S.picklists[pkey] = vals.slice(); saveMeta("picklists", JSON.stringify(S.picklists)); render(); } }, "✕ " + v));
-          else g.append(el("button", { class: "opt" + (v === cur ? " on" : ""), onclick: () => done(v) }, v));
+          else g.append(el("button", { class: "opt" + (v === cur ? " on" : ""), onclick: () => { if (v === "직접입력") { const i = b.querySelector("input"); i.value = ""; i.placeholder = "명칭을 적고 확인"; i.focus(); return; } done(v); } }, v));
         }
         b.append(g);
       }
@@ -1658,7 +1721,7 @@ function memberKind(e, m) {        // 철근 입력 모양: 기둥 c · 벽 w ·
   const sk = e.skm && window.SK ? SK.get(e.skm) : null;
   if (sk) return sk.kind === "column" ? "c" : sk.kind === "wall" ? "w" : "b";
   const k = nameParts(e)[0];
-  return k === "기둥" ? "c" : k === "벽체" ? "w" : "b";
+  return k === "기둥" ? "c" : /벽/.test(k) ? "w" : "b";
 }
 function layoutPick(title, cur, _mode, cb) {     // 기둥 주근 배치 (예: 4×4, 3×5)
   overlay((b, close) => {
@@ -1750,7 +1813,7 @@ function listColumns() {
   if (P && P.size) return [["no", "번호"], ["name", "부재명"], ["memc", "내용"], ["chk", "검측"]];   // 부재검측: 번호·부재명·내용·검측 유무
   if (!$("#list").classList.contains("dock-bottom")) return [["label", "번호"], ["name", "부재명"], ["summary", "내용"]];
   if (!P) return [["no", "번호"], ["purpose", "용도"], ["name", "부재명"], ["summary", "내용"], ["inspector", "검토자"], ["ph", "사진"]];
-  if (P.crack) return [["label", "번호"], ["ctm", "부재·종류"], ["csize", "크기"], ["count", "개수"], ["f:shape", "형태"], ["inspector", "검토자"], ["ph", "사진"], ["add", ""]];
+  if (P.crack) return [["label", "번호"], ["f:cmem", "부재"], ["summary", "내용"], ["count", "개수"], ["inspector", "검토자"], ["ph", "사진"], ["add", ""]];
   const c = [["no", "번호"], ["name", P.area ? "구역" : "부재명"]];
   if (P.area) c.push(["areaM2", "면적(m²)"]);
   if (P.size) c.push(["size", "치수"]); if (P.length) c.push(["length", "길이(m)"]); if (P.rebar) c.push(["rebar", "철근"]); if (P.exist) c.push(["exist", "부재유무"]);
@@ -1767,7 +1830,7 @@ function listValue(r, k) {
   if (k === "memc") return r.sketchOnly ? "" : `치수 ${r.size_b || r.size_h ? "유" : "무"} · 철근 ${Object.values(r.rebar || {}).some(Boolean) ? "유" : "무"}`;
   if (k === "chk") return r.sketchOnly ? "검측 안됨" : "검측";
   if (k === "label") return r.label || r.no; if (k === "csize") return crackSize(r.fields); if (k === "placed") return isPlaced(r) ? "배치" : "📍미배치";
-  if (k === "summary") return summary(r); if (k === "ph") return (r.photos || []).length || "";
+  if (k === "summary") return shortSum(r); if (k === "ph") return (r.photos || []).length || "";
   if (k === "size") return r.size_b || r.size_h ? `${r.size_b || "?"}×${r.size_h || "?"}` : ""; if (k === "rebar") return rebarText(r);
   if (k === "areaM2") return r.area ? areaOf(r).toFixed(1) : "";
   if (k === "dl" || k === "ll") { if (!r.area) return ""; const L = loadCalc(r.fields || {}); const v = k === "dl" ? L.dl : L.ll; return v == null ? "" : (+v).toFixed(2); }
@@ -1789,6 +1852,7 @@ function renderList() {
       cols.map(([k]) => el("td", {}, k === "chk" ? el("span", { class: "chk-ok" }, "검측") : k === "no" && sub && r.label ? r.label : String(listValue(r, k)))));
     rowGestures(tr, () => (isPlaced(r) || !isMine(r) ? showRec(r.uid) : startPlacing(r)), () => { showRec(r.uid, true); S.rowMenu = r.uid; renderList(); });
     tb.append(tr);
+    if (cur && cur.uid === r.uid && !S.edit) tb.append(detailRow(r, cols.length));
     if (S.rowMenu === r.uid) tb.append(rowMenuRow(r, cols.length));
   };
   if (S.filter === "전체" && recs.length) {        // 전체: 용도별(부재검측·균열검토 …) 묶음 — 누르면 하위 목록
@@ -1847,7 +1911,7 @@ function renderMemList() {
     : dir * ((a.no === Infinity) - (b.no === Infinity) || a.no - b.no) || a.name.localeCompare(b.name, "ko", { numeric: true }));
   for (const g of gl) g.its.sort((a, b) => ((a.no == null) - (b.no == null)) || dir * ((a.no || 0) - (b.no || 0)));
   const anyShow = S.memShow.size > 0;
-  lb.classList.toggle("hide-chk", anyShow && lb.clientWidth < 470);       // 치수를 펼치면 좁은 화면에서 '검측' 칸 숨김
+  void anyShow;
   const arrow = (k) => (key === k ? (dir > 0 ? " ▲" : " ▼") : "");
   const th = (t, cls, fn) => el("th", { class: cls, onclick: fn }, t);
   const sortBy = (k) => () => { S.memSort = { key: k, dir: S.memSort.key === k ? -S.memSort.dir : 1 }; renderList(); };
@@ -1865,15 +1929,22 @@ function renderMemList() {
     const tr = el("tr", { class: (sub ? "sub " : "") + (it.sk ? "skonly" : "") + ((it.r && cur && cur.uid === it.r.uid) || (it.sk && SK.selected() === it.sk.uid) ? " sel" : "") },
       el("td", { class: "c-no" }, it.r ? listNo(it.r) : "-"), el("td", { class: "c-nm" }, it.name || "-"), ctCell(it),
       el("td", { class: "c-chk" }, it.r ? el("span", { class: "chk-ok" }, "검측") : el("span", { class: "chk-no" }, "검측 안됨")));
-    if (it.r) rowGestures(tr, () => (isPlaced(it.r) || !isMine(it.r) ? showRec(it.r.uid) : startPlacing(it.r)), () => { showRec(it.r.uid, true); S.rowMenu = it.r.uid; renderList(); });
-    else rowGestures(tr, () => SK.focusUid(it.sk.uid), () => skSurvey(it.sk, it.info));
+    if (it.r) rowGestures(tr, () => { if (window.SK) SK.clearSel(); (isPlaced(it.r) || !isMine(it.r) ? showRec(it.r.uid) : startPlacing(it.r)); },
+      () => { if (window.SK) SK.clearSel(); showRec(it.r.uid, true); S.rowMenu = it.r.uid; renderList(); });
+    else rowGestures(tr, () => {                   // 검측 안됨: 누르면 선택, 다시 누르면 해제 (검측 기록 선택은 풂 — 하나만)
+      if (S.edit && !guardEdit()) return;
+      if (S.sel) { S.sel = null; closePanel(); }
+      if (SK.selected() === it.sk.uid) { SK.clearSel(); renderList(); } else SK.focusUid(it.sk.uid);
+    }, () => skSurvey(it.sk, it.info));
     tb.append(tr);
+    if (it.r && cur && cur.uid === it.r.uid && !S.edit) tb.append(detailRow(it.r, 4));
     if (it.r && S.rowMenu === it.r.uid) tb.append(rowMenuRow(it.r, 4));
   };
   for (const g of gl) {
     if (g.its.length < 2) { itemRow(g.its[0]); continue; }
-    const open = S.memOpen.has(g.k) || g.its.some((it) => it.r && cur && cur.uid === it.r.uid);
-    const nr = g.its.filter((it) => it.r), nos = nr.map((it) => listNo(it.r));
+    const open = S.memOpen.has(g.k) || g.its.some((it) => (it.r && cur && cur.uid === it.r.uid) || (it.sk && SK.selected() === it.sk.uid));
+    const nr = g.its.filter((it) => it.r), nos = nr.map((it) => listNo(it.r)), bn = nr.map((it) => +it.r.no).filter((v) => v > 0);
+    const noTxt = bn.length ? (Math.min(...bn) === Math.max(...bn) ? String(bn[0]) : `${Math.min(...bn)}~${Math.max(...bn)}`) : "-";   // 2,4,7,5-00,5-01 → 2~7
     const allSz = g.its.every((it) => it.r ? (it.r.size_b || it.r.size_h) : false), anySz = g.its.some((it) => it.r && (it.r.size_b || it.r.size_h));
     const allRb = g.its.every((it) => it.r && rbOn(it.r)), anyRb = g.its.some((it) => it.r && rbOn(it.r));
     const tri = (all, any) => (all ? "유" : any ? "일부" : "무");
@@ -1882,10 +1953,17 @@ function renderMemList() {
     ct.addEventListener("click", (e) => { e.stopPropagation(); if (showing) S.memShow.delete(gid); else S.memShow.add(gid); renderList(); });
     ct.addEventListener("pointerdown", (e) => e.stopPropagation());
     const gr = el("tr", { class: "grp2" + (open ? " open" : "") },
-      el("td", { class: "c-no" }, nos.length > 3 ? `${nos.slice(0, 2).join(",")}…` : nos.join(",") || "-"),
+      el("td", { class: "c-no" }, noTxt),
       el("td", { class: "c-nm" }, `${open ? "▾" : "▸"} ${g.name}`, el("small", { class: "gcnt" }, ` ×${g.its.length}`)), ct,
       el("td", { class: "c-chk" }, el("span", { class: nr.length === g.its.length ? "chk-ok" : "chk-no" }, `${nr.length}/${g.its.length}`)));
-    gr.addEventListener("click", () => { if (S.memOpen.has(g.k)) S.memOpen.delete(g.k); else S.memOpen.add(g.k); renderList(); });
+    gr.addEventListener("click", () => {
+      if (open) {                                  // 접을 때: 안에서 고른 것 선택도 자동 해제 → 바로 합쳐짐
+        if (S.edit && !guardEdit()) return;
+        S.memOpen.delete(g.k);
+        if (cur && g.its.some((it) => it.r && it.r.uid === cur.uid)) { S.sel = null; closePanel(); draw(); }
+        if (window.SK && g.its.some((it) => it.sk && SK.selected() === it.sk.uid)) SK.clearSel();
+      } else S.memOpen.add(g.k);
+      renderList(); });
     tb.append(gr);
     if (open) g.its.forEach((it) => itemRow(it, true));
   }
@@ -1923,6 +2001,7 @@ function renderCrackList() {
       showRec(r.uid);
     }, () => { showRec((curIn || r).uid, true); S.rowMenu = (curIn || r).uid; renderList(); });
     tb.append(tr);
+    if (curIn && !open && !S.edit) tb.append(detailRow(curIn, cols.length));
     const menuFor = (x) => rowMenuRow(x, cols.length,
       mine && placed ? el("button", { class: "b ok", onclick: () => { S.rowMenu = null; startPlacing(r, true); } }, "📍＋ 위치 추가") : "");
     if (!open) {
@@ -1937,6 +2016,7 @@ function renderCrackList() {
           : k === "summary" || k === "name" ? String(listValue(x, k)) : "")));
       rowGestures(ctr, () => showRec(x.uid), () => { showRec(x.uid, true); S.rowMenu = x.uid; renderList(); });
       tb.append(ctr);
+      if (cur && cur.uid === x.uid && !S.edit) tb.append(detailRow(x, cols.length));
       if (S.rowMenu === x.uid) tb.append(menuFor(x));
     });
   }

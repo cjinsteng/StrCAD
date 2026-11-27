@@ -502,3 +502,28 @@ body.viewonly #stage::after { content: "👁 뷰어 — 입력 안 됨"; positio
 .note-th img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .note-th .del { position: absolute; top: 3px; right: 3px; width: 22px; height: 22px; border: 0; border-radius: 11px; background: #e2e8f0cc; color: #334155; font-size: 12px; }
 .note-big { width: 100%; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+
+/* 스케치 색깔·이동·지우기 줄: 검측점/스케치 줄 옆으로 (도면 덜 가리게) — 좁으면 좌우로 밀어서 */
+#modeSeg { order: 1; }
+#skOps { order: 2; flex: 1 1 0; min-width: 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+#skOps::-webkit-scrollbar { display: none; }
+#skOps.hidden { display: none; }
+#skOps button { white-space: nowrap; flex: none; }
+#pointOpts { order: 2; }
+#btnLayers { order: 3; }
+#btnFit { order: 4; }
+#purposeSeg, #sketchBar { order: 5; }
+#sketchBar { flex-basis: 100%; }
+/* 길게 눌러도 글자 선택 안 되게 (입력 칸은 그대로) */
+body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+input, textarea, [contenteditable] { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
+/* 목록: 한 줄로 (좌우로 밀어서 보기) */
+#lt-b td { white-space: nowrap; }
+#lt-b tr.detail-row td { white-space: normal; background: #fff7ed; color: #334155; font-size: 14px; padding: 6px 10px; }
+#lt-b tr.detail-row small { display: block; color: var(--muted); margin-top: 2px; }
+.crack-exist-list { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 8px; }
+.crack-exist-list .opt { display: flex; align-items: center; gap: 10px; text-align: left; padding: 10px 12px; }
+.crack-exist-list .opt b { min-width: 46px; }
+.crack-exist-list .opt span { flex: 1; }
+.crack-exist-list .opt small { color: var(--muted); }
+body.viewonly #skOps { display: none !important; }
