@@ -11,7 +11,7 @@ const SK = (() => {
   const MEMBER_KINDS = ["beam", "column", "wall"];
   const TEXT_PRESETS = ["G1", "B1", "C1", "W1", "추가", "철거", "개구부", "도면과 다름"];
   const PREFIX = { beam: "G", column: "C", wall: "W" };
-  const KIND_NM = { beam: "보", column: "기둥", wall: "벽체", axis: "축", dim: "치수", text: "글자", free: "자유선" };
+  const KIND_NM = { beam: "보", column: "기둥", wall: "벽체", axis: "축", dim: "치수", text: "글자", free: "자유선", img: "그림" };
   const DEF = { tool: "member", mem: "beam", dbl: false, beamW: 400, colB: 500, colH: 500, colStep: 10, wallT: 200,
     autoName: true, ortho: true, snap: true, color: COLORS[0], memColor: "#2563eb",
     freeMode: "free", grid: false, gridStep: 1000, gridSnap: true, axisMode: "h" };
@@ -160,6 +160,12 @@ const SK = (() => {
       const sk = st.list[i], p = sk.pts;
       if ((kinds && !kinds.includes(sk.kind)) || !shown(sk)) continue;
       if (sk.kind === "axis" && !kinds && st.tool !== "axis") continue;     // 축은 '축' 도구일 때만 잡힘
+      if (sk.kind === "img") {                     // 그림: 회전된 사각형 안
+        const a = -(sk.rot || 0) * Math.PI / 180, dx = x - p[0], dy = y - p[1];
+        const lx = dx * Math.cos(a) - dy * Math.sin(a), ly = dx * Math.sin(a) + dy * Math.cos(a), hw = sk.w / 2, hh = sk.w * (sk.ar || 0.6) / 2;
+        if (Math.abs(lx) <= hw + lim && Math.abs(ly) <= hh + lim) return sk;
+        continue;
+      }
       if (sk.kind === "column") {
         const [x0, x1] = [Math.min(p[0], p[2]), Math.max(p[0], p[2])], [y0, y1] = [Math.min(p[1], p[3]), Math.max(p[1], p[3])];
         if (x >= x0 - lim && x <= x1 + lim && y >= y0 - lim && y <= y1 + lim) return sk;
@@ -186,6 +192,7 @@ const SK = (() => {
     return "";
   }
   function sizeText(sk) {
+    if (sk.kind === "img") return `${Math.round(sk.w).toLocaleString()}mm${sk.rot ? ` · ${Math.round(sk.rot)}°` : ""}`;
     if (sk.kind === "column") return `${Math.round(sk.b)}×${Math.round(sk.h)}`;
     if (sk.kind === "wall") return `THK ${Math.round(sk.t)}`;
     if (sk.kind === "beam") return `${sk.dbl ? "복선" : "단선"} B${Math.round(sk.w)}`;
@@ -462,11 +469,43 @@ const SK = (() => {
       inp.addEventListener("keydown", (e) => { if (e.key === "Enter") done(); });
       b.append(el("h3", {}, sk0 ? "글자 고치기" : "글자 넣기"), inp,
         el("div", { class: "sk-presets" }, TEXT_PRESETS.map((t) => el("button", { onclick: () => { inp.value = inp.value ? inp.value + " " + t : t; inp.focus(); } }, t))),
+        sk0 ? "" : el("button", { class: "bigbtn", onclick: () => { $("#modal").classList.remove("show"); drawImgAt(at); } }, "✍ 스케치해서 넣기", el("small", {}, " — 그림으로 (크기·회전 가능)")),
         el("div", { class: "btns" }, sk0 ? el("button", { class: "b danger", onclick: () => { $("#modal").classList.remove("show"); remove(sk0); } }, "삭제") : "",
           el("button", { class: "b gray", onclick: () => $("#modal").classList.remove("show") }, "취소"),
           el("span", { class: "sp" }), el("button", { class: "b ok", onclick: done }, sk0 ? "저장" : "넣기")));
     });
     setTimeout(() => inp && inp.focus(), 50);
+  }
+  // ---- 그림 스케치: 그린 것을 그림 하나로 도면에 (투명 배경) — 크기·회전은 수정 창에서
+  function drawImgAt(at, sk0) {
+    window.padOverlay({ title: sk0 ? "그림 다시 그리기" : "스케치해서 넣기", color: st.color, transparent: true, init: sk0 ? { strokes: sk0.strokes, ar: sk0.ar } : null,
+      done: (png, strokes, W, H) => {
+        if (sk0) { const prev = clone(sk0); Object.assign(sk0, { img: png, strokes, ar: H / W }); modify(sk0, prev); return; }
+        const sk = { kind: "img", color: st.color, pts: [Math.round(at[0]), Math.round(at[1])], w: Math.round(W * 0.45 / S.view.s), ar: H / W, rot: 0, img: png, strokes };
+        add(sk); st.sel = sk.uid; draw(); renderList(); toast("그림 넣음 — 길게 누르면 이동·크기·회전");
+      } });
+  }
+  function editImg(sk) {
+    let w = sk.w, rot = sk.rot || 0;
+    const prev = clone(sk);
+    const live = () => { sk.w = w; sk.rot = rot; draw(); };
+    sheet((b) => {
+      const render = () => {
+        b.innerHTML = "";
+        const rotBtns = el("div", { class: "sk-chips" }, [["⟲ 15°", 15], ["⟳ 15°", -15], ["⟲ 90°", 90], ["0°", null]].map(([t, d]) =>
+          el("button", { onclick: () => { rot = d == null ? 0 : ((rot + d) % 360 + 360) % 360; live(); render(); } }, t)));
+        b.append(el("h3", {}, "그림 — 크기·회전"),
+          numRow("가로 크기 (mm)", w, 100, [500, 1000, 2000, 3000, 5000], (v) => { w = v; live(); }),
+          el("div", { class: "sk-chips" }, [["½ 작게", 0.5], ["× 0.8", 0.8], ["× 1.25", 1.25], ["2× 크게", 2]].map(([t, f]) => el("button", { onclick: () => { w = Math.max(100, Math.round(w * f)); live(); render(); } }, t))),
+          numRow("회전 (°)", rot, 5, [0, 45, 90, 180, 270], (v) => { rot = v % 360; live(); }), rotBtns,
+          el("div", { class: "btns" }, el("button", { class: "b danger", onclick: () => { $("#modal").classList.remove("show"); Object.assign(sk, prev); remove(sk); } }, "삭제"),
+            el("button", { class: "b gray", onclick: () => { $("#modal").classList.remove("show"); Object.assign(sk, prev); drawImgAt(null, sk); } }, "✎ 다시 그리기"),
+            el("span", { class: "sp" }),
+            el("button", { class: "b gray", onclick: () => { Object.assign(sk, prev); draw(); $("#modal").classList.remove("show"); } }, "취소"),
+            el("button", { class: "b ok", onclick: () => { $("#modal").classList.remove("show"); sk.w = w; sk.rot = rot; const p0 = clone(prev); modify(sk, p0); } }, "저장")));
+      };
+      render();
+    });
   }
 
   // ------------------------------------------------------------------ 수정 창
@@ -484,6 +523,7 @@ const SK = (() => {
     if (!mineSk(sk)) { st.sel = sk.uid; draw(); roToast(sk); return; }
     st.sel = sk.uid; draw(); renderList();
     if (sk.kind === "text") { askText(null, sk); return; }
+    if (sk.kind === "img") { editImg(sk); return; }
     const prev = clone(sk), w = clone(sk);
     const close = () => { $("#modal").classList.remove("show"); };
     sheet((b) => {
@@ -679,8 +719,21 @@ const SK = (() => {
       const v = scr(p[0], p[1]);
       halo(() => { ctx.lineWidth = 3; ctx.strokeRect(v[0] - sk.text.length * 8 - 4, v[1] - 12, sk.text.length * 16 + 8, 24); });
       ctx.setLineDash([]); label(sk.text, v[0], v[1], col, 15);
+    } else if (sk.kind === "img") {                 // 손으로 그린 그림 (크기·회전)
+      const v = scr(p[0], p[1]), w = sk.w * S.view.s, h = w * (sk.ar || 0.6), im = imgOf(sk);
+      ctx.save(); ctx.translate(v[0], v[1]); ctx.rotate(-(sk.rot || 0) * Math.PI / 180);
+      if (im && im.complete && im.naturalWidth) ctx.drawImage(im, -w / 2, -h / 2, w, h);
+      if (sel || live) { ctx.setLineDash([6, 4]); ctx.lineWidth = 1.5; ctx.strokeStyle = "#f28c28"; ctx.strokeRect(-w / 2, -h / 2, w, h); ctx.setLineDash([]); }
+      ctx.restore();
     }
     ctx.restore();
+  }
+  const IMG_CACHE = new Map();
+  function imgOf(sk) {
+    const key = sk.uid + ":" + (sk.img || "").length;
+    let im = IMG_CACHE.get(key);
+    if (!im) { im = new Image(); im.onload = () => draw(); im.src = sk.img; IMG_CACHE.set(key, im); }
+    return im;
   }
   // 평행한 축 사이 간격 자동 표시
   // 평행한 축 사이 간격 [{p1, p2, d}] — offW: 축 끝(버블)에서 바깥으로 띄울 거리 (도면 단위)
@@ -809,7 +862,7 @@ const SK = (() => {
 
   // ------------------------------------------------------------------ 부재 목록 (조사 목록 자리에 표시)
   function members() {
-    const ord = { beam: 0, column: 1, wall: 2, axis: 3, dim: 4, text: 5, free: 6 };
+    const ord = { beam: 0, column: 1, wall: 2, axis: 3, dim: 4, text: 5, free: 6, img: 7 };
     return st.list.filter((s) => ord[s.kind] != null).sort((a, b) => ord[a.kind] - ord[b.kind] ||
       String(a.name || a.text || "").localeCompare(String(b.name || b.text || ""), "ko", { numeric: true }));
   }
@@ -836,7 +889,7 @@ const SK = (() => {
       const MEM = { beam: 1, column: 1, wall: 1 };
       const itemRow = (sk, i, sub2) => {
         const L = lenOf(sk) ? (lenOf(sk) / 1000).toFixed(2) : "";
-        const nm = sk.name || sk.text || (kind === "free" ? `${sk.pts.length === 4 ? "╱" : "〰"} ${i + 1}` : kind === "dim" ? `D${i + 1}` : "-");
+        const nm = sk.name || sk.text || (kind === "free" ? `${sk.pts.length === 4 ? "╱" : "〰"} ${i + 1}` : kind === "dim" ? `D${i + 1}` : kind === "img" ? `🖼 ${i + 1}` : "-");
         const tr = el("tr", { class: "sub" + (sub2 ? " sub2" : "") + (sk.uid === st.sel ? " sel" : "") + (shown(sk) ? "" : " hid") },
           el("td", {}, MEM[sk.kind] ? dragHandle(sk) : "", el("b", { style: `color:${sk.color || COLORS[0]}` }, nm)), el("td", {}, KIND_NM[sk.kind]), el("td", {}, sizeText(sk)), el("td", {}, L),
           el("td", { class: "sk-who" }, sk.inspector || ""));
@@ -1010,14 +1063,17 @@ const SK = (() => {
       return;
     }
     if (st.tool !== "member") return;
-    box.append(chip("━ 보", st.mem === "beam", () => set("mem", "beam")), chip("■ 기둥", st.mem === "column", () => set("mem", "column")),
-      chip("▬ 벽체", st.mem === "wall", () => set("mem", "wall")), el("i", { class: "sk-sep" }));
-    if (st.mem === "beam") box.append(chip("단선", !st.dbl, () => set("dbl", false)), chip("복선", !!st.dbl, () => set("dbl", true)),
-      chip(`폭 ${st.beamW}`, false, () => pickNum("보 폭 (mm)", st.beamW, [200, 250, 300, 350, 400, 450, 500, 600, 700], (v) => set("beamW", v)), "val"));
-    if (st.mem === "column") box.append(...[5, 10, 50].map((n) => chip(`${n}단위`, st.colStep === n, () => set("colStep", n))),
-      chip(`기본 ${st.colB}×${st.colH}`, false, () => pickNum("기본 기둥 크기 (정사각, mm)", st.colB, [300, 400, 450, 500, 600, 700, 800], (v) => { st.colH = v; set("colB", v); }), "val"));
-    if (st.mem === "wall") box.append(chip(`두께 ${st.wallT}`, false, () => pickNum("벽 두께 (mm)", st.wallT, [150, 180, 200, 250, 300, 350, 400, 500], (v) => set("wallT", v)), "val"));
-    box.append(el("i", { class: "sk-sep" }), chip(`자동네임 ${st.autoName ? "유" : "무"}`, st.autoName, () => set("autoName", !st.autoName)));
+    // 보·기둥·벽체는 왼쪽에 고정, 크기 등 나머지는 좌우로 밀어서
+    const fix = el("div", { class: "sub-fix" }, chip("━ 보", st.mem === "beam", () => set("mem", "beam")), chip("■ 기둥", st.mem === "column", () => set("mem", "column")),
+      chip("▬ 벽체", st.mem === "wall", () => set("mem", "wall")));
+    const sc = el("div", { class: "sub-scroll" });
+    if (st.mem === "beam") sc.append(chip(`폭 ${st.beamW}`, false, () => pickNum("보 폭 (mm)", st.beamW, [200, 250, 300, 350, 400, 450, 500, 600, 700], (v) => set("beamW", v)), "val"),
+      chip("단선", !st.dbl, () => set("dbl", false)), chip("복선", !!st.dbl, () => set("dbl", true)));
+    if (st.mem === "column") sc.append(chip(`${st.colB}×${st.colH}`, false, () => pickNum("기본 기둥 크기 (정사각, mm)", st.colB, [300, 400, 450, 500, 600, 700, 800], (v) => { st.colH = v; set("colB", v); }), "val"),
+      ...[5, 10, 50].map((n) => chip(`${n}단위`, st.colStep === n, () => set("colStep", n))));
+    if (st.mem === "wall") sc.append(chip(`두께 ${st.wallT}`, false, () => pickNum("벽 두께 (mm)", st.wallT, [150, 180, 200, 250, 300, 350, 400, 500], (v) => set("wallT", v)), "val"));
+    sc.append(chip(`자동네임 ${st.autoName ? "유" : "무"}`, st.autoName, () => set("autoName", !st.autoName)));
+    box.append(fix, sc);
   }
   function buildOps() {
     const box = $("#skOps"); if (!box) return; box.innerHTML = "";

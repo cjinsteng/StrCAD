@@ -1577,6 +1577,48 @@ function typeNote(t, idx, after) {
     setTimeout(() => ta.focus(), 50);
   });
 }
+// ---- 그리기 판 (스케치 '그림 넣기'용): 펜 색 · 지우개 · 되돌리기 — transparent=true 면 배경 투명 PNG
+window.padOverlay = function padOverlay(o) {
+  overlay((b, close) => {
+    const W = Math.min(620, window.innerWidth - 48), H = Math.round(W * (o.init && o.init.ar ? Math.min(1.2, Math.max(0.4, o.init.ar)) : 0.62));
+    const c = el("canvas", { width: W, height: H, class: "note-pad" + (o.transparent ? " clear" : "") }), g = c.getContext("2d");
+    const strokes = o.init && o.init.strokes ? o.init.strokes.map((s0) => ({ c: s0.c, w: s0.w, e: s0.e, p: s0.p.map(([x, y]) => [x * W, y * H]) })) : [];
+    let col = o.color || "#111827", cur = null;
+    const paint = () => {
+      g.clearRect(0, 0, W, H); if (!o.transparent) { g.fillStyle = "#fff"; g.fillRect(0, 0, W, H); }
+      g.lineCap = "round"; g.lineJoin = "round";
+      for (const s0 of strokes) {
+        g.globalCompositeOperation = s0.e && o.transparent ? "destination-out" : "source-over";
+        g.strokeStyle = s0.e ? "#fff" : s0.c; g.lineWidth = s0.w; g.beginPath(); s0.p.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y))); g.stroke();
+      }
+      g.globalCompositeOperation = "source-over";
+    };
+    const pos = (e) => { const r = c.getBoundingClientRect(); return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height]; };
+    c.addEventListener("pointerdown", (e) => { c.setPointerCapture(e.pointerId);
+      cur = col === "eraser" ? { c: "#fff", w: 20, e: true, p: [pos(e)] } : { c: col, w: e.pointerType === "pen" ? 3 : 3.5, p: [pos(e)] }; strokes.push(cur); paint(); });
+    c.addEventListener("pointermove", (e) => { if (!cur) return; cur.p.push(pos(e)); paint(); });
+    for (const ev of ["pointerup", "pointercancel"]) c.addEventListener(ev, () => { cur = null; });
+    const cols = el("div", { class: "sk-chips" });
+    const pal = [[o.color || "#e11d48", "현재색"], ["#111827", "검정"], ["#e11d48", "빨강"], ["#2563eb", "파랑"], ["#16a34a", "초록"]].filter((v, i, a) => a.findIndex((x) => x[0] === v[0]) === i);
+    const drawCols = () => { cols.innerHTML = ""; for (const [cc, nm] of pal) cols.append(el("button", { class: col === cc ? "on" : "", onclick: () => { col = cc; drawCols(); } }, el("i", { class: "sk-dot", style: `background:${cc}` }), nm));
+      cols.append(el("button", { class: col === "eraser" ? "on" : "", onclick: () => { col = "eraser"; drawCols(); } }, "🧽 지우개")); };
+    drawCols(); paint();
+    b.append(el("h3", {}, o.title || "스케치"), c, el("div", { class: "note-tools" }, cols,
+      el("button", { class: "b gray", onclick: () => { strokes.pop(); paint(); } }, "↶"), el("button", { class: "b gray", onclick: () => { strokes.length = 0; paint(); } }, "지우기")),
+      el("div", { class: "btns" }, el("span", { class: "sp" }), el("button", { class: "b gray", onclick: close }, "취소"),
+        el("button", { class: "b ok", onclick: () => {
+          if (!strokes.some((s0) => !s0.e)) { toast("그린 것이 없습니다"); return; }
+          // 그린 부분만 잘라서 (여백 제거)
+          let x0 = W, y0 = H, x1 = 0, y1 = 0;
+          for (const s0 of strokes) if (!s0.e) for (const [x, y] of s0.p) { x0 = Math.min(x0, x - s0.w); y0 = Math.min(y0, y - s0.w); x1 = Math.max(x1, x + s0.w); y1 = Math.max(y1, y + s0.w); }
+          x0 = Math.max(0, Math.floor(x0)); y0 = Math.max(0, Math.floor(y0)); x1 = Math.min(W, Math.ceil(x1)); y1 = Math.min(H, Math.ceil(y1));
+          const cw = Math.max(8, x1 - x0), ch = Math.max(8, y1 - y0), out = document.createElement("canvas"); out.width = cw; out.height = ch;
+          out.getContext("2d").drawImage(c, x0, y0, cw, ch, 0, 0, cw, ch);
+          const norm = strokes.map((s0) => ({ c: s0.c, w: s0.w, e: s0.e || undefined, p: s0.p.map(([x, y]) => [+((x - x0) / cw).toFixed(4), +((y - y0) / ch).toFixed(4)]) }));
+          close(); o.done(out.toDataURL("image/png"), norm, cw, ch);
+        } }, o.okText || "넣기")));
+  });
+};
 function viewSketchNote(n, canEdit, onEdit, onDel) {
   overlay((b, close) => {
     b.append(el("h3", {}, "추가사항 — 스케치" + (n.d ? ` (${n.d})` : "")), el("img", { src: n.img, class: "note-big" }),

@@ -534,3 +534,13 @@ body.viewonly #skOps { display: none !important; }
 
 /* 부재명 = 종류 · 기호 · 번호 (세 칸) */
 .row.three { grid-template-columns: 64px 1.3fr 1fr 1fr; }
+
+/* 그림 넣기 판: 투명 배경 (격자 무늬) */
+.note-pad.clear { background-color: #fff; background-image: linear-gradient(#eef2f7 1px, transparent 1px), linear-gradient(90deg, #eef2f7 1px, transparent 1px); background-size: 20px 20px; }
+/* 스케치 부재 줄: 보·기둥·벽체 고정 + 나머지 좌우 스크롤 */
+#skSub { flex-wrap: nowrap; max-width: 100%; min-width: 0; overflow: hidden; }
+#skSub .sub-fix { display: flex; flex: none; border-right: 1px solid var(--line); }
+#skSub .sub-scroll { display: flex; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+#skSub .sub-scroll::-webkit-scrollbar { display: none; }
+#skSub .sub-fix button, #skSub .sub-scroll button { flex: none; white-space: nowrap; padding: 8px 9px; }
+#skSub button.val { width: auto; min-height: 0; font-size: inherit; background: #fff; border-radius: 0; }
