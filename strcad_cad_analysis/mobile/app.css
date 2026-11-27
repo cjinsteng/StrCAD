@@ -544,3 +544,7 @@ body.viewonly #skOps { display: none !important; }
 #skSub .sub-scroll::-webkit-scrollbar { display: none; }
 #skSub .sub-fix button, #skSub .sub-scroll button { flex: none; white-space: nowrap; padding: 8px 9px; }
 #skSub button.val { width: auto; min-height: 0; font-size: inherit; background: #fff; border-radius: 0; }
+
+/* 그림 수정: 'A 글자' 옆 완료/취소 */
+#skTools .tf-btn { background: #fff7ed; color: var(--navy); font-weight: 700; }
+#skTools .tf-btn.ok { background: var(--orange); color: #fff; }

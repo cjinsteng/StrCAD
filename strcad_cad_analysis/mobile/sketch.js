@@ -14,7 +14,7 @@ const SK = (() => {
   const KIND_NM = { beam: "보", column: "기둥", wall: "벽체", axis: "축", dim: "치수", text: "글자", free: "자유선", img: "그림" };
   const DEF = { tool: "member", mem: "beam", dbl: false, beamW: 400, colB: 500, colH: 500, colStep: 10, wallT: 200,
     autoName: true, ortho: true, snap: true, color: COLORS[0], memColor: "#2563eb",
-    freeMode: "free", grid: false, gridStep: 1000, gridSnap: true, axisMode: "h" };
+    freeMode: "free", grid: false, gridStep: 1000, gridSnap: true, axisMode: "h", split: false };
   const st = Object.assign({ open: new Set(), openSub: new Set(), selSet: null, act: null, openAuto: null, list: [], op: null, cur: null, pend: null, undo: [], sel: null, snapMark: null, ghost: null }, DEF);
   try { Object.assign(st, JSON.parse(localStorage.getItem("skOpts") || "{}")); } catch (e) { /* ignore */ }
   st.op = null;
@@ -217,6 +217,11 @@ const SK = (() => {
     const p = st.pend = { sx, sy, x, y, hit: st.op === "erase" ? hitItem(x, y) : hitItem(x, y), moved: false, mode: null };
     clearTimeout(st.lpT);
     if (st.op === "erase") return;
+    if (st.tf) {                                    // 그림 수정 중: 손잡이(크기·회전) / 안쪽(이동)만
+      const sk = st.list.find((o) => o.uid === st.tf.uid); if (!sk) { tfEnd(false); return; }
+      const h = tfHandle(sk, sx, sy);
+      p.mode = h ? "tf" : (tfInside(sk, x, y) ? "tfmove" : "tfnone"); p.h = h; p.orig = clone(sk); p.hit = null; return;
+    }
     if (st.act) {                                   // 길게 눌러 고른 이동·복사: 이번 끌기로 옮김
       const a = st.act, sk = st.list.find((o) => o.uid === a.uid); st.act = null; buildOps();
       if (sk) { p.mode = a.kind; p.orig = clone(sk); p.ref = refPoint(sk, x, y); p.hit = sk; st.sel = sk.uid; draw(); return; }
@@ -238,6 +243,8 @@ const SK = (() => {
     if (!p.moved && Math.hypot(sx - p.sx, sy - p.sy) < 8) return;
     if (!p.moved) { p.moved = true; clearTimeout(st.lpT); if (!p.mode && st.op !== "erase") { p.mode = "draw"; beginDraw(p); } }
     const [x, y] = s2w(sx, sy);
+    if (p.mode === "tf" || p.mode === "tfmove") { tfDrag(p, x, y); draw(); return; }
+    if (p.mode === "tfnone") return;
     if (p.mode === "draw") updDraw(x, y);
     else if (p.mode === "move" || p.mode === "copy") updDrag(p, x, y);
     draw();
@@ -245,6 +252,7 @@ const SK = (() => {
   function up(sx, sy, cancelled) {
     const p = st.pend; st.pend = null; clearTimeout(st.lpT);
     const fin = () => { st.cur = null; st.ghost = null; st.snapMark = null; hint(""); draw(); };
+    if (p && (p.mode === "tf" || p.mode === "tfmove" || p.mode === "tfnone")) { if (cancelled && p.mode !== "tfnone") restore(p); hint(""); draw(); return; }
     if (!p || cancelled) { if (p && p.mode === "move") restore(p); fin(); return; }
     if (!p.moved) { fin(); if (p.mode === "move" || p.mode === "copy") { hint(`${p.mode === "move" ? "이동" : "복사"}: 끌어서 놓으세요`); st.act = { kind: p.mode, uid: p.orig.uid }; buildOps(); return; } tapAt(p); return; }
     if (p.mode === "draw") finishDraw();
@@ -289,7 +297,7 @@ const SK = (() => {
         el("div", { class: "act-row" },
           big("✥", "이동", "끌어서 옮기기", () => { st.act = { kind: "move", uid: sk.uid }; buildOps(); hint("이동: 아무 곳이나 눌러 끌어서 놓으세요 (스냅 적용)"); }),
           big("⧉", "복사", "끌어서 하나 더", () => { st.act = { kind: "copy", uid: sk.uid }; buildOps(); hint("복사: 아무 곳이나 눌러 끌어서 놓으세요 (스냅 적용)"); }),
-          big("✎", "수정", "이름·크기·색", () => editItem(sk))),
+          big("✎", "수정", sk.kind === "img" ? "크기·회전 (손잡이)" : "이름·크기·색", () => (sk.kind === "img" ? tfStart(sk) : editItem(sk)))),
         el("div", { class: "btns" }, el("button", { class: "b danger", onclick: () => { close(); remove(sk); toast(`${KIND_NM[sk.kind]} 삭제 — ↶ 되돌리기 가능`); } }, "삭제"),
           el("span", { class: "sp" }), el("button", { class: "b gray", onclick: close }, "닫기")));
     });
@@ -332,8 +340,8 @@ const SK = (() => {
       st.colB = c.b; st.colH = c.h; saveOpts(); buildSub(); applyAuto(c); add(c); toast(`기둥 ${c.name ? c.name + " " : ""}${c.b}×${c.h}`); return;
     }
     if (L * S.view.s < 10) { hint("끌어서 그리세요"); setTimeout(() => hint(""), 1200); return; }
-    if (c.kind === "beam") { c.w = st.beamW; c.dbl = !!st.dbl; applyAuto(c); add(c); return; }
-    if (c.kind === "wall") { c.t = st.wallT; applyAuto(c); add(c); return; }
+    if (c.kind === "beam") { c.w = st.beamW; c.dbl = !!st.dbl; applyAuto(c); add(c); if (st.split) splitWith(c); return; }
+    if (c.kind === "wall") { c.t = st.wallT; applyAuto(c); add(c); if (st.split) splitWith(c); return; }
     if (c.kind === "dim") { c.val = Math.round(L); add(c); toast(`치수 ${c.val.toLocaleString()} mm`); return; }
     if (c.kind === "axis") { askAxis(c); return; }
   }
@@ -482,8 +490,120 @@ const SK = (() => {
       done: (png, strokes, W, H) => {
         if (sk0) { const prev = clone(sk0); Object.assign(sk0, { img: png, strokes, ar: H / W }); modify(sk0, prev); return; }
         const sk = { kind: "img", color: st.color, pts: [Math.round(at[0]), Math.round(at[1])], w: Math.round(W * 0.45 / S.view.s), ar: H / W, rot: 0, img: png, strokes };
-        add(sk); st.sel = sk.uid; draw(); renderList(); toast("그림 넣음 — 길게 누르면 이동·크기·회전");
+        add(sk); st.sel = sk.uid; st.act = { kind: "move", uid: sk.uid }; buildOps(); draw(); renderList();
+        hint("끌어서 위치를 잡으세요 (한 번) · 나중에 길게 눌러 수정 = 크기·회전"); toast("그림 넣음 — 끌어서 위치 잡기");
       } });
+  }
+  // ---- 그림 수정 (도면 위 손잡이): 모서리·변 = 크기, 위 동그라미 = 회전, 안쪽 = 이동 — 완료/취소는 'A 글자' 옆
+  function tfGeom(sk) {
+    const r = (sk.rot || 0) * Math.PI / 180, ux = [Math.cos(r), Math.sin(r)], uy = [-Math.sin(r), Math.cos(r)];
+    const hw = sk.w / 2, hh = sk.w * (sk.ar || 0.6) / 2, c = sk.pts;
+    const W = (lx, ly) => [c[0] + ux[0] * lx + uy[0] * ly, c[1] + ux[1] * lx + uy[1] * ly];
+    return { r, ux, uy, hw, hh, c, W };
+  }
+  function tfHandles(sk) {
+    const g = tfGeom(sk), out = [];
+    for (const sx of [-1, 0, 1]) for (const sy of [-1, 0, 1]) if (sx || sy) out.push({ id: `${sx},${sy}`, sx, sy, w: g.W(sx * g.hw, sy * g.hh) });
+    out.push({ id: "rot", w: g.W(0, g.hh + 34 / S.view.s) });
+    return out;
+  }
+  function tfHandle(sk, sx, sy) {
+    let best = null, bd = 22;
+    for (const h of tfHandles(sk)) { const v = scr(...h.w), d = Math.hypot(v[0] - sx, v[1] - sy); if (d < bd) { bd = d; best = h; } }
+    return best;
+  }
+  function tfInside(sk, x, y) { const g = tfGeom(sk), dx = x - g.c[0], dy = y - g.c[1];
+    return Math.abs(dx * g.ux[0] + dy * g.ux[1]) <= g.hw && Math.abs(dx * g.uy[0] + dy * g.uy[1]) <= g.hh; }
+  function tfDrag(p, x, y) {
+    const sk = st.list.find((o) => o.uid === p.orig.uid); if (!sk) return;
+    const o = p.orig, g = tfGeom(o);
+    if (p.mode === "tfmove") { sk.pts = [o.pts[0] + x - p.x, o.pts[1] + y - p.y]; return; }
+    if (p.h.id === "rot") {                         // 회전: 15° 근처면 딱 맞춤
+      let a = Math.atan2(y - g.c[1], x - g.c[0]) * 180 / Math.PI - 90; a = ((a % 360) + 360) % 360;
+      const sn = Math.round(a / 15) * 15; if (Math.abs(sn - a) < 4) a = sn % 360;
+      sk.rot = Math.round(a); hint(`회전 ${sk.rot}°`); return;
+    }
+    const dx = x - g.c[0], dy = y - g.c[1], lx = dx * g.ux[0] + dy * g.ux[1], ly = dx * g.uy[0] + dy * g.uy[1];
+    let x0 = -g.hw, x1 = g.hw, y0 = -g.hh, y1 = g.hh; const MIN = 30 / S.view.s;
+    if (p.h.sx > 0) x1 = Math.max(x0 + MIN, lx); if (p.h.sx < 0) x0 = Math.min(x1 - MIN, lx);
+    if (p.h.sy > 0) y1 = Math.max(y0 + MIN, ly); if (p.h.sy < 0) y0 = Math.min(y1 - MIN, ly);
+    const nw = x1 - x0, nh = y1 - y0, nc = g.W((x0 + x1) / 2, (y0 + y1) / 2);
+    sk.w = Math.round(nw); sk.ar = nh / nw; sk.pts = [Math.round(nc[0]), Math.round(nc[1])];
+    hint(`크기 ${Math.round(nw).toLocaleString()} × ${Math.round(nh).toLocaleString()} mm`);
+  }
+  function tfDraw() {
+    const sk = st.list.find((o) => o.uid === st.tf.uid); if (!sk) return;
+    const hs = tfHandles(sk), v = (h) => scr(...h.w), corners = ["-1,-1", "1,-1", "1,1", "-1,1"].map((id) => v(hs.find((h) => h.id === id)));
+    ctx.save(); ctx.strokeStyle = "#475569"; ctx.lineWidth = 1.2; ctx.setLineDash([]);
+    ctx.beginPath(); corners.forEach((q, i) => (i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]))); ctx.closePath(); ctx.stroke();
+    const top = v(hs.find((h) => h.id === "0,1")), rh = v(hs.find((h) => h.id === "rot"));
+    ctx.beginPath(); ctx.moveTo(top[0], top[1]); ctx.lineTo(rh[0], rh[1]); ctx.stroke();
+    for (const h of hs) { const q = v(h); ctx.beginPath(); ctx.arc(q[0], q[1], h.id === "rot" ? 9 : 6.5, 0, 7); ctx.fillStyle = "#fff"; ctx.fill(); ctx.stroke(); }
+    ctx.fillStyle = "#475569"; ctx.font = "bold 12px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText("⟳", rh[0], rh[1] + 0.5);
+    ctx.restore();
+  }
+  function tfStart(sk) {
+    if (!mineSk(sk)) { roToast(sk); return; }
+    st.tf = { uid: sk.uid, prev: clone(sk) }; st.act = null; st.sel = sk.uid; st.tool = "text"; st.op = null;
+    for (const x of $("#skTools").children) if (x.dataset.tool) x.classList.toggle("on", x.dataset.tool === "text");
+    buildSub(); buildOps();
+    tfButtons(); draw(); hint("모서리·변 = 크기 · 위 ⟳ = 회전 · 안쪽 = 이동 → 완료");
+  }
+  function tfEnd(ok) {
+    const tf = st.tf; if (!tf) return; st.tf = null;
+    const sk = st.list.find((o) => o.uid === tf.uid);
+    if (sk) { if (ok) modify(sk, tf.prev); else { Object.assign(sk, clone(tf.prev)); } }
+    tfButtons(); hint(""); draw(); renderList(); toast(ok ? "그림 수정 완료" : "그림 수정 취소");
+  }
+  function tfButtons() {                           // 'A 글자' 옆 완료 / 취소 (그리고 다시 그리기)
+    const bar = $("#skTools"); if (!bar) return;
+    bar.querySelectorAll(".tf-btn").forEach((b) => b.remove());
+    if (!st.tf) return;
+    const sk = st.list.find((o) => o.uid === st.tf.uid);
+    bar.append(el("button", { class: "tf-btn ok", onclick: () => tfEnd(true) }, "✔ 완료"), el("button", { class: "tf-btn", onclick: () => tfEnd(false) }, "✕ 취소"),
+      el("button", { class: "tf-btn", onclick: () => { const prev = st.tf.prev; tfEnd(false); if (sk) drawImgAt(null, st.list.find((o) => o.uid === prev.uid)); } }, "✎"));
+  }
+  // ---- 보·벽체 '분리': 새로 그린 보(벽)가 같은 종류와 겹치거나 만나는 곳에서 둘 다 나눔
+  function segX(a, b) {                            // 두 선분 교차 → [ta, tb] (끝점 포함, 평행이면 null)
+    const [x1, y1, x2, y2] = a, [x3, y3, x4, y4] = b, d = (x2 - x1) * (y4 - y3) - (y2 - y1) * (x4 - x3);
+    if (Math.abs(d) < 1e-9) return null;
+    const ta = ((x3 - x1) * (y4 - y3) - (y3 - y1) * (x4 - x3)) / d, tb = ((x3 - x1) * (y2 - y1) - (y3 - y1) * (x2 - x1)) / d;
+    const e = 1e-6; return ta >= -e && ta <= 1 + e && tb >= -e && tb <= 1 + e ? [ta, tb] : null;
+  }
+  function collinearCuts(a, b) {                   // 같은 선 위에서 겹칠 때: b 의 끝점이 a 안에 있는 t 들
+    const L = Math.hypot(a[2] - a[0], a[3] - a[1]) || 1, ux = (a[2] - a[0]) / L, uy = (a[3] - a[1]) / L, tol = 5;
+    const off = (x, y) => Math.abs((x - a[0]) * uy - (y - a[1]) * ux);
+    if (off(b[0], b[1]) > tol || off(b[2], b[3]) > tol) return [];
+    return [[b[0], b[1]], [b[2], b[3]]].map(([x, y]) => ((x - a[0]) * ux + (y - a[1]) * uy) / L);
+  }
+  function piecesAt(sk, ts) {                      // t 들(0~1 안쪽)에서 나눈 조각 좌표들
+    const p = sk.pts, L = Math.hypot(p[2] - p[0], p[3] - p[1]), minT = 50 / (L || 1);
+    const cut = [...new Set(ts.filter((t) => t > minT && t < 1 - minT).map((t) => +t.toFixed(5)))].sort((a, b) => a - b);
+    if (!cut.length) return null;
+    const at = (t) => [p[0] + (p[2] - p[0]) * t, p[1] + (p[3] - p[1]) * t], all = [0, ...cut, 1], out = [];
+    for (let i = 0; i + 1 < all.length; i++) { const a = at(all[i]), b = at(all[i + 1]); out.push([Math.round(a[0]), Math.round(a[1]), Math.round(b[0]), Math.round(b[1])]); }
+    return out;
+  }
+  function splitWith(nw) {
+    const tsNew = []; let n = 0;
+    for (const e of st.list.filter((o) => o.kind === nw.kind && o.uid !== nw.uid && shown(o) && mineSk(o))) {
+      const x = segX(e.pts, nw.pts), tsE = [];
+      if (x) { tsE.push(x[0]); tsNew.push(x[1]); }
+      else { tsE.push(...collinearCuts(e.pts, nw.pts)); tsNew.push(...collinearCuts(nw.pts, e.pts)); }
+      const pcs = piecesAt(e, tsE); if (!pcs) continue;
+      const prev = clone(e); e.pts = pcs[0]; modify(e, prev); n++;
+      for (const q of pcs.slice(1)) { const c = clone(prev); delete c.uid; c.pts = q; add(c); }
+    }
+    const pcs = piecesAt(nw, tsNew);
+    if (pcs) {
+      const base = clone(nw); remove(nw, false); st.undo = st.undo.filter((u) => !(u.t === "add" && u.sk.uid === nw.uid));
+      for (const q of pcs) {                         // 이미 있는 조각과 똑같이 겹치는 조각은 빼기
+        const dup = st.list.some((o) => o.kind === base.kind && ((o.pts[0] === q[0] && o.pts[1] === q[1] && o.pts[2] === q[2] && o.pts[3] === q[3]) || (o.pts[0] === q[2] && o.pts[1] === q[3] && o.pts[2] === q[0] && o.pts[3] === q[1])));
+        if (dup) continue; const c = clone(base); delete c.uid; c.pts = q; add(c);
+      }
+      n++;
+    }
+    if (n) toast(`${KIND_NM[nw.kind]} 겹치는 곳에서 분리`);
   }
   function editImg(sk) {
     let w = sk.w, rot = sk.rot || 0;
@@ -857,6 +977,7 @@ const SK = (() => {
     for (const sk of st.list) { if (!shown(sk)) continue; drawOne(sk, false, sk.uid === st.sel || !!(st.selSet && st.selSet.has(sk.uid))); if (sk.kind !== "axis" && sk.kind !== "dim") signature(sk); }
     if (st.ghost) { ctx.save(); ctx.globalAlpha = 0.6; drawOne(st.ghost, true); ctx.restore(); }
     if (st.cur) drawOne(st.cur, true);
+    if (st.tf) tfDraw();
     drawSnap();
   }
 
@@ -1073,6 +1194,7 @@ const SK = (() => {
       ...[5, 10, 50].map((n) => chip(`${n}단위`, st.colStep === n, () => set("colStep", n))));
     if (st.mem === "wall") sc.append(chip(`두께 ${st.wallT}`, false, () => pickNum("벽 두께 (mm)", st.wallT, [150, 180, 200, 250, 300, 350, 400, 500], (v) => set("wallT", v)), "val"));
     sc.append(chip(`자동네임 ${st.autoName ? "유" : "무"}`, st.autoName, () => set("autoName", !st.autoName)));
+    if (st.mem !== "column") sc.append(chip(st.split ? "분리" : "분리안함", !!st.split, () => set("split", !st.split)));      // 겹치는 곳에서 나누기
     box.append(fix, sc);
   }
   function buildOps() {
@@ -1131,7 +1253,9 @@ const SK = (() => {
     });
   }
   $("#skTools").addEventListener("click", (e) => {
-    const b = e.target.closest("button"); if (!b) return; st.tool = b.dataset.tool; st.op = null; saveOpts();
+    const b = e.target.closest("button"); if (!b || !b.dataset.tool) return;     // 완료/취소(tf-btn)는 각자 처리
+    if (st.tf) tfEnd(true);
+    st.tool = b.dataset.tool; st.op = null; saveOpts();
     for (const x of $("#skTools").children) x.classList.toggle("on", x === b);
     buildSub(); buildOps(); hint(hintFor()); setTimeout(() => hint(""), 1800);
   });
@@ -1165,7 +1289,7 @@ const SK = (() => {
   function mode(on) {
     $("#sketchBar").classList.toggle("hidden", !on); $("#skOps").classList.toggle("hidden", !on);
     if (on) { hint("끌어서 그리기 · 누르면 선택 · 길게 누르면 이동·복사·수정"); setTimeout(() => hint(""), 2400); }
-    st.cur = null; st.pend = null; if (!on) st.sel = null;
+    st.cur = null; st.pend = null; if (!on) { st.sel = null; if (st.tf) tfEnd(true); }
   }
 
   function centerOf(sk) { const p = sk.pts; return sk.kind === "column" ? colCenter(sk) : [(p[0] + p[2]) / 2, (p[1] + p[3]) / 2]; }
