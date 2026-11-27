@@ -909,7 +909,7 @@ function recActions(r) {
       el("div", { class: "btns" }, el("button", { class: "b danger", onclick: () => { close(); S.sel = r; delCurrent(); } }, "삭제"), el("span", { class: "sp" }), el("button", { class: "b gray", onclick: close }, "닫기")));
   });
 }
-function placeAtPoint(rec, a, b, keepBubble) {     // 점 위치(+번호 위치)로 rec 옮기기 — 사본에도 씀
+function placeAtPoint(rec, a, b, keepBubble, keepContent) {     // 점 위치(+번호 위치)로 rec 옮기기 — 사본에도 씀
   const g0 = geom(rec), an0 = anchor(rec), off = [rec.bx || 0, rec.by || 0];
   if (g0.type === "area") {
     const dx = a[0] - an0[0], dy = a[1] - an0[1];
@@ -921,8 +921,9 @@ function placeAtPoint(rec, a, b, keepBubble) {     // 점 위치(+번호 위치)
     const autoName = !rec.name || (oldM && rec.name === memberName(oldM));
     Object.assign(rec, { member: L.m ? L.m.i : null, t0: L.t ?? null, t1: null, x: ax, y: ay });
     if (L.dxy) { rec.dx = L.dxy[0]; rec.dy = L.dxy[1]; } else { delete rec.dx; delete rec.dy; }
-    if (autoName && L.m) rec.name = memberName(L.m);
-    if (L.sk) applySk(rec, L.sk); else delete rec.skm;
+    if (keepContent) { delete rec.skm; }            // 다른 종류 부재로 복사(예): 내용 그대로, 위치만
+    else { if (autoName && L.m) { rec.name = memberName(L.m); clearNameParts(rec); }
+      if (L.sk) applySk(rec, L.sk); else delete rec.skm; }
   }
   if (b) applyLead(rec, { bub: b }); else if (keepBubble) { rec.bx = off[0]; rec.by = off[1]; }
 }
@@ -933,18 +934,31 @@ function moveRecTo(r, a, b) {
   placeAtPoint(rec, a, b, true); rec.updated = nowIso();
   saveRec(rec); S.sel = rec; renderList(); draw(); toast(`${listNo(rec)} 이동`);
 }
-function copyRecTo(r, a, b) {
+function copyRecTo(r, a, b, opt = {}) {
   if ((S.purposes[r.purpose] || {}).crack && r.label) {       // 균열: 같은 번호 위치 추가 (개소 집계)
     S.placing = r.uid; S.placingRec = r; S.placingAdd = true; placeRec(a[0], a[1], b ? { bub: b } : null); return; }
   const src = S.recs.find((x) => x.uid === r.uid) || r;
   if (geom(src).type === "span") { toast("구간 기록은 복사할 수 없습니다"); return; }
+  // 복사할 곳 부재 종류가 다르면 (예: 기둥을 보 위에) 물어봄 — 예: 내용 그대로 복사 / 아니요: 취소
+  const L0 = locate(a[0], a[1]), KN = { c: "기둥", b: "보", w: "벽" };
+  const tk = L0.sk ? (L0.sk.kind === "column" ? "c" : L0.sk.kind === "wall" ? "w" : "b") : L0.m ? (L0.m.k === "c" ? "c" : L0.m.k === "w" ? "w" : "b") : null;
+  const sk0 = memberKind(src, S.sheet.byId.get(src.member));
+  const srcKnown = !!(src.skm || src.member != null || nameParts(src)[0]);
+  if (!opt.force && tk && srcKnown && tk !== sk0 && (S.purposes[src.purpose] || {}).size) {
+    const tl = L0.sk ? L0.sk.label : memberName(L0.m);
+    sheet((bx) => { const close = () => $("#modal").classList.remove("show");
+      bx.append(el("h3", {}, "부재 종류가 다릅니다"), el("p", {}, `${tl || KN[tk]}(${KN[tk]})로 확인되는데 ${src.name || KN[sk0]}(${KN[sk0]}) 내용으로 복사를 진행하겠습니까?`),
+        el("div", { class: "btns" }, el("span", { class: "sp" }), el("button", { class: "b gray", onclick: () => { close(); toast("복사 취소"); } }, "아니요"),
+          el("button", { class: "b ok", onclick: () => { close(); copyRecTo(r, a, b, { force: true }); } }, "예 — 그대로 복사"))); });
+    return;
+  }
   const root = src.copyOf || src.uid;
   const sub = Math.max(0, ...S.recs.filter((x) => x.copyOf === root).map((x) => +x.sub || 0)) + 1;
   const rec = JSON.parse(JSON.stringify(src));
   Object.assign(rec, { id: S.recs.reduce((m, x) => Math.max(m, x.id || 0), 0) + 1, uid: uid(), updated: nowIso(), copyOf: root, sub,
     photos: [], date: today(), inspector: inspector(), mobile: true });
   delete rec.owner; delete rec.calc; if (window.CO) CO.stamp(rec);
-  placeAtPoint(rec, a, b, true);
+  placeAtPoint(rec, a, b, true, !!opt.force);
   saveRec(rec); S.sel = rec; renderList(); draw(); toast(`${listNo(rec)} 복사 — 도면에는 같은 번호 ${rec.no}`);
 }
 // 목록 번호: 복사본은 번호-01, -02 … (원본은 번호-00), 도면에는 같은 번호
@@ -1203,7 +1217,7 @@ function showLayers() {
 
 function applySk(rec, info) {      // 스케치 부재 연결: 이름·크기 공유
   if (!info) { delete rec.skm; return; }
-  rec.skm = info.uid; rec.name = info.label; rec.exist = rec.exist || "존재";
+  rec.skm = info.uid; rec.name = info.label; clearNameParts(rec); rec.exist = rec.exist || "존재";
   if ((S.purposes[rec.purpose] || {}).size) { rec.size_b = info.b; if (info.kind === "column") rec.size_h = info.h; }
 }
 function applyLead(rec, o) {      // 끌어서 정한 번호 위치(sheet-relative) · 점/화살표
@@ -1449,9 +1463,11 @@ function renderForm() {
     f.append(el("div", { class: "lab8" }, "손상종류" + (fl.ctype && !CRACK_TYPES.some((t) => t.k === fl.ctype) ? ` (예전: ${fl.ctype})` : "")), grid8("ctype", CRACK_TYPES.map((t) => t.k)),
       el("div", { class: "lab8" }, "부재"), grid8("cmem", CRACK_MEMBERS));
   } else if (P.area) row("구역명", vbtn("name", { choices: ["사무실", "회의실", "복도", "화장실", "계단실", "기계실", "창고", "주거", "옥상"] }));
-  else { const [mk, mn] = nameParts(rec);
-    row("부재명", el("button", { class: "val" + (editing ? "" : " dim"), onclick: () => pick("mkind", { choices: MEMBER_KINDS }) }, mk || "종류"),
-      el("div", { class: "x" }, ""), el("button", { class: "val" + (editing ? "" : " dim"), onclick: () => pick("mname", {}) }, mn || "이름 (G1·C1…)")); }
+  else { const [mk, mc, mn] = nameParts3(rec), cls = "val" + (editing ? "" : " dim");     // 부재명 = 종류 · 기호 · 번호
+    f.append(el("div", { class: "row three" }, el("div", { class: "lab" }, "부재명"),
+      el("button", { class: cls, onclick: () => pick("mkind", { choices: MEMBER_KINDS }) }, mk || "종류"),
+      el("button", { class: cls, onclick: () => pick("mcode", { choices: ["C", "G", "B", "S", "W", "MW", "TG", "CG", "FG", "SB"] }) }, mc || "기호"),
+      el("button", { class: cls, onclick: () => pick("mnum", { choices: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"] }) }, mn || "번호"))); }
   if (P.size) row("치수", vbtn("size_b"), el("div", { class: "x" }, "X"), vbtn("size_h"));
   if (P.length) row("길이", vbtn("length"));
   if (P.rebar) row("철근", el("button", { class: "val" + (editing ? "" : " dim"), onclick: rebarGrid }, Object.values(rec.rebar || {}).some(Boolean) ? "입력됨." : "선택"));
@@ -1508,6 +1524,14 @@ function traceRow(v, can, set) {
     ...["있음", "없음"].flatMap((t, i) => [i ? el("div") : null, el("button", { class: "val" + (v === t ? " on" : "") + (can ? "" : " dim"), onclick: () => set(t) }, t)]).filter(Boolean));
 }
 const MEMBER_KINDS = CRACK_MEMBERS;      // 부재검측 부재 종류도 균열검토와 같게 (직접입력 = 이름 적기)
+const KIND_CODE = { 기둥: "C", 큰보: "G", 작은보: "B", 슬래브: "S", 바닥: "S", 내력벽: "W", 조적벽: "MW", 보: "B", 거더: "G", 벽체: "W" };   // 종류를 고르면 기호 자동
+function nameParts3(r) {            // 부재명 → [종류, 기호, 번호]  (큰보 G12 → 큰보 / G / 12)
+  if (r.mcode != null || r.mnum != null) return [r.mkind || "", r.mcode || "", r.mnum || ""];
+  const [k, n] = nameParts(r), m = /^([A-Za-z]*)\s*(.*)$/.exec(n || "") || ["", "", n || ""];
+  return [k, m[1].toUpperCase(), m[2]];
+}
+function setNameParts(e, k, c, n) { e.mkind = k; e.mcode = c; e.mnum = n; e.mname = `${c}${n}`; e.name = [k, `${c}${n}`].filter(Boolean).join(" "); }
+function clearNameParts(r) { delete r.mkind; delete r.mname; delete r.mcode; delete r.mnum; }
 function nameParts(r) {             // 부재명 → [종류, 이름]  (보 G1 → 보 / G1)
   if (r.mkind != null || r.mname != null) return [r.mkind || "", r.mname || ""];
   const n = String(r.name || "").trim(); if (!n) return ["", ""];
@@ -1572,11 +1596,14 @@ function sketchNote(t, after, idx) {
     const paint = () => { g.fillStyle = "#fff"; g.fillRect(0, 0, W, H); if (bg && bg.complete) g.drawImage(bg, 0, 0, W, H); g.lineCap = "round"; g.lineJoin = "round";
       for (const s0 of strokes) { g.strokeStyle = s0.c; g.lineWidth = s0.w; g.beginPath(); s0.p.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y))); g.stroke(); } };
     const pos = (e) => { const r = c.getBoundingClientRect(); return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height]; };
-    c.addEventListener("pointerdown", (e) => { c.setPointerCapture(e.pointerId); cur = { c: col, w: e.pointerType === "pen" ? 2.5 : 3, p: [pos(e)] }; strokes.push(cur); paint(); });
+    c.addEventListener("pointerdown", (e) => { c.setPointerCapture(e.pointerId);
+      cur = col === "eraser" ? { c: "#ffffff", w: 20, p: [pos(e)] } : { c: col, w: e.pointerType === "pen" ? 2.5 : 3, p: [pos(e)] };   // 지우개 = 굵은 흰 선 (끈 자리만 지워짐)
+      strokes.push(cur); paint(); });
     c.addEventListener("pointermove", (e) => { if (!cur) return; cur.p.push(pos(e)); paint(); });
     for (const ev of ["pointerup", "pointercancel"]) c.addEventListener(ev, () => { cur = null; });
     const cols = el("div", { class: "sk-chips" });
-    const drawCols = () => { cols.innerHTML = ""; for (const [cc, nm] of [["#111827", "검정"], ["#e11d48", "빨강"], ["#2563eb", "파랑"]]) cols.append(el("button", { class: col === cc ? "on" : "", onclick: () => { col = cc; drawCols(); } }, el("i", { class: "sk-dot", style: `background:${cc}` }), nm)); };
+    const drawCols = () => { cols.innerHTML = ""; for (const [cc, nm] of [["#111827", "검정"], ["#e11d48", "빨강"], ["#2563eb", "파랑"]]) cols.append(el("button", { class: col === cc ? "on" : "", onclick: () => { col = cc; drawCols(); } }, el("i", { class: "sk-dot", style: `background:${cc}` }), nm));
+      cols.append(el("button", { class: col === "eraser" ? "on" : "", onclick: () => { col = "eraser"; drawCols(); } }, "🧽 지우개")); };
     drawCols(); paint();
     b.append(el("h3", {}, old ? "추가사항 — 스케치 수정" : "추가사항 — 스케치"), c, el("div", { class: "note-tools" }, cols,
       el("button", { class: "b gray", onclick: () => { strokes.pop(); paint(); } }, "↶"), el("button", { class: "b gray", onclick: () => { strokes.length = 0; paint(); } }, "지우기")),
@@ -1604,6 +1631,7 @@ function drawingValues(key, m) {
   if (!m) return [];
   if (key === "mkind") return [KIND_KO[m.k]].filter(Boolean);
   if (key === "mname") return m.n ? [m.n] : [];
+  if (key === "mcode" || key === "mnum") { const mm = /^([A-Za-z]*)\s*(.*)$/.exec(m.n || ""); return mm && mm[key === "mcode" ? 1 : 2] ? [key === "mcode" ? mm[1].toUpperCase() : mm[2]] : []; }
   if (key === "name") return m.n ? [`${KIND_KO[m.k]} ${m.n}`, m.n, KIND_KO[m.k]] : [KIND_KO[m.k]];
   if (key === "size_b") return [String(m.k === "c" ? m.b : m.w)];
   if (key === "size_h") return m.k === "c" ? [String(m.h)] : (m.d ? [String(m.d)] : []);
@@ -1626,11 +1654,18 @@ function pick(key, opts = {}) {
   const field = !!opts.field, pkey = field ? `${e.purpose}.${key}` : key;
   let title = FIELD_LABEL[key] || key, unit = opts.unit ?? FIELD_UNIT[key] ?? "";
   if (field) for (const [k, lab, u] of (S.purposes[e.purpose] || {}).fields || []) if (k === key) { title = lab; unit = u; }
-  const cur = String((key === "mkind" ? nameParts(e)[0] : key === "mname" ? nameParts(e)[1] : field ? (e.fields || {})[key] : e[key]) ?? "");
+  const n3 = nameParts3(e);
+  const cur = String((key === "mkind" ? n3[0] : key === "mcode" ? n3[1] : key === "mnum" ? n3[2] : key === "mname" ? nameParts(e)[1] : field ? (e.fields || {})[key] : e[key]) ?? "");
   const groups = [];
   const ski = e.skm && window.SK ? SK.memberInfo(SK.get(e.skm)) : null;
-  const dv = ski ? ({ name: [ski.label, ski.name].filter(Boolean), mkind: [ski.ko], mname: [ski.name].filter(Boolean), size_b: [ski.b].filter(Boolean), size_h: [ski.h].filter(Boolean) }[key] || []) : drawingValues(key, m);
+  const skn = ski ? (/^([A-Za-z]*)\s*(.*)$/.exec(ski.name || "") || ["", "", ""]) : null;
+  const dv = ski ? ({ name: [ski.label, ski.name].filter(Boolean), mkind: [ski.ko], mname: [ski.name].filter(Boolean), mcode: [skn[1].toUpperCase()].filter(Boolean), mnum: [skn[2]].filter(Boolean),
+    size_b: [ski.b].filter(Boolean), size_h: [ski.h].filter(Boolean) }[key] || []) : drawingValues(key, m);
   if (dv.length) groups.push([ski ? "스케치 부재" : "도면값", dv, false]);
+  if (key === "mnum") {                            // 같은 기호(C·G…)의 다음 번호
+    const code = n3[1], used = new Set(S.recs.filter((r) => r.uid !== e.uid && nameParts3(r)[1] === code).map((r) => +nameParts3(r)[2]).filter((v) => v > 0));
+    const nx = Math.max(0, ...used) + 1; groups.push([`${code || ""} 다음 번호`, [String(nx)], false]);
+  }
   if (key === "no") {
     const used = new Set(S.recs.filter((r) => r.uid !== e.uid).map((r) => +r.no)), nx = Math.max(0, ...used) + 1;
     groups.push(["다음 번호", [String(nx)], false]);
@@ -1671,7 +1706,13 @@ function pick(key, opts = {}) {
   });
   function done(v) {
     if (key === "no") { if (!/^\d+$/.test(v)) return; v = +v; }
-    if (key === "mkind" || key === "mname") { const [k0, n0] = nameParts(e); e.mkind = key === "mkind" ? v : k0; e.mname = key === "mname" ? v : n0; e.name = [e.mkind, e.mname].filter(Boolean).join(" "); }
+    if (key === "mkind" || key === "mcode" || key === "mnum") {
+      let [k0, c0, n0] = nameParts3(e);
+      if (key === "mkind") { if (!c0 || c0 === KIND_CODE[k0]) c0 = KIND_CODE[v] || c0; k0 = v; }
+      if (key === "mcode") c0 = String(v).toUpperCase().replace(/[^A-Z]/g, "");
+      if (key === "mnum") n0 = String(v).trim();
+      setNameParts(e, k0, c0, n0);
+    } else if (key === "mname") { const [k0] = nameParts(e); const m = /^([A-Za-z]*)\s*(.*)$/.exec(v) || ["", "", v]; setNameParts(e, k0, m[1].toUpperCase(), m[2]); }
     else if (field) { e.fields = e.fields || {}; e.fields[key] = v; } else e[key] = v;
     if (field && key === "ctype" && CRACK_BY[v] && !(e.label || "").startsWith(CRACK_BY[v].code)) e.label = CRACK_BY[v].code + crackNextNo(CRACK_BY[v].code);
     close(); renderForm(); draw();
@@ -2206,9 +2247,22 @@ for (const id of ["#fileOpen", "#fileOpen2"]) $(id).onchange = async (e) => {
   if (S.db && !confirm("지금 열린 조사를 닫고 새 파일을 열까요?\n(저장 안 한 내용은 '저장/공유'로 먼저 내보내세요)")) return;
   try { await withBusy("파일 여는 중…", async () => openBytes(await f.arrayBuffer(), f.name), f.name); } catch (err) { alert(err.message); }
 };
-$("#btnResume").onclick = async () => { let c = null; try { c = await IDB.get("current"); } catch (e) { /* ignore */ }
+$("#btnResume").onclick = async () => {
+  if (S.db && S.sheet) { $("#welcome").classList.remove("show"); toast("이어서 하기"); return; }     // 열려 있던 작업 — 화면 시점 그대로
+  let c = null; try { c = await IDB.get("current"); } catch (e) { /* ignore */ }
   if (!c) { toast("이어서 할 조사가 없습니다 — ＋ 새 조사로 시작하세요", 2600); return; }
-  await withBusy("불러오는 중…", () => openBytes(c.bytes, c.name), c.name); toast(`이어서 하기 (${c.saved})`); };
+  await withBusy("불러오는 중…", () => openBytes(c.bytes, c.name), c.name);
+  restoreView(c.name);                                   // 앱을 다시 켠 경우: 마지막 도면·확대 위치로
+  toast(`이어서 하기 (${c.saved})`); };
+// 마지막 화면 시점 (도면·확대·위치) 기억 — 이어서 하기에서 복원
+function saveView() { try { if (S.db && S.sheet) localStorage.setItem("lastView", JSON.stringify({ name: S.fileName, idx: S.sheetIdx, v: S.view })); } catch (e) { /* ignore */ } }
+function restoreView(name) {
+  let lv = null; try { lv = JSON.parse(localStorage.getItem("lastView") || "null"); } catch (e) { lv = null; }
+  if (!lv || lv.name !== name || !S.sheets[lv.idx]) return;
+  if (lv.idx !== S.sheetIdx) loadSheet(lv.idx);
+  if (lv.v && lv.v.s > 0) { Object.assign(S.view, lv.v); draw(); }
+}
+setInterval(saveView, 5000); window.addEventListener("pagehide", saveView); document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") saveView(); });
 $("#btnNewSurvey").onclick = () => {
   const o = $("#newOpts"), open = o.classList.toggle("hidden") === false;
   $("#btnNewSurvey").classList.toggle("open", open);

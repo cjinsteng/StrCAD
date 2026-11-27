@@ -527,3 +527,10 @@ input, textarea, [contenteditable] { -webkit-user-select: text; user-select: tex
 .crack-exist-list .opt span { flex: 1; }
 .crack-exist-list .opt small { color: var(--muted); }
 body.viewonly #skOps { display: none !important; }
+/* 스케치 도구줄 아이콘 (글자 없이) — 크기는 font-size / min-width 로 */
+#skOps button.ic { font-size: 22px; min-width: 44px; padding: 4px 8px; line-height: 1; justify-content: center; }
+#skOps button.ic.on { background: var(--orange); color: #fff; }
+.sk-dot.big { width: 22px; height: 22px; }
+
+/* 부재명 = 종류 · 기호 · 번호 (세 칸) */
+.row.three { grid-template-columns: 64px 1.3fr 1fr 1fr; }

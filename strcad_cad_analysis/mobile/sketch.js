@@ -922,7 +922,7 @@ const SK = (() => {
     const ko = sk.kind === "beam" ? (/^B/i.test(sk.name || "") ? "작은보" : "큰보") : sk.kind === "wall" ? "내력벽" : "기둥";     // 부재 종류 목록과 같게
     return { uid: sk.uid, kind: sk.kind, ko, name: sk.name || "", label: `${ko}${sk.name ? " " + sk.name : ""}`, b: size[0] ? String(Math.round(size[0])) : "", h: size[1] ? String(Math.round(size[1])) : "" };
   }
-  function memberAt(x, y) {                       // 검측점 위치의 스케치 부재 (보·기둥·벽체)
+  function memberAt(x, y) {                       // 검측점 위치의 스케치 부재 (보·기둥·벽체) — 가장 가까운 것 (안쪽이면 0)
     const lim = tolW(18);
     let best = null;
     for (let i = st.list.length - 1; i >= 0; i--) {
@@ -930,11 +930,12 @@ const SK = (() => {
       const p = sk.pts;
       if (sk.kind === "column") {
         const [x0, x1] = [Math.min(p[0], p[2]), Math.max(p[0], p[2])], [y0, y1] = [Math.min(p[1], p[3]), Math.max(p[1], p[3])];
-        if (x >= x0 - lim && x <= x1 + lim && y >= y0 - lim && y <= y1 + lim) return { sk, p: [x, y], d: 0 };
+        const d = Math.hypot(Math.max(x0 - x, 0, x - x1), Math.max(y0 - y, 0, y - y1));
+        if (d <= lim && (!best || d < best.d || (d === 0 && best.d === 0 && best.sk.kind !== "column"))) best = { sk, p: [x, y], d };
         continue;
       }
-      const half = Math.max(lim, ((sk.kind === "wall" ? sk.t : sk.w) || 200) / 2), d = distSeg2(x, y, ...p);
-      if (d < half && (!best || d < best.d)) {
+      const half = ((sk.kind === "wall" ? sk.t : sk.w) || 200) / 2, d = Math.max(0, distSeg2(x, y, ...p) - half);
+      if (d <= lim && (!best || d < best.d)) {
         const L2 = (p[2] - p[0]) ** 2 + (p[3] - p[1]) ** 2 || 1, t = Math.max(0, Math.min(1, ((x - p[0]) * (p[2] - p[0]) + (y - p[1]) * (p[3] - p[1])) / L2));
         best = { sk, p: [p[0] + (p[2] - p[0]) * t, p[1] + (p[3] - p[1]) * t], d };
       }
@@ -1021,14 +1022,16 @@ const SK = (() => {
   function buildOps() {
     const box = $("#skOps"); if (!box) return; box.innerHTML = "";
     if (st.act) box.append(el("button", { class: "on", onclick: () => { st.act = null; hint(""); buildOps(); } }, `✕ ${st.act.kind === "move" ? "이동" : "복사"} 취소`));
-    box.append(el("button", { onclick: pickColor }, el("i", { class: "sk-dot", style: `background:${st[curColorKey()]}` }), "색깔"),
-      chip("✥ 이동", st.op === "move", () => { st.op = st.op === "move" ? null : "move"; buildOps(); hint(hintFor()); setTimeout(() => hint(""), 1600); }),
-      chip("⌫ 지우기", st.op === "erase", () => { st.op = st.op === "erase" ? null : "erase"; buildOps(); hint(hintFor()); setTimeout(() => hint(""), 1600); }),
-      el("button", { onclick: undo }, "↶ 되돌리기"),
-      chip(`⊾ 직교 ${st.ortho ? "켬" : "끔"}`, st.ortho, () => { st.ortho = !st.ortho; saveOpts(); buildOps(); }),
-      chip(`🧲 스냅 ${st.snap ? "켬" : "끔"}`, st.snap, () => { st.snap = !st.snap; saveOpts(); buildOps(); }),
-      chip(`▦ 격자 ${st.grid ? "켬" : "끔"}`, st.grid, () => { st.grid = !st.grid; saveOpts(); buildOps(); draw();
-        toast(st.grid ? `격자 ${st.gridStep.toLocaleString()}mm${st.gridSnap ? " · 격자 스냅" : ""} (간격은 메뉴 › 설정)` : "격자 끔"); }));
+    // 아이콘만 (크게) — 무엇인지는 길게 누르거나 누를 때 안내
+    const ic = (icon, title, on, fn) => el("button", { class: "ic" + (on ? " on" : ""), title, "aria-label": title, onclick: fn }, icon);
+    const tog = (k, nm) => () => { st[k] = !st[k]; saveOpts(); buildOps(); draw(); toast(`${nm} ${st[k] ? "켬" : "끔"}` + (k === "grid" && st.grid ? ` · ${st.gridStep.toLocaleString()}mm (간격은 메뉴 › 설정)` : ""), 1500); };
+    box.append(el("button", { class: "ic", title: "색깔", "aria-label": "색깔", onclick: pickColor }, el("i", { class: "sk-dot big", style: `background:${st[curColorKey()]}` })),
+      ic("✥", "이동", st.op === "move", () => { st.op = st.op === "move" ? null : "move"; buildOps(); hint(hintFor()); setTimeout(() => hint(""), 1600); }),
+      ic("⌫", "지우기", st.op === "erase", () => { st.op = st.op === "erase" ? null : "erase"; buildOps(); hint(hintFor()); setTimeout(() => hint(""), 1600); }),
+      ic("↶", "되돌리기", false, undo),
+      ic("⊾", "직교", st.ortho, tog("ortho", "직교")),
+      ic("🧲", "스냅", st.snap, tog("snap", "스냅")),
+      ic("▦", "격자", st.grid, tog("grid", "격자")));
   }
   // ---- 설정 (메뉴 › ⚙ 설정): 격자 켬/끔 · 간격 · 격자 스냅
   const GRID_STEPS = [100, 250, 500, 1000, 2000, 5000];
